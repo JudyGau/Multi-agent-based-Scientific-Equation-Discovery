@@ -31,6 +31,9 @@ import http.client
 import os
 import traceback
 from drsr_420 import prompt_config as pc
+from drsr_420.tools.search_seper import search_google_scholar
+from llm import LLMClient
+
 Port = '5000'
 
 from main import args
@@ -69,7 +72,7 @@ class Sampler:
             max_sample_nums: int | None = None,
             llm_class: Type[LLM] = LLM,
             prompt_ctx: pc.PromptContext | None = None,
-            llm_client: object | None = None,
+            llm_client: LLMClient | None = None,
             llm_api: dict | None = None,
     ):
         self._samples_per_prompt = samples_per_prompt
@@ -719,11 +722,14 @@ class LocalLLM(LLM):
                             if "sample_order" in exp and min_order <= exp["sample_order"] <= max_order
                         ]
                     
-                    # 按类别上限随机抽样
-                    if filtered_category:
-                        max_selected = category_max_samples[category]
-                        selected = random.sample(filtered_category, min(max_selected, len(filtered_category)))
-                        filtered_experiences[category] = selected
+                    # # 按类别上限随机抽样
+                    # if filtered_category:
+                    #     max_selected = category_max_samples[category]
+                    #     selected = random.sample(filtered_category, min(max_selected, len(filtered_category)))
+                    #     filtered_experiences[category] = selected
+
+                    # 不随机抽样，全部选择
+                    filtered_experiences[category] = filtered_category
                 
                 # 合并所有类别的经验
                 all_selected_experiences = []
@@ -861,9 +867,15 @@ class LocalLLM(LLM):
                 responses = []
                 think_responses = []
                 for _ in range(repeat_prompt):
+                    messages=[]
+
                     resp = client.chat([{"role": "user", "content": content}])
 
-                    tool_calls = resp.get('tool_calls', [])
+                    messages.append({"role": "user", "content": content})
+
+                    # tool_calls = resp.get('tool_calls', [])
+
+
 
                     while True:
                         tool_calls = resp.get('tool_calls', [])
@@ -871,7 +883,7 @@ class LocalLLM(LLM):
                         # 如果调了 tool，执行后回传
                         if tool_calls:
                             print("调用了工具：", tool_calls)
-                            # content.append(resp)
+
                             for tc in tool_calls:
                                 fn_name = tc.get('function', {}).get('name', '')
                                 # args = json.loads(tc.function.arguments)
@@ -883,12 +895,14 @@ class LocalLLM(LLM):
                                     result = search_google_scholar(**args)
                                 else:
                                     result = json.dumps({"error": "unknown tool"})
-                                # content.append({
-                                #     "role": "tool",
-                                #     "tool_call_id": tc.get('id', ''),
-                                #     "content": result
-                                # })
-                                resp = client.chat([{"role": "user", "content": content}, {"role": "tool", "tool_call_id": tc.get('id', ''), "content": result}])
+
+                                messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": tc.get('id', ''),
+                                    "content": result
+                                })
+
+                                resp = client.chat(messages)
 
                             # 如果未调用，则跳出循环
                             else:
