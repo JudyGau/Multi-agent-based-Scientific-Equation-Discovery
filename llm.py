@@ -188,75 +188,76 @@ class LLMClient:
             content = message.get('content', '') or ''
             reasoning_content = message.get('reasoning_content', '') or ''
 
-            tool_calls = message.get('tool_calls', [])
-
-            # 如果调了 tool，执行后回传
-            if tool_calls:
-                messages.append(message)
-                for tc in tool_calls:
-                    fn_name = tc.get('function', {}).get('name', '')
-                    # args = json.loads(tc.function.arguments)
-                    args = json.loads(tc.get('function', {}).get('arguments', []))
-                    # result = search_literature(**args)
-                    # result = search_google_scholar(**args)
-
-                    if fn_name == "'search_google_scholar'":
-                        result = search_google_scholar(**args)
-                    else:
-                        result = json.dumps({"error": "unknown tool"})
-
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc.get('id',''),
-                        "content": result
-                    })
-
-                # 第二轮：基于文献答
-                payload = {
-                    "model": model_name,
-                    "messages": messages,
-                }
-                # 仅透传 OpenAI Chat Completions 兼容字段，避免提供商拒绝未知参数
-                if isinstance(self.kwargs, dict):
-                    for k, v in self.kwargs.items():
-                        if k in allowed_keys:
-                            payload[k] = v
-                # 对输出 token 上限做保护（部分模型 4k 上限，统一取不超过 4096）
-                try:
-                    if isinstance(payload.get('max_tokens'), int) and payload['max_tokens'] > 65536:
-                        payload['max_tokens'] = 65536
-                except Exception:
-                    pass
-
-                final = requests.post(request_url, headers=headers, json=payload, timeout=120)
-                # 状态码错误先抛出异常（下方 except 会打印详情）
-                final.raise_for_status()
-                # 尝试解析 JSON；失败时打印前 500 字符文本
-                try:
-                    response_data = final.json()
-                except ValueError:
-                    print("API 响应无法解析为 JSON，原始文本预览:", final.text[:500])
-                    raise
-
-                # OpenAI 兼容接口错误格式：{"error": {...}}
-                if isinstance(response_data, dict) and 'error' in response_data:
-                    err = response_data.get('error') or {}
-                    print("API 返回错误:", {
-                        'type': err.get('type'),
-                        'code': err.get('code'),
-                        'message': err.get('message') or err,
-                    })
-                    raise requests.exceptions.HTTPError(f"API error: {err}")
-                # end_time = time.time()
-
-                # 保护性判断：缺少 choices 时打印提示
-                if 'choices' not in response_data or not response_data['choices']:
-                    print("API 响应不包含 choices 字段或为空：", str(response_data)[:500])
-                    raise requests.exceptions.HTTPError("API response missing choices")
-
-                message = response_data['choices'][0].get('message', {})
-                content = message.get('content', '') or ''
-                reasoning_content = message.get('reasoning_content', '') or ''
+            # tool_calls = message.get('tool_calls', [])
+            #
+            # # 如果调了 tool，执行后回传
+            # if tool_calls:
+            #     print("调用了工具：", tool_calls)
+            #     messages.append(message)
+            #     for tc in tool_calls:
+            #         fn_name = tc.get('function', {}).get('name', '')
+            #         # args = json.loads(tc.function.arguments)
+            #         args = json.loads(tc.get('function', {}).get('arguments', []))
+            #         # result = search_literature(**args)
+            #         # result = search_google_scholar(**args)
+            #
+            #         if fn_name == "'search_google_scholar'":
+            #             result = search_google_scholar(**args)
+            #         else:
+            #             result = json.dumps({"error": "unknown tool"})
+            #
+            #         messages.append({
+            #             "role": "tool",
+            #             "tool_call_id": tc.get('id',''),
+            #             "content": result
+            #         })
+            #
+            #     # 第二轮：基于文献答
+            #     payload = {
+            #         "model": model_name,
+            #         "messages": messages,
+            #     }
+            #     # 仅透传 OpenAI Chat Completions 兼容字段，避免提供商拒绝未知参数
+            #     if isinstance(self.kwargs, dict):
+            #         for k, v in self.kwargs.items():
+            #             if k in allowed_keys:
+            #                 payload[k] = v
+            #     # 对输出 token 上限做保护（部分模型 4k 上限，统一取不超过 4096）
+            #     try:
+            #         if isinstance(payload.get('max_tokens'), int) and payload['max_tokens'] > 65536:
+            #             payload['max_tokens'] = 65536
+            #     except Exception:
+            #         pass
+            #
+            #     final = requests.post(request_url, headers=headers, json=payload, timeout=120)
+            #     # 状态码错误先抛出异常（下方 except 会打印详情）
+            #     final.raise_for_status()
+            #     # 尝试解析 JSON；失败时打印前 500 字符文本
+            #     try:
+            #         response_data = final.json()
+            #     except ValueError:
+            #         print("API 响应无法解析为 JSON，原始文本预览:", final.text[:500])
+            #         raise
+            #
+            #     # OpenAI 兼容接口错误格式：{"error": {...}}
+            #     if isinstance(response_data, dict) and 'error' in response_data:
+            #         err = response_data.get('error') or {}
+            #         print("API 返回错误:", {
+            #             'type': err.get('type'),
+            #             'code': err.get('code'),
+            #             'message': err.get('message') or err,
+            #         })
+            #         raise requests.exceptions.HTTPError(f"API error: {err}")
+            #     # end_time = time.time()
+            #
+            #     # 保护性判断：缺少 choices 时打印提示
+            #     if 'choices' not in response_data or not response_data['choices']:
+            #         print("API 响应不包含 choices 字段或为空：", str(response_data)[:500])
+            #         raise requests.exceptions.HTTPError("API response missing choices")
+            #
+            #     message = response_data['choices'][0].get('message', {})
+            #     content = message.get('content', '') or ''
+            #     reasoning_content = message.get('reasoning_content', '') or ''
 
                 # final = client.chat.completions.create(
                 #     model="deepseek-chat", messages=messages
