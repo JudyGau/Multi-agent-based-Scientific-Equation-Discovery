@@ -334,7 +334,7 @@ class LLMClient:
                     "reasoning": reasoning_tokens,
                     "total": total_tokens
                 },
-                'tool_calls': tool_calls,
+                "tool_calls": tool_calls,
             }
 
         except Exception as e:
