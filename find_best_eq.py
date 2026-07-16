@@ -1,0 +1,190 @@
+import json, glob, os
+import re
+import sympy as sp
+from graphviz import Source
+from sympy import nsimplify, dotprint
+import llm
+
+from drsr_420.sensitivity_prune import SensitivityPruner
+
+results_root = "experiments/MRFShear-Ellipsoid_20260712-150712"  # 改为你的目录
+best = None
+for p in glob.glob(os.path.join(results_root, "samples", "*_samples_*.json")):
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        s = d.get("score")
+        if s is None:
+            continue
+        if best is None or s > best[0]:
+            best = (s, p, d.get("function",""), d.get("params"))
+    except Exception:
+        continue
+
+if best is None:
+    print("没有找到有效样本。")
+else:
+    score, path, func, params = best
+
+    sample_order = re.search(r"samples_(\d+)",path).group(1)
+
+    try:
+        with open(os.path.join(results_root,  "experiences.json"), "r", encoding="utf-8") as f:
+            exp = json.load(f)
+            good_exp = exp["Good"]
+            for exp in good_exp:
+                if exp["sample_order"].__str__() == sample_order:
+
+                    thinking_content = exp["thinking_content"]
+                    thinking_content = thinking_content.rsplit('\n', 1)[0]
+                    thinking_content ="以下是另一个LLM给出的公式推导（思考过程）:\n" + thinking_content
+
+                    return_eq = exp["equation"]
+                    eq=re.search(r'return\s+(.*)', return_eq).group(1)
+                    eq = "以下是另一个LLM给出的含参本构公式:\n" + eq
+
+                    dependent = re.search(r'Dependent:\s*(\w+)', func).group(1)
+                    independent = re.search(r'Independents:\s+(.*)', func).group(1)
+
+                    head = (f"你是一名力学工程师/应用力学家，对给定公式做逐项力学解释，以下是一个磁流变液的含参本构公式和这个公式的推导逻辑，因变量是磁流变效应 {dependent}，" +
+                            f"自变量是 {independent}，其中lambda12＝L1/L2 和 lambda23=L2/L3，L1, L2, and L3 分别是颗粒的长轴，中轴和短轴,请你据此对这个公式从力学角度进行详细的解释")
+                    tail = "请你根据以上内容对这个公式从力学角度进行详细的解释"
+                    content = head + "\n" + eq +"\n" + thinking_content + "\n" +tail
+
+                    with open(".//llm_explain.config", 'r', encoding='utf-8') as f:
+                        llm_config = json.load(f)
+                    # 构造一次性的 LLM 客户端实例（按任务传递，避免并行任务相互干扰）
+                    # 模型名格式：provider/model，例如 CSTCloud/gpt-oss-120b
+                    model_name = llm_config.get('model')
+                    if not model_name or '/' not in model_name:
+                        raise ValueError(
+                            "缺少模型提供商：请在 llm.config 的 model 字段使用 'provider/model' 格式，例如 'CSTCloud/gpt-oss-120b'")
+                    provider, pure_model = llm.parse_provider_model(model_name)
+
+                    # 解析 api_key：支持字符串与字典（按 provider 或完整 model）
+                    api_key = llm_config.get('api_key', '')
+                    # api_key = ''
+
+                    provider = (provider or 'bltcy').lower()
+                    client = None
+                    try:
+                        if provider in ('bltcy', 'blt'):
+                            client = llm.BltClient(api_key=api_key, model=pure_model)
+                        elif provider in ('deepseek',):
+                            client = llm.DeepSeekClient(api_key=api_key, model=pure_model)
+                        elif provider in ('siliconflow', 'sliconflow'):
+                            client = llm.SiliconflowClient(api_key=api_key, model=pure_model)
+                        elif provider in ('deepinfra', 'deep-infra'):
+                            client = llm.DeepInfraClient(
+                                api_key=api_key,
+                                model=pure_model,
+                                base_url=llm_config.get('base_url') or 'https://api.deepinfra.com/v1/openai',
+                            )
+                        elif provider in ('ollama', 'local'):
+                            client = llm.OllamaClient(api_key=api_key, model=pure_model)
+                        elif provider in ('cstcloud', 'cst', 'cst-cloud', 'keji', 'keji-yun'):
+                            client = llm.CSTCloudClient(api_key=api_key, model=pure_model)
+                        else:
+                            # 默认走 BLT 网关（OpenAI 兼容）
+                            client = llm.BltClient(api_key=api_key, model=pure_model)
+                        # 将部分生成参数写入 client.kwargs
+                        client.kwargs.update({
+                            'max_tokens': int(llm_config.get('max_tokens', 1024) or 1024),
+                            'temperature': float(llm_config.get('temperature', 0.6) or 0.6),
+                            'top_p': float(llm_config.get('top_p', 0.3) or 0.3),
+                            # 'top_k': int(llm_config.get('top_k', 30) or 30),
+                            'frequency_penalty': float(llm_config.get('frequency_penalty', 0.1)),
+                        })
+                        print(f"[INFO] LLM client initialized: provider={provider}, model={pure_model}, kwargs={client.kwargs}")
+                    except Exception as e:
+                        print(f"[WARN] Failed to init LLM client: {e}")
+                    
+                    
+                    resp = client.chat([{"role": "user", "content": content}])
+                    explain = resp.get("content","")
+
+                    print(explain)
+
+                    # 将动态渲染的 explain 保存到本次实验目录，便于调试
+                    try:
+                        explain_out_path = os.path.join(results_root, "explain.txt")
+                        with open(explain_out_path, "w", encoding="utf-8") as f:
+                            f.write(explain)
+                        print(f"[INFO] Saved dynamic spec to: {explain_out_path}")
+                    except Exception as e:
+                        print(f"[WARN] Failed to save dynamic spec: {e}")
+
+
+
+                    break
+    except Exception:
+        pass
+
+    params = [round(x, 2) for x in params]
+
+    match = re.search(r'Dependent:\s*(\w+)', func)
+    if match:
+        # print(match.group(1))
+        dependent = match.group(1)
+        # func=func.replace("return",f"return {dependent} =")
+    else:
+        print("未找到因变量")
+
+
+    for i in range(len(params)):
+        func=func.replace(f"params[{i}]", str(params[i]))
+
+    match = re.search(r'return\s+(.*)', func)
+    if match:
+        expr_str = match.group(1)
+        print(expr_str)
+    else:
+        print("未找到 return")
+
+    # print(f"[BEST] score={score} file={path} params={params} function:{func}")
+
+    """
+            基于敏感度分析剪枝
+            移除对输出影响小于阈值的项
+            """
+    # 创建智能剪枝器
+    pruner = SensitivityPruner(
+        # X_sample=X_sample,
+        # expr=expr,
+        symbols=sp.symbols('lambda12 lambda23'),
+        threshold=0.1,
+        sample_range=(1, 14)
+        # mse_threshold=0.1  # 默认允许10% MSE增加
+    )
+
+    # 字符串替换 np.log -> log, np.exp -> exp
+    expr_str = expr_str.replace('np.asarray','').replace('np.log', 'log').replace('np.exp', 'exp').replace('np.sin', 'sin').replace('np.cos', 'cos').replace('np.sqrt','sqrt')
+
+    # 转换为 SymPy 表达式
+    expr = sp.parse_expr(expr_str)
+    expr = expr.n(2)
+    print(f"剪纸前的表达式式为 {dependent} =")
+    sp.pprint(expr)
+    # 保存为PNG图片
+    sp.preview(expr, output='png', filename='expr.png', viewer=None)
+
+    # 使用智能剪枝
+    pruned_expr = pruner.prune(expr, verbose=True)
+
+
+    pruned_expr=pruned_expr.n(2)
+
+    # pruned_expr = sp.simplify(pruned_expr)
+
+    print(f"剪纸后的表达式式为 {dependent} =")
+    sp.pprint(pruned_expr)
+    # 保存为PNG图片
+    sp.preview(pruned_expr, output='png', filename='prunedExpr.png', viewer=None)
+
+    print(".......")
+
+    src1 = Source(dotprint(expr))
+    src1.render(f'{results_root}/original_expr_tree', view=True)  # 保存为PDF并显示
+
+    src2 = Source(dotprint(pruned_expr))
+    src2.render(f'{results_root}/pruned_expr_tree', view=True)  # 保存为PDF并显示
