@@ -865,16 +865,19 @@ class LocalLLM(LLM):
 
                     tool_calls = resp.get('tool_calls', [])
 
-                    # 如果调了 tool，执行后回传
-                    if tool_calls:
-                        print("调用了工具：", tool_calls)
-                        # content.append(resp)
-                        for tc in tool_calls:
-                            fn_name = tc.get('function', {}).get('name', '')
-                            # args = json.loads(tc.function.arguments)
-                            args = json.loads(tc.get('function', {}).get('arguments', []))
-                            # result = search_literature(**args)
-                            # result = search_google_scholar(**args)
+                    while True:
+                        tool_calls = resp.get('tool_calls', [])
+
+                        # 如果调了 tool，执行后回传
+                        if tool_calls:
+                            print("调用了工具：", tool_calls)
+                            # content.append(resp)
+                            for tc in tool_calls:
+                                fn_name = tc.get('function', {}).get('name', '')
+                                # args = json.loads(tc.function.arguments)
+                                args = json.loads(tc.get('function', {}).get('arguments', []))
+                                # result = search_literature(**args)
+                                # result = search_google_scholar(**args)
 
                             if fn_name == "'search_google_scholar'":
                                 result = search_google_scholar(**args)
