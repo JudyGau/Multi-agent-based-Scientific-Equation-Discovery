@@ -879,18 +879,20 @@ class LocalLLM(LLM):
                                 # result = search_literature(**args)
                                 # result = search_google_scholar(**args)
 
-                            if fn_name == "'search_google_scholar'":
-                                result = search_google_scholar(**args)
+                                if fn_name == "'search_google_scholar'":
+                                    result = search_google_scholar(**args)
+                                else:
+                                    result = json.dumps({"error": "unknown tool"})
+                                # content.append({
+                                #     "role": "tool",
+                                #     "tool_call_id": tc.get('id', ''),
+                                #     "content": result
+                                # })
+                                resp = client.chat([{"role": "user", "content": content}, {"role": "tool", "tool_call_id": tc.get('id', ''), "content": result}])
+
+                            # 如果未调用，则跳出循环
                             else:
-                                result = json.dumps({"error": "unknown tool"})
-
-                            # content.append({
-                            #     "role": "tool",
-                            #     "tool_call_id": tc.get('id', ''),
-                            #     "content": result
-                            # })
-
-                            resp = client.chat([{"role": "user", "content": content}, {"role": "tool", "tool_call_id": tc.get('id', ''), "content": result}])
+                                break
 
                         # # 第二轮：基于文献答
                         # payload = {
