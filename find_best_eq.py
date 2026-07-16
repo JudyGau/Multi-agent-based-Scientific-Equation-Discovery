@@ -7,7 +7,7 @@ import llm
 
 from drsr_420.sensitivity_prune import SensitivityPruner
 
-results_root = "experiments/MRFShear-Ellipsoid_20260712-150712"  # 改为你的目录
+results_root = "experiments/MRFCompress-Cuboid_20260712-150715"  # 改为你的目录
 best = None
 for p in glob.glob(os.path.join(results_root, "samples", "*_samples_*.json")):
     try:
