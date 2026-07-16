@@ -188,7 +188,11 @@ class LLMClient:
             content = message.get('content', '') or ''
             reasoning_content = message.get('reasoning_content', '') or ''
 
-            # tool_calls = message.get('tool_calls', [])
+            tool_calls = message.get('tool_calls', [])
+
+            # if tool_calls:
+
+
             #
             # # 如果调了 tool，执行后回传
             # if tool_calls:
@@ -329,7 +333,8 @@ class LLMClient:
                     "content": completion_tokens - reasoning_tokens,
                     "reasoning": reasoning_tokens,
                     "total": total_tokens
-                }
+                },
+                'tool_calls': tool_calls,
             }
 
         except Exception as e:
