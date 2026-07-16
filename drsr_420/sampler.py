@@ -878,6 +878,14 @@ class LocalLLM(LLM):
 
 
                     while True:
+                        responses.append(resp.get('content', ''))
+
+                        think_responses.append(resp.get('reasoning_content', ''))
+
+                        print("========================思考过程========================\n")
+                        print(resp.get('reasoning_content', ''))
+                        print("====================================================\n")
+
                         tool_calls = resp.get('tool_calls', [])
 
                         # 如果调了 tool，执行后回传
@@ -903,6 +911,8 @@ class LocalLLM(LLM):
                                 })
 
                                 resp = client.chat(messages)
+
+
 
                             # 如果未调用，则跳出循环
                             else:
@@ -957,13 +967,7 @@ class LocalLLM(LLM):
 
 
 
-                    responses.append(resp.get('content', ''))
 
-                    think_responses.append(resp.get('reasoning_content', ''))
-
-                    print("========================思考过程========================\n")
-                    print(resp.get('reasoning_content', ''))
-                    print("====================================================\n")
 
                 return (responses, think_responses) if self._batch_inference else (responses[0], think_responses[0])
             except Exception as e:
