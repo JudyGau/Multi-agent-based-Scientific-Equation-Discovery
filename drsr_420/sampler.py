@@ -875,9 +875,9 @@ class LocalLLM(LLM):
                     # tool_calls = resp.get('tool_calls', [])
 
                     while True:
-                        responses.append(resp.get('content', ''))
 
-                        think_responses.append(resp.get('reasoning_content', ''))
+                        # responses.append(resp.get('content', ''))
+                        # think_responses.append(resp.get('reasoning_content', ''))
 
                         print("========================思考过程========================\n")
                         print(resp.get('reasoning_content', ''))
@@ -885,7 +885,7 @@ class LocalLLM(LLM):
 
                         tool_calls = resp.get('tool_calls', [])
 
-                        messages.append({"role":"assistant","content": None,"tool_calls":tool_calls})
+                        messages.append({"role":"assistant","content": "","tool_calls":tool_calls})
 
                         # 如果调了 tool，执行后回传
                         if tool_calls:
@@ -898,7 +898,7 @@ class LocalLLM(LLM):
                                 # result = search_literature(**args)
                                 # result = search_google_scholar(**args)
 
-                                result=[]
+                                result=""
 
                                 if fn_name == "search_google_scholar":
                                     result = search_google_scholar(**args)
