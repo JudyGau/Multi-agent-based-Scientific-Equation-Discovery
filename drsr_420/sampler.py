@@ -931,23 +931,24 @@ class LocalLLM(LLM):
             think_responses = []
             for _ in range(repeat_prompt):
                 messages = []
+                messages.append({"role": "user", "content": content})
 
                 resp = self._llm_client.chat([{"role": "user", "content": content}])
-
-                messages.append({"role": "user", "content": content})
 
                 # tool_calls = resp.get('tool_calls', [])
 
                 while True:
-                    responses.append(resp.get('content', ''))
 
-                    think_responses.append(resp.get('reasoning_content', ''))
+                    # responses.append(resp.get('content', ''))
+                    # think_responses.append(resp.get('reasoning_content', ''))
 
                     print("========================思考过程========================\n")
                     print(resp.get('reasoning_content', ''))
                     print("====================================================\n")
 
                     tool_calls = resp.get('tool_calls', [])
+
+                    messages.append({"role": "assistant", "content": "", "tool_calls": tool_calls})
 
                     # 如果调了 tool，执行后回传
                     if tool_calls:
@@ -960,6 +961,8 @@ class LocalLLM(LLM):
                             # result = search_literature(**args)
                             # result = search_google_scholar(**args)
 
+                            result = ""
+
                             if fn_name == "search_google_scholar":
                                 result = search_google_scholar(**args)
                             else:
@@ -971,9 +974,11 @@ class LocalLLM(LLM):
                                 "content": result
                             })
 
-                            resp = self._llm_client.chat(messages)
+                        resp = self._llm_client.chat(messages)
                     # 如果未调用，则跳出循环
                     else:
+                        responses.append(resp.get('content', ''))
+                        think_responses.append(resp.get('reasoning_content', ''))
                         break
 
             return (responses, think_responses) if self._batch_inference else (responses[0], think_responses[0])
