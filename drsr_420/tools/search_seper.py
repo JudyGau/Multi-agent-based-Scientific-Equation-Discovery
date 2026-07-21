@@ -98,17 +98,19 @@ def agent_run(user_query: str, model: str = "deepseek-chat"):
 
     # 如果模型发了 tool_calls
     if msg.tool_calls:
+        messages.append(msg)
         for tc in msg.tool_calls:
             fn_name = tc.function.name
             args = json.loads(tc.function.arguments)
-
-            if fn_name == "google_scholar":
+            result=""
+            if fn_name == "search_google_scholar":
                 result = search_google_scholar(**args)
             else:
                 result = json.dumps({"error": "unknown tool"})
 
             # 把『模型发的调用』和『工具返回』都追加进上下文
-            messages.append(msg)          # assistant 那条（含 tool_calls）
+            # messages.append(msg)          # assistant 那条（含 tool_calls）
+
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.id,

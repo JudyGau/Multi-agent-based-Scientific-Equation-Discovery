@@ -5,6 +5,10 @@ import requests
 import os
 from tqdm import tqdm
 
+import fitz  # PyMuPDF
+
+from drsr_420.tools.search_seper import search_google_scholar
+
 # ── 客户端 ──────────────────────────────────────────────
 deepseek = OpenAI(
     api_key="sk-3970c8c4922f49fd89761fe3ad4a5eb5",
@@ -15,7 +19,7 @@ SERPER_KEY = "ac28c1aac4d446f3de5c8e79ea6d406727509455"
 
 
 # ── 工具 2：web visit ───────────────────────
-def read_paper(pdf_links, save_dir="pdf_downloads") :
+def read_paper(pdf_url:str, title: str, save_dir="pdf_downloads") :
     """
     调 Serper 的 WebPage API，
     返回『已摘选结构化』的 JSON 字符串，方便模型消费。
@@ -91,7 +95,7 @@ def read_paper(pdf_links, save_dir="pdf_downloads") :
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
 
-    for title, pdf_url in tqdm(pdf_links, desc="下载PDF（代理版）"):
+    for title, pdf_url in tqdm([(title,pdf_url)], desc="下载PDF（代理版）"):
         try:
             # 使用代理发送请求
             response = requests.get(
@@ -112,6 +116,16 @@ def read_paper(pdf_links, save_dir="pdf_downloads") :
                 with open(file_path, "wb") as f:
                     for chunk in response.iter_content(1024):
                         f.write(chunk)
+
+                doc = fitz.open(file_path)
+                full_text = ""
+                for page_num in range(doc.page_count):
+                    page = doc.load_page(page_num)
+                    text = page.get_text()
+                    full_text += f"\n--- Page {page_num + 1} ---\n{text}"
+                doc.close()
+                return full_text
+
             else:
                 print(f"下载失败: {title} | 状态码: {response.status_code} | URL: {pdf_url}")
         except requests.exceptions.RequestException as e:
@@ -161,18 +175,39 @@ tools = [
                 "required": ["query"],
             },
         },
-    }
+    },
+{
+        "type": "function",
+        "function": {
+            "name": "read_paper",
+            "description": "根据论文的PDF链接来下载论文",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pdf_url": {
+                        "type": "string",
+                        "description": "论文pdf的url",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "论文名称，即要保存的pdf文件名称",
+                    },
+                },
+                "required": ["pdf_url", "title"],
+            },
+        },
+    },
 ]
 
 
 # ── Agent Loop ──────────────────────────────────────────
-def agent_run(user_query: str, model: str = "deepseek-chat"):
+def agent_run(user_query: str, model: str = "deepseek-v4-pro"):
     """
     deepseek-chat = V3.2 非思考模式
     deepseek-reasoner = V3.2 思考模式（tool call 时要回传 reasoning_content，见下方提示）
     """
     messages = [
-        {"role": "system", "content": "你是一个学术辅助助手，擅长用 Google Scholar 检索论文并做综述。"},
+        {"role": "system", "content": "你是一个学术辅助助手，擅长用 Google Scholar 检索论文并下载以及做综述。"},
         {"role": "user", "content": user_query},
     ]
 
@@ -185,31 +220,76 @@ def agent_run(user_query: str, model: str = "deepseek-chat"):
     )
     msg = resp.choices[0].message
 
-    # 如果模型发了 tool_calls
-    if msg.tool_calls:
-        for tc in msg.tool_calls:
-            fn_name = tc.function.name
-            args = json.loads(tc.function.arguments)
+    while True:
+        # print("========================思考过程========================\n")
+        # print(resp.get('reasoning_content', ''))
+        # print("====================================================\n")
 
-            if fn_name == "read_paper":
-                result = read_paper(**args)
-            else:
-                result = json.dumps({"error": "unknown tool"})
+        tool_calls = msg.tool_calls
+        messages.append(msg)
 
-            # 把『模型发的调用』和『工具返回』都追加进上下文
-            messages.append(msg)          # assistant 那条（含 tool_calls）
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tc.id,
-                "content": result,
-            })
+        # 如果调了 tool，执行后回传
+        if tool_calls:
+            print("调用了工具：", tool_calls)
 
-        # 第二轮：模型拿到 Scholar 结果后做自然语言回答
-        final = deepseek.chat.completions.create(
-            model=model,
-            messages=messages,
-        )
-        return final.choices[0].message.content
+            for tc in tool_calls:
+                fn_name = tc.function.name
+                args = json.loads(tc.function.arguments)
+                result = ""
+                if fn_name == "search_google_scholar":
+                    result = search_google_scholar(**args)
+                elif fn_name == "read_paper":
+                    result = read_paper(**args)
+                else:
+                    result = json.dumps({"error": "unknown tool"})
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": result
+                })
+
+            # 第二轮：模型拿到 Scholar 结果后做自然语言回答
+            resp = deepseek.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+            )
+            msg = resp.choices[0].message
+            # return final.choices[0].message.content
+        # 如果未调用，则跳出循环
+        else:
+            # responses.append(resp.get('content', ''))
+            # think_responses.append(resp.get('reasoning_content', ''))
+            return msg.content
+
+
+    # # 如果模型发了 tool_calls
+    # if msg.tool_calls:
+    #     for tc in msg.tool_calls:
+    #         fn_name = tc.function.name
+    #         args = json.loads(tc.function.arguments)
+    #
+    #         if fn_name == "read_paper":
+    #             result = read_paper(**args)
+    #         else:
+    #             result = json.dumps({"error": "unknown tool"})
+    #
+    #         # 把『模型发的调用』和『工具返回』都追加进上下文
+    #         messages.append(msg)          # assistant 那条（含 tool_calls）
+    #         messages.append({
+    #             "role": "tool",
+    #             "tool_call_id": tc.id,
+    #             "content": result,
+    #         })
+    #
+    #     # 第二轮：模型拿到 Scholar 结果后做自然语言回答
+    #     final = deepseek.chat.completions.create(
+    #         model=model,
+    #         messages=messages,
+    #     )
+    #     return final.choices[0].message.content
 
     # 没触发工具，直接答
     return msg.content
@@ -221,6 +301,7 @@ if __name__ == "__main__":
     # answer = agent_run(q)
     # print("\n🧠 DeepSeek 回答：\n")
     # print(answer)
-    # pdf_links = fetch_pdf_links_from_arxiv(max_results=5)
+
+
     pdf_links="https://ieeexplore.ieee.org/stampPDF/getPDF.jsp?tp=&arnumber=11323465"
     read_paper([("LLMSR", pdf_links)])
