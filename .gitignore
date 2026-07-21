@@ -3,3 +3,4 @@ results
 llm.config
 *.config
 experiments
+/drsr_420/tools/pdf_downloads/
