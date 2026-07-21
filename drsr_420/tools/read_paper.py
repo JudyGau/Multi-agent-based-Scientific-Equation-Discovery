@@ -180,7 +180,7 @@ tools = [
         "type": "function",
         "function": {
             "name": "read_paper",
-            "description": "根据论文的PDF链接来下载论文",
+            "description": "根据论文的PDF链接来下载论文并获取论文内容",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -297,11 +297,11 @@ def agent_run(user_query: str, model: str = "deepseek-v4-pro"):
 
 # ── 试运行 ──────────────────────────────────────────────
 if __name__ == "__main__":
-    # q = "Apple Inc 营销战略 学术论文"
-    # answer = agent_run(q)
-    # print("\n🧠 DeepSeek 回答：\n")
-    # print(answer)
+    q = "Apple Inc 营销战略, 请查找并阅读以上关键词的学术论文，最后给出综述"
+    answer = agent_run(q)
+    print("\n🧠 DeepSeek 回答：\n")
+    print(answer)
 
 
-    pdf_links="https://ieeexplore.ieee.org/stampPDF/getPDF.jsp?tp=&arnumber=11323465"
-    read_paper([("LLMSR", pdf_links)])
+    # pdf_links="https://ieeexplore.ieee.org/stampPDF/getPDF.jsp?tp=&arnumber=11323465"
+    # read_paper(pdf_links,"LLMSR")
