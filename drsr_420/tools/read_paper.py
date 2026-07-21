@@ -1,7 +1,9 @@
-import os
 import json
 import http.client
 from openai import OpenAI
+import requests
+import os
+from tqdm import tqdm
 
 # ── 客户端 ──────────────────────────────────────────────
 deepseek = OpenAI(
@@ -13,25 +15,58 @@ SERPER_KEY = "ac28c1aac4d446f3de5c8e79ea6d406727509455"
 
 
 # ── 工具 2：web visit ───────────────────────
-def web_visit(url: str) -> str:
+def read_paper(pdf_links, save_dir="pdf_downloads") :
     """
     调 Serper 的 WebPage API，
     返回『已摘选结构化』的 JSON 字符串，方便模型消费。
     """
-    conn = http.client.HTTPSConnection("scrape.serper.dev")
-    payload = json.dumps({"url": url})
-    headers = {
-        "X-API-KEY": SERPER_KEY,
-        "Content-Type": "application/json",
-    }
-    conn.request("POST", "/scholar", payload, headers)
-    resp = conn.getresponse()
-    if resp.status != 200:
-        raise RuntimeError(f"Serper 报错: {resp.status}")
-    raw = json.loads(resp.read().decode())
+    """下载PDF文件并保存到本地（使用代理）"""
+    # 代理配置
+    proxyHost = "www.16yun.cn"
+    proxyPort = "5445"
+    proxyUser = "16QMSOML"
+    proxyPass = "280651"
 
-    text = raw.get("text","")
-    print(f"网页{url}的内容为\n", text)
+    # 构造代理字典
+    proxies = {
+        "http": f"http://{proxyUser}:{proxyPass}@{proxyHost}:{proxyPort}",
+        "https": f"http://{proxyUser}:{proxyPass}@{proxyHost}:{proxyPort}"
+    }
+
+    # 请求头设置
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+
+    for title, pdf_url in tqdm(pdf_links, desc="下载PDF（代理版）"):
+        try:
+            # 使用代理发送请求
+            response = requests.get(
+                pdf_url,
+                stream=True,
+                proxies=proxies,
+                headers=headers,
+                timeout=30  # 设置超时时间
+            )
+
+            if response.status_code == 200:
+                # 替换文件名中的非法字符
+                safe_title = "".join(c if c.isalnum() else "_" for c in title)
+                file_path = os.path.join(save_dir, f"{safe_title}.pdf")
+
+                # 分块写入文件
+                with open(file_path, "wb") as f:
+                    for chunk in response.iter_content(1024):
+                        f.write(chunk)
+            else:
+                print(f"下载失败: {title} | 状态码: {response.status_code} | URL: {pdf_url}")
+        except requests.exceptions.RequestException as e:
+            print(f"请求异常: {title} | 错误: {e}")
+        except Exception as e:
+            print(f"未知错误: {title} | 错误: {e}")
 
 
 
@@ -105,8 +140,8 @@ def agent_run(user_query: str, model: str = "deepseek-chat"):
             fn_name = tc.function.name
             args = json.loads(tc.function.arguments)
 
-            if fn_name == "google_scholar":
-                result = search_google_scholar(**args)
+            if fn_name == "read_paper":
+                result = read_paper(**args)
             else:
                 result = json.dumps({"error": "unknown tool"})
 
@@ -131,7 +166,10 @@ def agent_run(user_query: str, model: str = "deepseek-chat"):
 
 # ── 试运行 ──────────────────────────────────────────────
 if __name__ == "__main__":
-    q = "Apple Inc 营销战略 学术论文"
-    answer = agent_run(q)
-    print("\n🧠 DeepSeek 回答：\n")
-    print(answer)
+    # q = "Apple Inc 营销战略 学术论文"
+    # answer = agent_run(q)
+    # print("\n🧠 DeepSeek 回答：\n")
+    # print(answer)
+    # pdf_links = fetch_pdf_links_from_arxiv(max_results=5)
+    pdf_links=""
+    read_paper(pdf_links)
