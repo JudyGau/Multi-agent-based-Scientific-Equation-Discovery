@@ -72,7 +72,33 @@ tools = [
                 "required": ["query"],
             },
         },
-    }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_paper",
+            "description": "根据论文的PDF链接来下载论文并获取论文内容",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title_url": {
+                        "type": "array",
+                        "items": {
+                            "type": "array",
+                            "minItems": 2,
+                            "maxItems": 2,
+                            "items": [
+                                {"type": "string"},
+                                {"type": "string"}
+                            ]
+                        },
+                        "description": "A list of (paper_title, pdf_url) string pairs."
+                    }
+                },
+                "required": ["pairs"]
+            },
+        },
+    },
 ]
 
 
