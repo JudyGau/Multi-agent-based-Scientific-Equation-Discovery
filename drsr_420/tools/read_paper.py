@@ -19,7 +19,7 @@ SERPER_KEY = "ac28c1aac4d446f3de5c8e79ea6d406727509455"
 
 
 # ── 工具 2：web visit ───────────────────────
-def read_paper(pdf_url:str, title: str, save_dir="pdf_downloads") :
+def read_paper(title_url: list[tuple[str, str]], save_dir="pdf_downloads") -> str :
     """
     调 Serper 的 WebPage API，
     返回『已摘选结构化』的 JSON 字符串，方便模型消费。
@@ -31,11 +31,11 @@ def read_paper(pdf_url:str, title: str, save_dir="pdf_downloads") :
     proxyUser = "16QMSOML"
     proxyPass = "280651"
 
-    # 构造代理字典
-    proxies = {
-        "http": f"http://{proxyUser}:{proxyPass}@{proxyHost}:{proxyPort}",
-        "https": f"http://{proxyUser}:{proxyPass}@{proxyHost}:{proxyPort}"
-    }
+    # # 构造代理字典
+    # proxies = {
+    #     "http": f"http://{proxyUser}:{proxyPass}@{proxyHost}:{proxyPort}",
+    #     "https": f"http://{proxyUser}:{proxyPass}@{proxyHost}:{proxyPort}"
+    # }
 
     # 请求头设置
     headers = {
@@ -95,7 +95,9 @@ def read_paper(pdf_url:str, title: str, save_dir="pdf_downloads") :
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
 
-    for title, pdf_url in tqdm([(title,pdf_url)], desc="下载PDF（代理版）"):
+    textlist = []
+
+    for title, pdf_url in tqdm(title_url, desc="下载PDF（代理版）"):
         try:
             # 使用代理发送请求
             response = requests.get(
@@ -124,7 +126,7 @@ def read_paper(pdf_url:str, title: str, save_dir="pdf_downloads") :
                     text = page.get_text()
                     full_text += f"\n--- Page {page_num + 1} ---\n{text}"
                 doc.close()
-                return full_text
+                textlist.append(full_text)
 
             else:
                 print(f"下载失败: {title} | 状态码: {response.status_code} | URL: {pdf_url}")
@@ -132,6 +134,8 @@ def read_paper(pdf_url:str, title: str, save_dir="pdf_downloads") :
             print(f"请求异常: {title} | 错误: {e}")
         except Exception as e:
             print(f"未知错误: {title} | 错误: {e}")
+
+    return json.dumps(textlist)
 
 
 
@@ -184,16 +188,12 @@ tools = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "pdf_url": {
-                        "type": "string",
-                        "description": "论文pdf的url",
-                    },
-                    "title": {
-                        "type": "string",
-                        "description": "论文名称，即要保存的pdf文件名称",
+                    "title_url": {
+                        "type": "list[tuple[str, str]]",
+                        "description": "论文pdf名称和链接构成的元组，多个论文元组构成了列表",
                     },
                 },
-                "required": ["pdf_url", "title"],
+                "required": ["title_url"],
             },
         },
     },
@@ -263,36 +263,6 @@ def agent_run(user_query: str, model: str = "deepseek-v4-pro"):
             # responses.append(resp.get('content', ''))
             # think_responses.append(resp.get('reasoning_content', ''))
             return msg.content
-
-
-    # # 如果模型发了 tool_calls
-    # if msg.tool_calls:
-    #     for tc in msg.tool_calls:
-    #         fn_name = tc.function.name
-    #         args = json.loads(tc.function.arguments)
-    #
-    #         if fn_name == "read_paper":
-    #             result = read_paper(**args)
-    #         else:
-    #             result = json.dumps({"error": "unknown tool"})
-    #
-    #         # 把『模型发的调用』和『工具返回』都追加进上下文
-    #         messages.append(msg)          # assistant 那条（含 tool_calls）
-    #         messages.append({
-    #             "role": "tool",
-    #             "tool_call_id": tc.id,
-    #             "content": result,
-    #         })
-    #
-    #     # 第二轮：模型拿到 Scholar 结果后做自然语言回答
-    #     final = deepseek.chat.completions.create(
-    #         model=model,
-    #         messages=messages,
-    #     )
-    #     return final.choices[0].message.content
-
-    # 没触发工具，直接答
-    return msg.content
 
 
 # ── 试运行 ──────────────────────────────────────────────
