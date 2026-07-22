@@ -31,6 +31,7 @@ import http.client
 import os
 import traceback
 from drsr_420 import prompt_config as pc
+from drsr_420.tools.read_paper import read_paper
 from drsr_420.tools.search_seper import search_google_scholar
 from llm import LLMClient
 
@@ -942,6 +943,8 @@ class LocalLLM(LLM):
 
                             if fn_name == "search_google_scholar":
                                 result = search_google_scholar(**args)
+                            elif fn_name == "read_paper":
+                                result = read_paper(**args)
                             else:
                                 result = json.dumps({"error": "unknown tool"})
 

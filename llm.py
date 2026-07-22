@@ -2,8 +2,8 @@ import json
 import os
 import time
 
-from drsr_420.tools.search_literature import search_literature
-from drsr_420.tools.search_seper import search_google_scholar, tools
+# from drsr_420.tools.search_literature import search_literature
+from drsr_420.tools.tools_description import tools
 
 """统一的 LLM 客户端封装。
 
