@@ -4,7 +4,7 @@ from openai import OpenAI
 import requests
 import os
 from tqdm import tqdm
-from tools_description import tools
+from drsr_420.tools.tools_description import tools
 
 import fitz  # PyMuPDF
 
