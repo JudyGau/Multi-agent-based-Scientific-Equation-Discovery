@@ -25,11 +25,11 @@ def read_paper(title_url: list[tuple[str, str]], save_dir="pdf_downloads") -> st
     返回『已摘选结构化』的 JSON 字符串，方便模型消费。
     """
     """下载PDF文件并保存到本地（使用代理）"""
-    # 代理配置
-    proxyHost = "www.16yun.cn"
-    proxyPort = "5445"
-    proxyUser = "16QMSOML"
-    proxyPass = "280651"
+    # # 代理配置
+    # proxyHost = "www.16yun.cn"
+    # proxyPort = "5445"
+    # proxyUser = "16QMSOML"
+    # proxyPass = "280651"
 
     # # 构造代理字典
     # proxies = {
@@ -188,12 +188,21 @@ tools = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "title_url": {
-                        "type": "list[tuple[str, str]]",
-                        "description": "论文pdf名称和链接构成的元组，多个论文元组构成了列表",
-                    },
+                    "pairs": {
+                        "type": "array",
+                        "items": {
+                            "type": "array",
+                            "minItems": 2,
+                            "maxItems": 2,
+                            "items": [
+                                {"type": "string"},
+                                {"type": "string"}
+                            ]
+                        },
+                        "description": "A list of (paper_title, pdf_url) string pairs."
+                    }
                 },
-                "required": ["title_url"],
+                "required": ["pairs"]
             },
         },
     },
