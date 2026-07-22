@@ -878,7 +878,7 @@ class LocalLLM(LLM):
                         print("====================================================\n")
 
                         tool_calls = resp.get('tool_calls', [])
-                        messages.append({"role":"assistant","content": "","tool_calls":tool_calls})
+                        messages.append({"role":"assistant","content": resp.get('content',''),"tool_calls":tool_calls})
 
                         # 如果调了 tool，执行后回传
                         if tool_calls:
@@ -890,6 +890,8 @@ class LocalLLM(LLM):
                                 result=""
                                 if fn_name == "search_google_scholar":
                                     result = search_google_scholar(**args)
+                                elif fn_name == "read_paper":
+                                    result = read_paper(**args)
                                 else:
                                     result = json.dumps({"error": "unknown tool"})
 
