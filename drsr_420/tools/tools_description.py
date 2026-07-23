@@ -44,7 +44,7 @@ tools = [
                         "description": "A list of (paper_title, pdf_url) string pairs."
                     }
                 },
-                "required": ["pairs"]
+                "required": ["title_url"],
             },
         },
     },
