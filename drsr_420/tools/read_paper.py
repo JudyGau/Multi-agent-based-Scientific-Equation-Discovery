@@ -111,6 +111,7 @@ def read_paper(title_url: list[tuple[str, str]], save_dir="pdf_downloads") -> st
             )
 
             if response.status_code == 200:
+                print(f"下载成功: title_url {(title, pdf_url)} | 状态码: {response.status_code}")
                 # 替换文件名中的非法字符
                 safe_title = "".join(c if c.isalnum() else "_" for c in title)
                 file_path = os.path.join(save_dir, f"{safe_title}.pdf")
@@ -120,6 +121,8 @@ def read_paper(title_url: list[tuple[str, str]], save_dir="pdf_downloads") -> st
                     for chunk in response.iter_content(1024):
                         f.write(chunk)
 
+                print(f"文件保存成功: {file_path}")
+
                 doc = fitz.open(file_path)
                 full_text = ""
                 for page_num in range(doc.page_count):
@@ -127,6 +130,7 @@ def read_paper(title_url: list[tuple[str, str]], save_dir="pdf_downloads") -> st
                     text = page.get_text()
                     full_text += f"\n--- Page {page_num + 1} ---\n{text}"
                 doc.close()
+                print(f"文件读取成功: {file_path}")
                 textlist.append(full_text)
 
             else:
