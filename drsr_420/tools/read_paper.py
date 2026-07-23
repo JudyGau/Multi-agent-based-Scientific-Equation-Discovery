@@ -40,9 +40,9 @@ def read_paper(title_url: list[tuple[str, str]], save_dir="pdf_downloads") -> st
 
     # 请求头设置
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
         "Accept": "application/pdf,*/*",
-        "Accept-Language": "zh-CN,zh;q=0.9",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     }
 
 #     cookies ={
