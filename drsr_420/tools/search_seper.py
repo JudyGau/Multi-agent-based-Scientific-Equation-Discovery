@@ -38,6 +38,7 @@ def search_google_scholar(query: str, num: int = 10) -> str:
     # 只留 organic 里有用的字段（跟上一轮你贴的结构对齐）
     cleaned = []
     for item in raw.get("organic", []):
+
         print(item+'\n')
 
         cleaned.append({
