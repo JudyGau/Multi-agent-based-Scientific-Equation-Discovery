@@ -100,7 +100,7 @@ def read_paper(title_url: list[tuple[str, str]], save_dir="pdf_downloads") -> st
 
     for title, pdf_url in tqdm(title_url, desc="下载PDF（代理版）"):
         try:
-            pdf_url = "https://wvpn.ustc.edu.cn/" + pdf_url
+            # pdf_url = "https://wvpn.ustc.edu.cn/" + pdf_url
             # 发送请求
             response = requests.get(
                 pdf_url,
