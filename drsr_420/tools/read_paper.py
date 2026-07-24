@@ -106,7 +106,7 @@ def read_paper(title_url: list[tuple[str, str]], save_dir="pdf_downloads") -> st
                 pdf_url = None
 
                 # 方法 A：找 <iframe id="pdf" src="...">
-                meta = soup.find("meta", name="citation_pdf_url")
+                meta = soup.find("meta", attrs={"name": "citation_pdf_url"})
                 if meta and meta.get("content"):
                     pdf_url = meta["content"]
                     print(f"找到 meta name = citation_pdf_url, content = {pdf_url}")
@@ -132,9 +132,10 @@ def read_paper(title_url: list[tuple[str, str]], save_dir="pdf_downloads") -> st
             else:
                 print(f"下载失败: title_url {(title, pdf_url)} | 状态码: {response.status_code}")
                 textlist.append(f"下载失败: title_url {(title, pdf_url)} | 状态码: {response.status_code}")
+                continue
 
             response = requests.get(
-                "https://sci-hub.st/storage"+ pdf_url,
+                "https://sci-hub.st"+ pdf_url,
                 stream=True,
                 # impersonate="chrome120",  # 关键：TLS 指纹伪装
                 # proxies=proxies,
