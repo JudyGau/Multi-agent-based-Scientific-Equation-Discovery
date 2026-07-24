@@ -39,7 +39,7 @@ def search_google_scholar(query: str, num: int = 10) -> str:
     cleaned = []
     for item in raw.get("organic", []):
 
-        print(item+'\n')
+        print(item,'\n')
 
         cleaned.append({
             "title": item.get("title"),
@@ -48,7 +48,7 @@ def search_google_scholar(query: str, num: int = 10) -> str:
             "snippet": item.get("snippet"),
             "year": item.get("year"),
             "citedBy": item.get("citedBy"),
-            "pdfUrl": item.get("pdfUrl"),
+            # "pdfUrl": item.get("pdfUrl"),
         })
 
 

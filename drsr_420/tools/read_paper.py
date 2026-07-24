@@ -1,5 +1,7 @@
 import json
 import http.client
+import re
+from bs4 import BeautifulSoup
 from openai import OpenAI
 import requests
 import os
@@ -40,58 +42,37 @@ def read_paper(title_url: list[tuple[str, str]], save_dir="pdf_downloads") -> st
 
     # 请求头设置
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-        "Accept": "application/pdf,*/*",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'accept-language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7,es-ES;q=0.6,es;q=0.5',
+        'cache-control': 'no-cache',
+        'pragma': 'no-cache',
+        'priority': 'u=0, i',
+        'sec-ch-ua': '"Not;A=Brand";v="8", "Chromium";v="150", "Microsoft Edge";v="150"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"Windows"',
+        'sec-fetch-dest': 'document',
+        'sec-fetch-mode': 'navigate',
+        'sec-fetch-site': 'none',
+        'sec-fetch-user': '?1',
+        'upgrade-insecure-requests': '1',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0',
     }
 
-#     cookies ={
-#   "s_vi": "[CS]v1|3463D79773E0912A-400003FCC1B1A0D2[CE]",
-#   "hum_ieee_visitor": "7cab1e44-a5d9-4a77-8c69-2315820466bc",
-#   "hum_ieee_synced": "true",
-#   "s_fid": "0876A2DB3BA51B53-342C7B93A1910DE1",
-#   "fp": "e851336aaf80621e1915798301ce5149",
-#   "_cc_id": "8ba6422457dfb8a120d79665a72ebb8a",
-#   "__utma": "98802054.1345855402.1764297584.1764297594.1764297594.1",
-#   "_uetvid": "863bd130cc0311f09396559c592cfca6",
-#   "_ga_DRSMCND71P": "GS2.1.s1764297594$o1$g0$t1764297647$j7$l0$h0",
-#   "_ga_W7T9YQJQXP": "GS2.1.s1764297594$o1$g0$t1764297647$j7$l0$h0",
-#   "_ga_H0YHKP362D": "GS2.1.s1764297595$o1$g0$t1764297647$j8$l0$h0",
-#   "_ga_HNLQ4ZWTQN": "GS2.1.s1764297595$o1$g0$t1764297647$j8$l0$h0",
-#   "_ga_DGBMH9NVB4": "GS2.1.s1764297595$o1$g0$t1764297647$j8$l0$h0",
-#   "_ga_RN78LDXHRB": "GS2.1.s1764297595$o1$g0$t1764297647$j8$l0$h0",
-#   "cf_clearance": "Jjs9YtW3qZlxKKlEJLkKvtkQBvp8FqKlwuVR5SHlVpQ-1764919535-1.2.1.1-DtC0eYAe_lK4cUJbpbpac__8nJTRKn6wEKJW922tr6__IjkjTUx_OAoakqjVOSnfr._bJpo0qjK4Rx.AYfMqTPiQdiHgu_DPXUNixy0yXmNSx4R5ZUy2iefb4Ty70PxZtSTigBn.moWr_ZDnhK8ktYrg49kK1tG_X9HkitFQTVeqcmcSLUUL3i2s7ZdQKuHrkJ_rgD7wmqHpyOp7LSuDgFDDXksI9PjNU3d8HI_sEJg",
-#   "_ga": "GA1.1.1345855402.1764297584",
-#   "_ga_YFS85CFJD1": "GS2.1.s1764919573$o2$g1$t1764919647$j60$l0$h0",
-#   "utag_main": "v_id:01994c0453b3002111470324b0fa0607d002b07500bd0$_sn:25$_se:6$_ss:0$_st:1769945261163$vapi_domain:ieeexplore.ieee.org$ses_id:1769942826782%3Bexp-session$_pn:4%3Bexp-session",
-#   "_pubcid": "1c405103-f24c-403a-9a2d-de4558dcaaef",
-#   "cto_bundle": "NoUrX19DT28lMkZZWjJQV2dnWU11bVBoUGhHNFZmSXBYVmlCd05tdXgxeXc5Mndza3c4Tkp6OHEwQ2VoOUNsUFIxUUc5Sm1JNGolMkJVJTJCVHJxQ1FJaDZjcGp1NjlHNGI1dkJzY1k2V0NPS3dYZ0FQQmJTRkhzTG1tRFg0Z3paMVh0R2JMNHZjUm51dmxFeHFyY1ZrWGljSFlMZmduV0ElM0QlM0Q",
-#   "JSESSIONID": "13E7F53A36A18CBA4337B7EAB64A4852",
-#   "AWSALBAPP-1": "_remove_",
-#   "AWSALBAPP-2": "_remove_",
-#   "AWSALBAPP-3": "_remove_",
-#   "WLSESSION": "1862564874.47873.0000",
-#   "connectId": "{\"ttl\":86400000,\"lastUsed\":1784618118117,\"lastSynced\":1784618118117}",
-#   "kndctr_8E929CC25A1FB2B30A495C97_AdobeOrg_identity": "CiY0OTY2ODU0OTIzNjQ2MzU0MjUyMDExNDg5MDEwMzMxMzE4MDI0NlITCLTUl%2DCUMxABGAEqBFNHUDMwAPABk%2D7FnPgz",
-#   "kndctr_8E929CC25A1FB2B30A495C97_AdobeOrg_cluster": "sgp3",
-#   "aws-waf-token": "a1390621-1884-4ff0-9208-479df7d34192:BgoAhlg1GmcxAAAA:pOMAUNyC9ZToh2TlV295dhTwML05qHYU1jvJEP8iZmeWsmESvQ1yd7RDn+SgZadGVmFoeQMuxD99hkMgf533eoXL7Q+0VPzHxjMswlNxb1aBOaC9ymZ8mYmL5dRhVNmCF8Zbjv40+FUOTBYkpfEKwNazygQ9EWGwX1IPxk3UlSoTlTt8zwy1GFS3pdcPruuubc+Kej9uxuvTtxY8luvzOmI+l0xgyXKF0d8C3mFw8Xs747ZE7MQoCx/7i3psEMU/GbrUSW8/nTuG4Q7Ucw==",
-#   "osano_consentmanager_uuid": "20894156-6f86-49c6-a7d0-d64ab154ee76",
-#   "osano_consentmanager": "2PUVui_86VbpH51zEUO4AafeL_qcSxOexEKYum6pFzC0FNilzrAR_0Xo3mgFEwIlag7-QzYzOAFEKXrWsLUu1_FsjTIlk4HKaklIaztpJLymM-lpgHElA0bRa1jR5cKmitxxi1kjygPNWQ6qOupAVCPGP84mE2b4_Ua58l6jkXIxVItm3qVQ-CIJIYrRwAwGxdKh-PWX_-quXzMR9o8sv18h0hGf_zWixzOj70od3RsG7ji4JgOq6kg38wI2Aqyr9EHskEfNcCkJo4qeqtHGB0CD9crlAVVcLYv3O9y18kzXjtraEsBiuCaaUAIdvuGyXsQYD7v48sE=",
-#   "Adobe_ECID": "49668549236463542520114890103313180246",
-#   "CloudFront-Key-Pair-Id": "K3QZ9FJ2U3AXO0",
-#   "ERIGHTS": "x2Br2pxxVEar6mQtuQyObAB8zAC17uJERUT*4ByydUz7q75tfwJ8Ju5W1qWoTKPdKzx2BOEvqgSxxWUdSJCXJx2FUfmpzfgx3Dx3D-18x2dMDekTM6ENPt3geRSFgJRRwx3Dx3DTcx2B7NDAgOgPED4bsnhGoJwx3Dx3D-jx2BRQwhN8kR0ULj2Bg18o7wx3Dx3D-aYGmYjfNQx2BBNju7DgYWNLgx3Dx3D",
-#   "ipList": "\"2001:da8:d800:4aec:bcbd:870f:7ae:ae49,2001:da8:d800:91de:b16c:c3d2:af23:41bc\"",
-#   "__gads": "ID=b8b7cabb221ed276:T=1757917084:RT=1784621156:S=ALNI_MZUZtPw9nnvDozlFiSRNjCtWZwnDQ",
-#   "__gpi": "UID=00001141cbe2e7f4:T=1757917084:RT=1784621156:S=ALNI_MbZSn0X6EoO-_AlhAJSc4nZgWrfFg",
-#   "__eoi": "ID=f36122221f7a8660:T=1784618771:RT=1784621156:S=AA-AfjaQYsJlAMwJlujCsLbpl7dw",
-#   "CloudFront-Policy": "eyJTdGF0ZW1lbnQiOiBbeyJSZXNvdXJjZSI6Imh0dHBzOi8vaWVlZXhwbG9yZS5pZWVlLm9yZy9tZWRpYXN0b3JlL0lFRUUvY29udGVudC9tZWRpYS8xMTMyMjgwOC8xMTMyMzI1My8xMTMyMzQ2NS8qIiwiQ29uZGl0aW9uIjp7IkRhdGVMZXNzVGhhbiI6eyJBV1M6RXBvY2hUaW1lIjoxNzg0NjIzMDY1fSwiSXBBZGRyZXNzIjp7IkFXUzpTb3VyY2VJcCI6IjIwMDE6ZGE4OmQ4MDA6OTFkZTpiMTZjOmMzZDI6YWYyMzo0MWJjIn19fV19",
-#   "CloudFront-Signature": "fjiwRHDwL5inB7LldnnWS3j63066YJpkK-rTg-IJA49gUsCS1wSUE6ctgoBhxZUTg~KpTD9N~XMVlyEepjYfarEoM0RAP7ABZ1KhBwMYn6maH2dGGhNIEeH5yyY2bn22De3rBfPrze0A-1I4G9R2h02E5gNMke0F5IGE9i~l83j4zopn4NtABzakO~5x~htALjNpLyZoZpgn83JTFR5oTUAN2zC550GOFqoiUpGbK04HpEgxEEWxwyzkdQN-79CMgcXI01mdC3Fh-5dVzHzyCG5UL~gxfH58keIXwk5IvlCmIK~XDvpmAYV9bSIa-f8dpNgAWxnv6IWDG~y8RV3WHQ__",
-#   "xpluserinfo": "eyJpc0luc3QiOiJ0cnVlIiwiaW5zdE5hbWUiOiJVbml2ZXJzaXR5IG9mIFNjaWVuY2UgJiBUZWNobm9sb2d5IG9mIENoaW5hIiwicHJvZHVjdHMiOiJJQk06MTg3MjoyMDIwfElFTHxWREV8Tk9LSUEgQkVMTCBMQUJTfCJ9",
-#   "seqId": "8875",
-#   "AWSALBAPP-0": "AAAAAAAAAABLSpDZWO4NGpH/wjSVjTHEvr+YD2Ya8msOXSpWo2zGvwoF/PFwuV4/yKQ37n2llfWk58IUj03DBCtLSnNrXgt4PKW+nol/zGFiSvcNH5Hf3+QLq2xOc+PZdv4tBYOmMRSh7UXibCgjmKEAtCslkooBEZLwo2PEkoCgDEnCywgpsNd/xi+EeLyQVef2CnRuzrLA+t+kq+5JFQ==",
-#   "TS016349ac": "01f15fc87c87c4ecd0b70a157ad0d183b09e1e20db84bbc097090e805dda3ee488faaf6fc19036cbd4fbff5f2a31a5830fd52e0bf3",
-#   "TS8b476361027": "0807dc117eab2000bdcf094a77f0846ed7a42c6a956112e1287b774f227a98462e04545c960eb5c408adadfd0b1130006fc7b8c9b7b9360543f363be5d067efeb9ee2ed0d8c75c79c2b54c6f1c4b76ce36d317597b00b197d42a09aab3d987b1"
-# }
+    cookies = {
+        '__ddgid_': 'ifJHThZoCclQh7Xb',
+        '__ddg2_': 'E0OKMRIZMDuyo1DA',
+        '__ddg1_': 'XrbNjpRf24gdh6Zngg9x',
+        '__ddgmark_': 'QQUozRDUpKWhbW1a',
+        'session': '76a2e63503e1e0609c1b32dca810b4f5',
+        'refresh': '1784796304.9299',
+        'session': '76a2e63503e1e0609c1b32dca810b4f5',
+        'refresh': '1784796304.9305',
+        '__ddg9_': '210.45.118.7',
+        '__ddg5_': 'Nleqmf5URrhPyOLL',
+        'PHPSESSID': '217c33eecb13851160634129ab7d9396',
+        '__ddg8_': 'n5BALTtkm8YR3KBo',
+        '__ddg10_': '1784879941',
+    }
 
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
@@ -100,18 +81,70 @@ def read_paper(title_url: list[tuple[str, str]], save_dir="pdf_downloads") -> st
 
     for title, pdf_url in tqdm(title_url, desc="下载PDF"):
         try:
-            # pdf_url = "https://wvpn.ustc.edu.cn/" + pdf_url
+            pdf_url = "https://sci-hub.st/" + pdf_url
+            headers['referer'] = pdf_url
             # 发送请求
             response = requests.get(
                 pdf_url,
                 stream=True,
+                # impersonate="chrome120",  # 关键：TLS 指纹伪装
                 # proxies=proxies,
                 headers=headers,
-                # cookies=cookies,
+                cookies=cookies,
                 timeout=30  # 设置超时时间
             )
 
             if response.status_code == 200:
+                # 验证确实是 HTML
+                if "<html" not in response.text[:500].lower():
+                    print("[!] 返回的不是 HTML 页面，可能镜像失效或 DOI 未收录")
+                    print(f"    响应前 300 字符: {response.text[:300]}")
+                    # exit(1)
+
+                # ── 3. 解析 HTML，提取真实 PDF 地址 ──────────
+                soup = BeautifulSoup(response.text, "html.parser")
+                pdf_url = None
+
+                # 方法 A：找 <iframe id="pdf" src="...">
+                meta = soup.find("meta", name="citation_pdf_url")
+                if meta and meta.get("content"):
+                    pdf_url = meta["content"]
+                    print(f"找到 meta name = citation_pdf_url, content = {pdf_url}")
+
+                # # 方法 B：找 <embed type="application/pdf" src="...">
+                # if not pdf_url:
+                #     embed = soup.find("embed", attrs={"type": "application/pdf"})
+                #     if embed and embed.get("src"):
+                #         pdf_url = embed["src"]
+                #         print(f"[✓] 方法B 找到 embed: {pdf_url}")
+                #
+                # # 方法 C：正则兜底，匹配 //xxx.pdf 或 /xxx.pdf
+                # if not pdf_url:
+                #     m = re.search(r'(?:src=|href=)["\']((?:https?:)?//[^"\']+\.pdf)["\']', response.text, re.I)
+                #     if m:
+                #         pdf_url = m.group(1)
+                #         print(f"[✓] 方法C 正则匹配: {pdf_url}")
+
+                if not pdf_url:
+                    print("[!] 未找到 PDF 链接，页面结构可能已变化")
+                    print(f"    HTML 前 800 字符:\n{response.text[:800]}")
+                    # exit(1)
+            else:
+                print(f"下载失败: title_url {(title, pdf_url)} | 状态码: {response.status_code}")
+                textlist.append(f"下载失败: title_url {(title, pdf_url)} | 状态码: {response.status_code}")
+
+            response = requests.get(
+                "https://sci-hub.st/storage"+ pdf_url,
+                stream=True,
+                # impersonate="chrome120",  # 关键：TLS 指纹伪装
+                # proxies=proxies,
+                headers=headers,
+                cookies=cookies,
+                timeout=30  # 设置超时时间
+            )
+
+            if response.status_code == 200:
+
                 print(f"下载成功: title_url {(title, pdf_url)} | 状态码: {response.status_code}")
                 # 替换文件名中的非法字符
                 safe_title = "".join(c if c.isalnum() else "_" for c in title)
@@ -133,7 +166,6 @@ def read_paper(title_url: list[tuple[str, str]], save_dir="pdf_downloads") -> st
                 doc.close()
                 print(f"文件读取成功: {file_path}")
                 textlist.append(full_text)
-
             else:
                 print(f"下载失败: title_url {(title, pdf_url)} | 状态码: {response.status_code}")
                 textlist.append(f"下载失败: title_url {(title, pdf_url)} | 状态码: {response.status_code}")
