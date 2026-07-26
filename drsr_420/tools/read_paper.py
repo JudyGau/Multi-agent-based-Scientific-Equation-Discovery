@@ -134,8 +134,9 @@ def read_paper(title_url: list[tuple[str, str]], save_dir="pdf_downloads") -> st
                 textlist.append(f"下载失败: title_url {(title, pdf_url)} | 状态码: {response.status_code}")
                 continue
 
+            pdf_url = "https://sci-hub.st" + pdf_url
             response = requests.get(
-                "https://sci-hub.st"+ pdf_url,
+                pdf_url,
                 stream=True,
                 # impersonate="chrome120",  # 关键：TLS 指纹伪装
                 # proxies=proxies,
