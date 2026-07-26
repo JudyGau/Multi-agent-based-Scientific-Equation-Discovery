@@ -101,11 +101,11 @@ def read_paper(title_url: list[tuple[str, str]], save_dir="pdf_downloads") -> st
                     print(f"    响应前 300 字符: {response.text[:300]}")
                     # exit(1)
 
-                # ── 3. 解析 HTML，提取真实 PDF 地址 ──────────
+                # 解析 HTML，提取真实 PDF 地址 ──────────
                 soup = BeautifulSoup(response.text, "html.parser")
                 pdf_url = None
 
-                # 方法 A：找 <iframe id="pdf" src="...">
+                # 找到 <meta name="citation_pdf_url" content="...">
                 meta = soup.find("meta", attrs={"name": "citation_pdf_url"})
                 if meta and meta.get("content"):
                     pdf_url = meta["content"]
