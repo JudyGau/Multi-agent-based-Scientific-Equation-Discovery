@@ -37,6 +37,7 @@ def search_paper(query: str, num: int=10) -> str:
                         for a in it.get("author", [])[:5]]
         })
 
+    print(results)
     results = json.dumps(results, ensure_ascii=False)
     return results
 
