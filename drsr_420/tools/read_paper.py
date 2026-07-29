@@ -109,32 +109,25 @@ def read_paper(title_doi: list[tuple[str, str]], save_dir="pdf_downloads") -> st
                 meta = soup.find("meta", attrs={"name": "citation_pdf_url"})
                 if meta and meta.get("content"):
                     pdf_url = meta["content"]
+                    pdf_url = "https://sci-hub.st" + pdf_url
                     print(f"找到 meta name = citation_pdf_url, content = {pdf_url}")
 
-                # # 方法 B：找 <embed type="application/pdf" src="...">
-                # if not pdf_url:
-                #     embed = soup.find("embed", attrs={"type": "application/pdf"})
-                #     if embed and embed.get("src"):
-                #         pdf_url = embed["src"]
-                #         print(f"[✓] 方法B 找到 embed: {pdf_url}")
-                #
-                # # 方法 C：正则兜底，匹配 //xxx.pdf 或 /xxx.pdf
-                # if not pdf_url:
-                #     m = re.search(r'(?:src=|href=)["\']((?:https?:)?//[^"\']+\.pdf)["\']', response.text, re.I)
-                #     if m:
-                #         pdf_url = m.group(1)
-                #         print(f"[✓] 方法C 正则匹配: {pdf_url}")
+                if not pdf_url:
+                    a = soup.find("a", attrs={"translate": "zh:here"})
+                    if a and a.get("href"):
+                        pdf_url = a.get("href")
+                        print(f"找到 a translate = zh:here, href = {pdf_url}")
 
                 if not pdf_url:
                     print("[!] 未找到 PDF 链接，页面结构可能已变化")
-                    print(f"    HTML 前 800 字符:\n{response.text[:800]}")
+                    print(f"    HTML 字符:\n{response.text}")
                     # exit(1)
             else:
                 print(f"下载失败: title_url {(title, pdf_url)} | 状态码: {response.status_code}")
                 textlist.append(f"下载失败: title_url {(title, pdf_url)} | 状态码: {response.status_code}")
                 continue
 
-            pdf_url = "https://sci-hub.st" + pdf_url
+
             response = requests.get(
                 pdf_url,
                 stream=True,
