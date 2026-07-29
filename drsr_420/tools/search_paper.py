@@ -34,7 +34,8 @@ def search_paper_dois(query, rows=10, since_year="2020-01-01", mailto="you@examp
         })
     return results
 
-# 用法
-papers = search_paper_dois("Retrieval-Augmented Generation", rows=5)
-for p in papers:
-    print(f"{p['doi']}  |  {p['title'][:60]}  |  被引{p['citations']}")
+if __name__ == "__main__":
+    # 用法
+    papers = search_paper_dois("Retrieval-Augmented Generation", rows=5)
+    for p in papers:
+        print(f"{p['doi']}  |  {p['title'][:60]}  |  被引{p['citations']}")
