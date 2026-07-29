@@ -1,13 +1,13 @@
 import requests
 MAILTO = "zhuqg@mail.ustc.edu.cn"
 
-def search_paper_dois(query, rows=10, since_year="2020-01-01"):
+def search_paper(query, rows=10):
     """
     只返回期刊论文(journal-article)的 DOI 及核心元数据
     """
     params = {
         "query": query,
-        "filter": f"type:journal-article,from-pub-date:{since_year}",
+        "filter": "type:journal-article,type:proceedings-article,type:posted-content",  #包含期刊和会议论文，预印本，学术论文
         "sort": "is-referenced-by-count",
         "order": "desc",
         "rows": rows,
@@ -20,9 +20,10 @@ def search_paper_dois(query, rows=10, since_year="2020-01-01"):
 
     results = []
     for it in items:
-        # 进一步保险：双重校验 type 字段
-        if it.get("type") != "journal-article":
-            continue
+        # # 进一步保险：双重校验 type 字段
+        # if it.get("type") != "journal-article":
+        #     continue
+
         results.append({
             "doi": it.get("DOI"),
             "title": (it.get("title") or [""])[0],
@@ -37,6 +38,6 @@ def search_paper_dois(query, rows=10, since_year="2020-01-01"):
 
 if __name__ == "__main__":
     # 用法
-    papers = search_paper_dois("Retrieval-Augmented Generation", rows=5)
+    papers = search_paper("Retrieval-Augmented Generation", rows=5)
     for p in papers:
         print(f"{p['doi']}  |  {p['title'][:60]}  |  被引{p['citations']}")
