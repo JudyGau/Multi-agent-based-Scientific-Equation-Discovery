@@ -3,7 +3,7 @@ import json
 import requests
 MAILTO = "zhuqg@mail.ustc.edu.cn"
 
-def search_paper(query, rows=10):
+def search_paper(query: str, rows: int=10) -> str:
     """
     只返回期刊论文(journal-article)的 DOI 及核心元数据
     """
