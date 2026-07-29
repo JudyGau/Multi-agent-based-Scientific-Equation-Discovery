@@ -10,7 +10,7 @@ from drsr_420.tools.tools_description import tools
 
 import fitz  # PyMuPDF
 
-from drsr_420.tools.search_seper import search_google_scholar
+from drsr_420.tools.search_paper import search_paper
 
 # ── 客户端 ──────────────────────────────────────────────
 deepseek = OpenAI(
@@ -22,7 +22,7 @@ SERPER_KEY = "ac28c1aac4d446f3de5c8e79ea6d406727509455"
 
 
 # ── 工具 2：web visit ───────────────────────
-def read_paper(title_url: list[tuple[str, str]], save_dir="pdf_downloads") -> str :
+def read_paper(title_doi: list[tuple[str, str]], save_dir="pdf_downloads") -> str :
     """
     调 Serper 的 WebPage API，
     返回『已摘选结构化』的 JSON 字符串，方便模型消费。
@@ -79,7 +79,7 @@ def read_paper(title_url: list[tuple[str, str]], save_dir="pdf_downloads") -> st
 
     textlist = []
 
-    for title, pdf_url in tqdm(title_url, desc="下载PDF"):
+    for title, pdf_url in tqdm(title_doi, desc="下载PDF"):
         try:
             pdf_url = "https://sci-hub.st/" + pdf_url
             headers['referer'] = pdf_url
@@ -236,8 +236,8 @@ def agent_run(user_query: str, model: str = "deepseek-v4-pro"):
                 fn_name = tc.function.name
                 args = json.loads(tc.function.arguments)
                 result = ''
-                if fn_name == "search_google_scholar":
-                    result = search_google_scholar(**args)
+                if fn_name == "search_paper":
+                    result = search_paper(**args)
                 elif fn_name == "read_paper":
                     result = read_paper(**args)
                 else:

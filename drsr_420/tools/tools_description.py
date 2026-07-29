@@ -30,7 +30,7 @@ tools = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "title_url": {
+                    "title_doi": {
                         "type": "array",
                         "items": {
                             "type": "array",
@@ -41,10 +41,10 @@ tools = [
                                 {"type": "string"}
                             ]
                         },
-                        "description": "A list of (paper_title, url) string pairs."
+                        "description": "A list of (paper_title, doi) string pairs."
                     }
                 },
-                "required": ["title_url"],
+                "required": ["title_doi"],
             },
         },
     },
