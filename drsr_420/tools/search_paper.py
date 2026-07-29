@@ -1,3 +1,5 @@
+import json
+
 import requests
 MAILTO = "zhuqg@mail.ustc.edu.cn"
 
@@ -8,11 +10,11 @@ def search_paper(query, rows=10):
     params = {
         "query": query,
         "filter": "type:journal-article,type:proceedings-article,type:posted-content",  #包含期刊和会议论文，预印本，学术论文
-        "sort": "is-referenced-by-count",
+        # "sort": "is-referenced-by-count",
         "order": "desc",
         "rows": rows,
         "mailto": MAILTO,          # 进入 polite pool，更稳定
-        "select": "DOI,title,author,container-title,published-print,is-referenced-by-count"
+        "select": "DOI,URL,title,author,container-title,published-print,is-referenced-by-count,link"
     }
     r = requests.get("https://api.crossref.org/works", params=params, timeout=30)
     r.raise_for_status()
@@ -34,10 +36,12 @@ def search_paper(query, rows=10):
             "authors": [f"{a.get('given','')} {a.get('family','')}"
                         for a in it.get("author", [])[:5]]
         })
+
+    results = json.dumps(results, ensure_ascii=False)
     return results
 
 if __name__ == "__main__":
     # 用法
-    papers = search_paper("Retrieval-Augmented Generation", rows=5)
+    papers = search_paper("磁流变液", rows=20)
     for p in papers:
         print(f"{p['doi']}  |  {p['title'][:60]}  |  被引{p['citations']}")
