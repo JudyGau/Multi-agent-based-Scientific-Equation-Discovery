@@ -1,6 +1,7 @@
 import requests
+MAILTO = "zhuqg@mail.ustc.edu.cn"
 
-def search_paper_dois(query, rows=10, since_year="2020-01-01", mailto="you@example.com"):
+def search_paper_dois(query, rows=10, since_year="2020-01-01"):
     """
     只返回期刊论文(journal-article)的 DOI 及核心元数据
     """
@@ -10,7 +11,7 @@ def search_paper_dois(query, rows=10, since_year="2020-01-01", mailto="you@examp
         "sort": "is-referenced-by-count",
         "order": "desc",
         "rows": rows,
-        "mailto": mailto,          # 进入 polite pool，更稳定
+        "mailto": MAILTO,          # 进入 polite pool，更稳定
         "select": "DOI,title,author,container-title,published-print,is-referenced-by-count"
     }
     r = requests.get("https://api.crossref.org/works", params=params, timeout=30)
