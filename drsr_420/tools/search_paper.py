@@ -7,37 +7,21 @@ def search_paper(query: str, num: int=10) -> str:
     """
     只返回期刊论文(journal-article)的 DOI 及核心元数据
     """
-
-
-
     params = {
         "query": query,
-        "filter": "type:journal-article,type:proceedings-article,type:posted-content,is-oa:true",  #包含期刊和会议论文，预印本，学术论文
+        "filter": "type:journal-article,type:proceedings-article,type:posted-content",  #包含期刊和会议论文，预印本，学术论文
         # "sort": "is-referenced-by-count",
         "order": "desc",
         "rows": num,
         "mailto": MAILTO,          # 进入 polite pool，更稳定
-        "select": "DOI,URL,title,author,container-title,published-print,is-referenced-by-count,link"
+        "select": "DOI,URL,title,author,container-title,published-print,is-referenced-by-count,link,license"
     }
     r = requests.get("https://api.crossref.org/works", params=params, timeout=30)
     r.raise_for_status()
-    items1 = r.json()["message"]["items"]
-
-    params = {
-        "query": query,
-        "filter": "type:journal-article,type:proceedings-article,type:posted-content,is-oa:false",  # 包含期刊和会议论文，预印本，学术论文
-        # "sort": "is-referenced-by-count",
-        "order": "desc",
-        "rows": num,
-        "mailto": MAILTO,  # 进入 polite pool，更稳定
-        "select": "DOI,URL,title,author,container-title,published-print,is-referenced-by-count,link"
-    }
-    r = requests.get("https://api.crossref.org/works", params=params, timeout=30)
-    r.raise_for_status()
-    items2 = r.json()["message"]["items"]
+    items = r.json()["message"]["items"]
 
     results = []
-    for it in [items1, items2]:
+    for it in items:
         # # 进一步保险：双重校验 type 字段
         # if it.get("type") != "journal-article":
         #     continue
@@ -52,7 +36,6 @@ def search_paper(query: str, num: int=10) -> str:
             "authors": [f"{a.get('given','')} {a.get('family','')}"
                         for a in it.get("author", [])[:5]]
         })
-
 
     results = json.dumps(results, ensure_ascii=False)
     return results
