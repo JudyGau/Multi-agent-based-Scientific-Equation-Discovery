@@ -943,8 +943,8 @@ class LocalLLM(LLM):
 
                             result = ""
 
-                            if fn_name == "search_google_scholar":
-                                result = search_google_scholar(**args)
+                            if fn_name == "search_paper":
+                                result = search_paper(**args)
                             elif fn_name == "read_paper":
                                 result = read_paper(**args)
                             else:
