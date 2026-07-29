@@ -87,7 +87,7 @@ def read_paper(title_url: list[tuple[str, str]], save_dir="pdf_downloads") -> st
             response = requests.get(
                 pdf_url,
                 stream=True,
-                # impersonate="chrome120",  # 关键：TLS 指纹伪装
+                # impersonate="chrome120",
                 # proxies=proxies,
                 headers=headers,
                 cookies=cookies,
@@ -138,8 +138,7 @@ def read_paper(title_url: list[tuple[str, str]], save_dir="pdf_downloads") -> st
             response = requests.get(
                 pdf_url,
                 stream=True,
-                # impersonate="chrome120",  # 关键：TLS 指纹伪装
-                # proxies=proxies,
+                # impersonate="chrome120",
                 headers=headers,
                 cookies=cookies,
                 timeout=30  # 设置超时时间
