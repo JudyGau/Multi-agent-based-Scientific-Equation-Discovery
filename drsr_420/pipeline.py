@@ -18,7 +18,6 @@ from __future__ import annotations
 
 # from collections.abc import Sequence
 from typing import Any, Tuple, Sequence
-import os
 import numpy as np
 
 from drsr_420 import code_manipulation
@@ -28,6 +27,9 @@ from drsr_420 import buffer
 from drsr_420 import sampler
 from drsr_420 import profile
 from drsr_420 import data_analyse_real
+from drsr_420.find_best_eq import find_best_eq
+
+
 # from drsr_420.db_helper import get_context
 
 
@@ -210,3 +212,5 @@ def main(
     # sampler will do any work.
     for s in samplers:
         s.sample(profiler=profiler)
+
+    find_best_eq(results_root)

@@ -7,8 +7,8 @@ import llm
 
 from drsr_420.sensitivity_prune import SensitivityPruner
 
-def find_best_eq():
-    results_root = "experiments/MRFCompress-Cuboid_20260712-150715"  # 改为你的目录
+def find_best_eq(results_root: str):
+    # results_root = "experiments/MRFCompress-Cuboid_20260712-150715"  # 改为你的目录
     best = None
     for p in glob.glob(os.path.join(results_root, "samples", "*_samples_*.json")):
         try:
@@ -52,7 +52,7 @@ def find_best_eq():
                         tail = "请你根据以上内容对这个公式从力学角度进行详细的解释"
                         content = head + "\n" + eq +"\n" + thinking_content + "\n" +tail
 
-                        with open(".//llm_explain.config", 'r', encoding='utf-8') as f:
+                        with open("../llm_explain.config", 'r', encoding='utf-8') as f:
                             llm_config = json.load(f)
                         # 构造一次性的 LLM 客户端实例（按任务传递，避免并行任务相互干扰）
                         # 模型名格式：provider/model，例如 CSTCloud/gpt-oss-120b
