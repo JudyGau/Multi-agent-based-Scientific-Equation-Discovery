@@ -82,7 +82,7 @@ def read_paper(title_doi: list[tuple[str, str]], save_dir="pdf_downloads") -> st
     for title, pdf_url in tqdm(title_doi, desc="下载PDF"):
         try:
             pdf_url = "https://sci-hub.st/" + pdf_url
-            headers['referer'] = pdf_url
+            headers['referer'] = "https://sci-hub.st"
             # 发送请求
             response = requests.get(
                 pdf_url,
