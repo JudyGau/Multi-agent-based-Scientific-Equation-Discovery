@@ -112,6 +112,9 @@ def read_paper(title_doi: list[tuple[str, str]], save_dir="pdf_downloads") -> st
                     pdf_url = "https://sci-hub.st" + pdf_url
                     print(f"找到 meta name = citation_pdf_url, content = {pdf_url}")
 
+
+                # sci-hub 未收录，尝试找到官网的pdf_url
+                # 找到 <a translate="zh:here" href="...">
                 if not pdf_url:
                     a = soup.find("a", attrs={"translate": "zh:here"})
                     if a and a.get("href"):
