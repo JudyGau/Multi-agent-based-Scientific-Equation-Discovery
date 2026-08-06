@@ -49,93 +49,160 @@ LLM 配置（llm.config）
 - 运行时每个任务实例化一个 LLM Client，全程复用；并行任务互不影响。
 
 
-快速开始
-------------------------
+[//]: # (快速开始)
 
-CSV 需带表头：前 n-1 列为特征，最后一列为因变量。可用迭代与每轮候选数控制搜索规模。
+[//]: # (------------------------)
 
-```bash
-python3 main.py \
---problem_name oscillator1 \
---llm_config llm.config \
- --data_csv ./data/oscillator1/train.csv \
- --background 'Find the mathematical function skeleton that represents acceleration in a damped nonlinear oscillator system with driving force, given data on position, and velocity.' 
+[//]: # ()
+[//]: # (CSV 需带表头：前 n-1 列为特征，最后一列为因变量。可用迭代与每轮候选数控制搜索规模。)
 
-```
+[//]: # ()
+[//]: # (```bash)
 
-运行后将在 `results/oscillator1_时间戳/` 下生成所有产物。
+[//]: # (python3 main.py \)
 
-可选调参示例：
+[//]: # (--problem_name oscillator1 \)
 
-```bash
-# 迭代轮数与每轮候选数（近似：最大采样数 = niterations * num_samplers * samples_per_iteration）
-python3 main.py \
-  --problem_name oscillator1 \
-  --llm_config llm.config \
-  --data_csv ./data/oscillator1/train.csv \
-  --niterations 50 \
-  --samples_per_iteration 8
-```
+[//]: # (--llm_config llm.config \)
 
+[//]: # ( --data_csv ./data/oscillator1/train.csv \)
 
-批量示例（example.sh）
-----------------------
+[//]: # ( --background 'Find the mathematical function skeleton that represents acceleration in a damped nonlinear oscillator system with driving force, given data on position, and velocity.' )
 
-根目录的 `example.sh` 给出 12 个数据集的一键命令，已内置对应背景：
+[//]: # ()
+[//]: # (```)
 
-```bash
-bash example.sh
-```
+[//]: # ()
+[//]: # (运行后将在 `results/oscillator1_时间戳/` 下生成所有产物。)
 
+[//]: # ()
+[//]: # (可选调参示例：)
 
-结果产物与目录结构
---------------------
+[//]: # ()
+[//]: # (```bash)
 
-以 `results/oscillator1_20250101-120000/` 为例：
+[//]: # (# 迭代轮数与每轮候选数（近似：最大采样数 = niterations * num_samplers * samples_per_iteration）)
 
-- `run.out`, `run.err`：标准输出/错误输出。
-- `spec_dynamic.txt`：本次运行的动态 spec（便于复现）。
-- `experiences.json`：采样过程中的“经验/总结”。
-- `residual_analyze.json`：残差分析结果。
-- `samples/`：每次评分的样本 JSON，形如 `samples_32.json`，包含：
-  - `score`：分数（越大越好）
-  - `function`：完整函数源码（含 def、docstring、body）
-  - `params`：BFGS 优化得到的参数（若成功）
+[//]: # (python3 main.py \)
 
+[//]: # (  --problem_name oscillator1 \)
 
-如何找到“当前最优方程”
-------------------------
+[//]: # (  --llm_config llm.config \)
 
-扫描 `samples/` 下分数最高的样本即可：
+[//]: # (  --data_csv ./data/oscillator1/train.csv \)
 
-```bash
-python3 - << 'PY2'
-import json, glob, os
-results_root = "results/oscillator1_20250101-120000"  # 改为你的目录
-best = None
-for p in glob.glob(os.path.join(results_root, "samples", "samples_*.json")):
-    try:
-        with open(p, "r", encoding="utf-8") as f:
-            d = json.load(f)
-        s = d.get("score")
-        if s is None:
-            continue
-        if best is None or s > best[0]:
-            best = (s, p, d.get("function",""), d.get("params"))
-    except Exception:
-        continue
-if best is None:
-    print("没有找到有效样本。")
-else:
-    score, path, func, params = best
-    print(f"[BEST] score={score}
-file={path}
-params={params}
+[//]: # (  --niterations 50 \)
 
-function:
-{func}")
-PY2
-```
+[//]: # (  --samples_per_iteration 8)
+
+[//]: # (```)
+
+[//]: # ()
+[//]: # ()
+[//]: # (批量示例（example.sh）)
+
+[//]: # (----------------------)
+
+[//]: # ()
+[//]: # (根目录的 `example.sh` 给出 12 个数据集的一键命令，已内置对应背景：)
+
+[//]: # ()
+[//]: # (```bash)
+
+[//]: # (bash example.sh)
+
+[//]: # (```)
+
+[//]: # ()
+[//]: # ()
+[//]: # (结果产物与目录结构)
+
+[//]: # (--------------------)
+
+[//]: # ()
+[//]: # (以 `results/oscillator1_20250101-120000/` 为例：)
+
+[//]: # ()
+[//]: # (- `run.out`, `run.err`：标准输出/错误输出。)
+
+[//]: # (- `spec_dynamic.txt`：本次运行的动态 spec（便于复现）。)
+
+[//]: # (- `experiences.json`：采样过程中的“经验/总结”。)
+
+[//]: # (- `residual_analyze.json`：残差分析结果。)
+
+[//]: # (- `samples/`：每次评分的样本 JSON，形如 `samples_32.json`，包含：)
+
+[//]: # (  - `score`：分数（越大越好）)
+
+[//]: # (  - `function`：完整函数源码（含 def、docstring、body）)
+
+[//]: # (  - `params`：BFGS 优化得到的参数（若成功）)
+
+[//]: # ()
+[//]: # ()
+[//]: # (如何找到“当前最优方程”)
+
+[//]: # (------------------------)
+
+[//]: # ()
+[//]: # (扫描 `samples/` 下分数最高的样本即可：)
+
+[//]: # ()
+[//]: # (```bash)
+
+[//]: # (python3 - << 'PY2')
+
+[//]: # (import json, glob, os)
+
+[//]: # (results_root = "results/oscillator1_20250101-120000"  # 改为你的目录)
+
+[//]: # (best = None)
+
+[//]: # (for p in glob.glob&#40;os.path.join&#40;results_root, "samples", "samples_*.json"&#41;&#41;:)
+
+[//]: # (    try:)
+
+[//]: # (        with open&#40;p, "r", encoding="utf-8"&#41; as f:)
+
+[//]: # (            d = json.load&#40;f&#41;)
+
+[//]: # (        s = d.get&#40;"score"&#41;)
+
+[//]: # (        if s is None:)
+
+[//]: # (            continue)
+
+[//]: # (        if best is None or s > best[0]:)
+
+[//]: # (            best = &#40;s, p, d.get&#40;"function",""&#41;, d.get&#40;"params"&#41;&#41;)
+
+[//]: # (    except Exception:)
+
+[//]: # (        continue)
+
+[//]: # (if best is None:)
+
+[//]: # (    print&#40;"没有找到有效样本。"&#41;)
+
+[//]: # (else:)
+
+[//]: # (    score, path, func, params = best)
+
+[//]: # (    print&#40;f"[BEST] score={score})
+
+[//]: # (file={path})
+
+[//]: # (params={params})
+
+[//]: # ()
+[//]: # (function:)
+
+[//]: # ({func}"&#41;)
+
+[//]: # (PY2)
+
+[//]: # (```)
 
 
 可配置项与自定义
