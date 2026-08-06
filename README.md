@@ -1,7 +1,7 @@
-Multi-agent based Scientific Equation Discovery with Reasoning from Data and Experience
+Multi-agent based Scientific Equation Discovery 
 =============================================
 
-本项目实现了一个"基于大模型的方程结构搜索 + 数据拟合"的工作流（类似符号回归）：
+本项目实现了一个"基于多智能体的方程结构搜索 + 数据拟合"的工作流（类似符号回归）：
 
 - 使用 LLM 从代码模板（spec）中补全目标函数的函数体（equation）。
 - 对每个候选方程，使用 BFGS 在给定数据上优化参数并打分（默认负 MSE / 可推导 R²）。
