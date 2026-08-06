@@ -10,11 +10,11 @@ load_dotenv()
 
 # ── 客户端 ──────────────────────────────────────────────
 deepseek = OpenAI(
-    api_key="sk-3970c8c4922f49fd89761fe3ad4a5eb5",
+    api_key="xxx",
     base_url="https://api.deepseek.com",        # 兼容 OpenAI 格式
 )
 
-SERPER_KEY = "ac28c1aac4d446f3de5c8e79ea6d406727509455"
+SERPER_KEY = "xxx"
 
 
 # ── 工具 1：Serper Google Scholar ───────────────────────

@@ -50,7 +50,7 @@ def search_google_scholar(query: str, num: int = 5, language: str="en") -> List[
         "engine": "google"
     }
     headers = {
-        'X-API-KEY': 'ac28c1aac4d446f3de5c8e79ea6d406727509455',
+        'X-API-KEY': 'xxx',
         'Content-Type': 'application/json'
     }
 
