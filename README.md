@@ -59,13 +59,13 @@ LLM 配置（llm.config）
 [//]: # ()
 [//]: # (```bash)
 
-[//]: # (python3 main.py \)
+[//]: # (python3 main.py )
 
-[//]: # (--problem_name oscillator1 \)
+[//]: # (--problem_name oscillator1 )
 
-[//]: # (--llm_config llm.config \)
+[//]: # (--llm_config llm.config )
 
-[//]: # ( --data_csv ./data/oscillator1/train.csv \)
+[//]: # ( --data_csv ./data/oscillator1/train.csv )
 
 [//]: # ( --background 'Find the mathematical function skeleton that represents acceleration in a damped nonlinear oscillator system with driving force, given data on position, and velocity.' )
 
@@ -83,15 +83,15 @@ LLM 配置（llm.config）
 
 [//]: # (# 迭代轮数与每轮候选数（近似：最大采样数 = niterations * num_samplers * samples_per_iteration）)
 
-[//]: # (python3 main.py \)
+[//]: # (python3 main.py )
 
-[//]: # (  --problem_name oscillator1 \)
+[//]: # (  --problem_name oscillator1 )
 
-[//]: # (  --llm_config llm.config \)
+[//]: # (  --llm_config llm.config )
 
-[//]: # (  --data_csv ./data/oscillator1/train.csv \)
+[//]: # (  --data_csv ./data/oscillator1/train.csv )
 
-[//]: # (  --niterations 50 \)
+[//]: # (  --niterations 50 )
 
 [//]: # (  --samples_per_iteration 8)
 
