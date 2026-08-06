@@ -505,15 +505,15 @@ def _extract_body(sample: str, config: config_lib.Config) -> str:
     #     print("pass")
 
     # 提取 python 代码
-    match=re.search(r'```python([\s\S]*?)```', sample)
+    match=re.search(r'```([\s\S]*?)```', sample)
     if match:
         sample = match.group(1).strip()
     else:
         print("No python code found, returning original sample.")
 
-    # # 去除LLM回复中的```python\n      ```
+    # 去除LLM回复中的python
     # sample = sample.replace('```', '')
-    # sample = sample.replace('python', '')
+    sample = sample.replace('python', '')
 
     lines = sample.splitlines()
     func_body_lineno = 0
