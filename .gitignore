@@ -5,5 +5,5 @@ llm.config
 experiments
 /drsr_420/tools/pdf_downloads/
 /pdf_downloads/
-/.idea/
+/.idea/drsr-main.iml
 .idea
