@@ -15,6 +15,8 @@
 
 """ Class for sampling new program skeletons. """
 from __future__ import annotations
+
+import re
 from abc import ABC, abstractmethod
 
 from typing import Collection, Sequence, Type, Any
@@ -502,9 +504,11 @@ def _extract_body(sample: str, config: config_lib.Config) -> str:
     # if sample.__contains__("pass"):
     #     print("pass")
 
+    sample=re.search(r'```python(.*?)```', sample)
+
     # 去除LLM回复中的```python\n      ```
     sample = sample.replace('```', '')
-    sample = sample.replace('python\n', '')
+    sample = sample.replace('python', '')
 
     lines = sample.splitlines()
     func_body_lineno = 0

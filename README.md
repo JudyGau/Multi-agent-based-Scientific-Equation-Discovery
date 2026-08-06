@@ -1,11 +1,6 @@
-DrSR: LLM based Scientific Equation Discovery with Dual Reasoning from Data and Experience
+Multi-agent based Scientific Equation Discovery with Reasoning from Data and Experience
 =============================================
 
-> **本仓库是论文 [DrSR: LLM based Scientific Equation Discovery with Dual Reasoning from Data and Experience](https://arxiv.org/abs/2506.04282) 的官方开源实现。**
->
-> **Authors:** Runxiang Wang, Boxiao Wang, Kai Li, Yifan Zhang, Jian Cheng
->
-> **论文链接:** https://arxiv.org/abs/2506.04282
 
 本项目实现了一个"基于大模型的方程结构搜索 + 数据拟合"的工作流（类似符号回归）：
 
@@ -189,20 +184,32 @@ Variables:
 - `results/{problem}_{timestamp}/`：本次运行产物。
 
 
-引用
-----
+[//]: # (引用)
 
-如果本项目对您的研究有所帮助，欢迎引用我们的论文：
+[//]: # (----)
 
-```bibtex
-@article{wang2025drsr,
-  title={DrSR: LLM based Scientific Equation Discovery with Dual Reasoning from Data and Experience},
-  author={Wang, Runxiang and Wang, Boxiao and Li, Kai and Zhang, Yifan and Cheng, Jian},
-  journal={arXiv preprint arXiv:2506.04282},
-  year={2025}
-}
-```
+[//]: # ()
+[//]: # (如果本项目对您的研究有所帮助，欢迎引用我们的论文：)
 
-**论文链接:** https://arxiv.org/abs/2506.04282
+[//]: # ()
+[//]: # (```bibtex)
 
-**项目地址:** https://github.com/scientific-intelligent-modelling/drsr
+[//]: # (@article{wang2025drsr,)
+
+[//]: # (  title={DrSR: LLM based Scientific Equation Discovery with Dual Reasoning from Data and Experience},)
+
+[//]: # (  author={Wang, Runxiang and Wang, Boxiao and Li, Kai and Zhang, Yifan and Cheng, Jian},)
+
+[//]: # (  journal={arXiv preprint arXiv:2506.04282},)
+
+[//]: # (  year={2025})
+
+[//]: # (})
+
+[//]: # (```)
+
+[//]: # ()
+[//]: # (**论文链接:** https://arxiv.org/abs/2506.04282)
+
+[//]: # ()
+[//]: # (**项目地址:** https://github.com/scientific-intelligent-modelling/drsr)
