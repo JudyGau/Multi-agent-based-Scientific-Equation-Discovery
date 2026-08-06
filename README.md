@@ -244,6 +244,10 @@ Variables:
 - `llm.config`：LLM 访问与采样参数。
 - `example.sh`：13 个数据集的运行示例。
 - `drsr_420/`：核心模块
+  - `tools/`
+    - `tools_description.py`:
+    - `read_paper,py`
+    - `search_paper.py`
   - `pipeline.py`：调度 Evaluator/Sampler，注入 LLM Client，触发初次数据分析。
   - `sampler.py`：采样器（全程使用注入的 Client 发起 LLM 请求）。
   - `evaluator.py`：运行候选方程、BFGS 拟合与打分。
@@ -251,7 +255,7 @@ Variables:
   - `buffer.py`：经验缓冲（多岛与聚类抽样）。
   - `code_manipulation.py`：AST 解析与函数/程序拼装、调用重命名等。
   - `prompt_config.py`：提示词模板与 `PromptContext`。
-  - `profile.py`：轻量记录（写 `samples/*.json`），已移除 TensorBoard。
+  - `profile.py`：轻量记录（写 `samples/*.json`）。
 - `specs/`：历史静态 spec（动态模式无需）。
 - `results/{problem}_{timestamp}/`：本次运行产物。
 
