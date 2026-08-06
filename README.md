@@ -45,7 +45,7 @@ LLM 配置（llm.config）
 
 - `api_key` 请替换为真实密钥，否则会报“未提供令牌”。
 - `model` 建议使用 `provider/model` 形式（如 `deepseek/deepseek-v4-pro`）。 目前支持Deepseek，SiliconFlow，柏拉图，Ollama，具体支持列表请查看`llm.py`
-- 如需切换模型，请直接修改 `llm.config` 的相应字段，温度等配置信息也在此处进行修改。
+- 如需切换模型，直接修改 `llm.config` 的相应字段，温度等配置信息也在此处进行修改。
 - 运行时每个任务实例化一个 LLM Client，全程复用；并行任务互不影响。
 
 
