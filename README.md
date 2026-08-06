@@ -1,22 +1,28 @@
 Multi-agent based Scientific Equation Discovery 
 =============================================
 
-本项目实现了一个"基于多智能体的方程结构搜索 + 数据拟合"的工作流（类似符号回归）：
+本项目实现了一个"基于多智能体的方程搜索 + 数据拟合"的工作流（类似符号回归）：
 
 - 使用 LLM 从代码模板（spec）中补全目标函数的函数体（equation）。
+- 公式发现智能体， 调用文献搜索工具和文献阅读工具，文献
 - 对每个候选方程，使用 BFGS 在给定数据上优化参数并打分（默认负 MSE / 可推导 R²）。
 - 经验缓冲区（Experience Buffer）保留更优样本，持续迭代搜索更好结构。
 - 训练产物（样本、最优 spec、经验与残差分析等）统一落盘，便于复现与调试。
 
 
-依赖安装
---------
+[//]: # (依赖安装)
 
-```bash
-pip install -r requirements.txt
-```
+[//]: # (--------)
 
-- 仅依赖 NumPy、SciPy、Pandas 等。已移除 torch/transformers 等大包。
+[//]: # ()
+[//]: # (```bash)
+
+[//]: # (pip install -r requirements.txt)
+
+[//]: # (```)
+
+[//]: # ()
+[//]: # (- 仅依赖 NumPy、SciPy、Pandas 等。已移除 torch/transformers 等大包。)
 
 
 LLM 配置（llm.config）
