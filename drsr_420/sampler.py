@@ -504,11 +504,16 @@ def _extract_body(sample: str, config: config_lib.Config) -> str:
     # if sample.__contains__("pass"):
     #     print("pass")
 
-    sample=re.search(r'```python(.*?)```', sample)
+    # 提取 python 代码
+    match=re.search(r'```python(.*?)```', sample)
+    if match:
+        sample = match.group(1).strip()
+    else:
+        print("No python code found, returning original sample.")
 
-    # 去除LLM回复中的```python\n      ```
-    sample = sample.replace('```', '')
-    sample = sample.replace('python', '')
+    # # 去除LLM回复中的```python\n      ```
+    # sample = sample.replace('```', '')
+    # sample = sample.replace('python', '')
 
     lines = sample.splitlines()
     func_body_lineno = 0
