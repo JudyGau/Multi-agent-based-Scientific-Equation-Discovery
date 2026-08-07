@@ -515,9 +515,6 @@ def _extract_body(sample: str, config: config_lib.Config) -> str:
     # sample = sample.replace('```', '')
     sample = sample.replace('python', '')
 
-    # lines = sample.splitlines()
-    # func_body_lineno = 0
-    # find_def_declaration = False
 
     #检测缺少缩进的return语句，并加上缩进'    '
     if (sample[:6] == 'return'):
@@ -529,20 +526,25 @@ def _extract_body(sample: str, config: config_lib.Config) -> str:
         sample = sample.replace('        ','    ')
         return sample
 
-    # for lineno, line in enumerate(lines):
-    #     # find the first 'def' program statement in the response
-    #     if (line[:3] == 'def'):
-    #         func_body_lineno = lineno
-    #         find_def_declaration = True
-    #         break
-    #
-    #
-    # if find_def_declaration:
-    #     # 统一处理：直接保留函数定义后的原始缩进与内容
-    #     code = ''
-    #     for line in lines[func_body_lineno + 1:]:
-    #         code += line + '\n'
-    #     return code
+
+    lines = sample.splitlines()
+    func_body_lineno = 0
+    find_def_declaration = False
+
+    for lineno, line in enumerate(lines):
+        # find the first 'def' program statement in the response
+        if (line[:3] == 'def'):
+            func_body_lineno = lineno
+            find_def_declaration = True
+            break
+
+
+    if find_def_declaration:
+        # 统一处理：直接保留函数定义后的原始缩进与内容
+        code = ''
+        for line in lines[func_body_lineno + 1:]:
+            code += line + '\n'
+        return code
 
 
     return sample
