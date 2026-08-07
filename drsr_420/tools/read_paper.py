@@ -27,7 +27,7 @@ def read_paper(title_doi: list[tuple[str, str]], save_dir="pdf_downloads") -> st
     调 Serper 的 WebPage API，
     返回『已摘选结构化』的 JSON 字符串，方便模型消费。
     """
-    """下载PDF文件并保存到本地（使用代理）"""
+    """下载PDF文件并保存到本地"""
     # # 代理配置
     # proxyHost = "www.16yun.cn"
     # proxyPort = "5445"
@@ -90,6 +90,7 @@ def read_paper(title_doi: list[tuple[str, str]], save_dir="pdf_downloads") -> st
             file_path = os.path.join(save_dir, f"{safe_title}.pdf")
 
             if os.path.exists(file_path):
+                print(f"在本地文献库找到文献: {file_path}")
                 doc = fitz.open(file_path)
                 full_text = ""
                 for page_num in range(doc.page_count):
@@ -229,7 +230,7 @@ def agent_run(user_query: str, model: str = "deepseek-v4-pro"):
     deepseek-reasoner = V3.2 思考模式（tool call 时要回传 reasoning_content，见下方提示）
     """
     messages = [
-        {"role": "system", "content": "你是一个学术辅助助手，擅长用 Google Scholar 检索论文并下载以及做综述。"},
+        {"role": "system", "content": "你是一个学术辅助助手，擅长检索论文并下载以及做总结。"},
         {"role": "user", "content": user_query},
     ]
 
@@ -289,7 +290,7 @@ def agent_run(user_query: str, model: str = "deepseek-v4-pro"):
 
 # ── 试运行 ──────────────────────────────────────────────
 if __name__ == "__main__":
-    q = "Apple Inc 营销战略, 请查找并阅读以上关键词的学术论文，最后给出综述"
+    q = "MRF"
     answer = agent_run(q)
     print("\n🧠 DeepSeek 回答：\n")
     print(answer)
