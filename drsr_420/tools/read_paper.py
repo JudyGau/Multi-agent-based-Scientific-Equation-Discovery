@@ -14,7 +14,7 @@ from drsr_420.tools.search_paper import search_paper
 
 # ── 客户端 ──────────────────────────────────────────────
 deepseek = OpenAI(
-    api_key="sk-3970c8c4922f49fd89761fe3ad4a5eb5",
+    api_key="xxx",
     base_url="https://api.deepseek.com",        # 兼容 OpenAI 格式
 )
 
