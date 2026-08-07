@@ -83,8 +83,8 @@ def read_paper(title_doi: list[tuple[str, str]], save_dir="pdf_downloads") -> st
         'PHPSESSID' : '3a26b98a3c5eee422b4ed949f536e070',
         'session' : 'd8181b66b46f21c48320fd96d257e873',
         'refresh' : '1786093506.7948',
-        '__ddg10_' : '1786093645',
-        '__ddg8_' : 'wykJtdYSwp3mOozy',
+        '__ddg10_' : '1786093887',
+        '__ddg8_' : 'mpzVzBawbwhrTV8k',
 
     }
 
@@ -119,7 +119,7 @@ def read_paper(title_doi: list[tuple[str, str]], save_dir="pdf_downloads") -> st
                 #分析下一个文献
                 continue
             else:
-                print(f"本地文献库不存在文献: title_url {(title, pdf_url)}")
+                print(f"本地文献库不存在文献: title_url {(safe_title, pdf_url)}")
                 textlist.append(f"本地文献库不存在文献: title_url {(title, pdf_url)}")
 
 

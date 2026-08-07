@@ -515,9 +515,9 @@ def _extract_body(sample: str, config: config_lib.Config) -> str:
     # sample = sample.replace('```', '')
     sample = sample.replace('python', '')
 
-    lines = sample.splitlines()
-    func_body_lineno = 0
-    find_def_declaration = False
+    # lines = sample.splitlines()
+    # func_body_lineno = 0
+    # find_def_declaration = False
 
     #检测缺少缩进的return语句，并加上缩进'    '
     if (sample[:6] == 'return'):
