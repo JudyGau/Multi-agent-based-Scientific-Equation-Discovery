@@ -99,8 +99,12 @@ def read_paper(title_doi: list[tuple[str, str]], save_dir="pdf_downloads") -> st
                 doc.close()
                 print(f"文件读取成功: {file_path}")
                 textlist.append(full_text)
+
+                #分析下一个文献
+                continue
             else:
-                print("文件不存在")
+                print(f"本地文献库不存在文献: title_url {(title, pdf_url)}")
+                textlist.append(f"本地文献库不存在文献: title_url {(title, pdf_url)}")
 
 
 
