@@ -18,7 +18,7 @@ deepseek = OpenAI(
     base_url="https://api.deepseek.com",        # 兼容 OpenAI 格式
 )
 
-SERPER_KEY = "ac28c1aac4d446f3de5c8e79ea6d406727509455"
+# SERPER_KEY = "ac28c1aac4d446f3de5c8e79ea6d406727509455"
 
 
 # ── 工具 2：web visit ───────────────────────
