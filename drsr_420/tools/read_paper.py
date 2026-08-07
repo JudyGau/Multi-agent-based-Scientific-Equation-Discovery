@@ -59,20 +59,35 @@ def read_paper(title_doi: list[tuple[str, str]], save_dir="pdf_downloads") -> st
     }
 
     cookies = {
-        '__ddgid_': 'ifJHThZoCclQh7Xb',
-        '__ddg2_': 'E0OKMRIZMDuyo1DA',
-        '__ddg1_': 'XrbNjpRf24gdh6Zngg9x',
-        '__ddgmark_': 'QQUozRDUpKWhbW1a',
-        'session': '76a2e63503e1e0609c1b32dca810b4f5',
-        'refresh': '1784796304.9299',
-        'session': '76a2e63503e1e0609c1b32dca810b4f5',
-        'refresh': '1784796304.9305',
-        '__ddg9_': '210.45.118.7',
-        '__ddg5_': 'Nleqmf5URrhPyOLL',
-        'PHPSESSID': '217c33eecb13851160634129ab7d9396',
-        '__ddg8_': 'n5BALTtkm8YR3KBo',
-        '__ddg10_': '1784879941',
+        # '__ddgid_': 'ifJHThZoCclQh7Xb',
+        # '__ddg2_': 'E0OKMRIZMDuyo1DA',
+        # '__ddg1_': 'XrbNjpRf24gdh6Zngg9x',
+        # '__ddgmark_': 'QQUozRDUpKWhbW1a',
+        # 'session': '76a2e63503e1e0609c1b32dca810b4f5',
+        # 'refresh': '1784796304.9299',
+        # 'session': '76a2e63503e1e0609c1b32dca810b4f5',
+        # 'refresh': '1784796304.9305',
+        # '__ddg9_': '210.45.118.7',
+        # '__ddg5_': 'Nleqmf5URrhPyOLL',
+        # 'PHPSESSID': '217c33eecb13851160634129ab7d9396',
+        # '__ddg8_': 'n5BALTtkm8YR3KBo',
+        # '__ddg10_': '1784879941',
+
+        '__ddg1_' : 'CeSMSD6vG9cbBUhNgEZC',
+        '__ddgid_' : 'bWJgM74dLEQqdIsH',
+        '__ddg9_' : '114.101.214.75',
+        '__ddgmark_' : 'JDwRHa4WjGEWX81T',
+        '__ddg5_' : 'ni93fRH1XSKYX6fg',
+        '__ddg2_' : '3713k9Eb5ZCXTZbp',
+        'ddg_last_challenge' : '1786093482052',
+        'PHPSESSID' : '3a26b98a3c5eee422b4ed949f536e070',
+        'session' : 'd8181b66b46f21c48320fd96d257e873',
+        'refresh' : '1786093506.7948',
+        '__ddg10_' : '1786093645',
+        '__ddg8_' : 'wykJtdYSwp3mOozy',
+
     }
+
 
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
