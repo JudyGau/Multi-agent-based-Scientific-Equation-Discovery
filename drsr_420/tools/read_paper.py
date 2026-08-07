@@ -77,10 +77,33 @@ def read_paper(title_doi: list[tuple[str, str]], save_dir="pdf_downloads") -> st
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
 
+
+
     textlist = []
 
     for title, pdf_url in tqdm(title_doi, desc="下载PDF"):
         try:
+
+            # 先尝试从本地文献库寻找文献
+            # 替换文标题中的非法字符
+            safe_title = "".join(c if c.isalnum() else "_" for c in title)
+            file_path = os.path.join(save_dir, f"{safe_title}.pdf")
+
+            if os.path.exists(file_path):
+                doc = fitz.open(file_path)
+                full_text = ""
+                for page_num in range(doc.page_count):
+                    page = doc.load_page(page_num)
+                    text = page.get_text()
+                    full_text += f"\n--- Page {page_num + 1} ---\n{text}"
+                doc.close()
+                print(f"文件读取成功: {file_path}")
+                textlist.append(full_text)
+            else:
+                print("文件不存在")
+
+
+
             pdf_url = "https://sci-hub.st/" + pdf_url
             headers['referer'] = "https://sci-hub.st"
             # 发送请求
