@@ -107,7 +107,6 @@ def read_paper(title_doi: list[tuple[str, str]], save_dir="pdf_downloads") -> st
                 textlist.append(f"本地文献库不存在文献: title_url {(title, pdf_url)}")
 
 
-
             pdf_url = "https://sci-hub.st/" + pdf_url
             headers['referer'] = "https://sci-hub.st"
             # 发送请求
