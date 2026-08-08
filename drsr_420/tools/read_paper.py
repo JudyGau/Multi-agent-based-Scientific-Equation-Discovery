@@ -101,8 +101,9 @@ def read_paper(title_doi: list[tuple[str, str]], save_dir="pdf_downloads") -> st
 
             # 先尝试从本地文献库寻找文献
             # 替换文标题中的非法字符
-            safe_title = "".join(c if c.isalnum() else "_" for c in title)
-            file_path = os.path.join(save_dir, f"{safe_title}.pdf")
+            doi=pdf_url
+            safe_doi = "".join('' if c == '/' else c for c in doi)
+            file_path = os.path.join(save_dir, f"{safe_doi}.pdf")
 
             if os.path.exists(file_path):
                 print(f"在本地文献库找到文献: {file_path}")
@@ -119,7 +120,8 @@ def read_paper(title_doi: list[tuple[str, str]], save_dir="pdf_downloads") -> st
                 #分析下一个文献
                 continue
             else:
-                print(f"本地文献库不存在文献: title_url {(safe_title, pdf_url)}")
+
+                print(f"本地文献库不存在文献: file_path {file_path}, title_url {(title, pdf_url)}")
                 textlist.append(f"本地文献库不存在文献: title_url {(title, pdf_url)}")
 
 
@@ -186,8 +188,10 @@ def read_paper(title_doi: list[tuple[str, str]], save_dir="pdf_downloads") -> st
 
                 print(f"下载成功: title_url {(title, pdf_url)} | 状态码: {response.status_code}")
                 # 替换文件名中的非法字符
-                safe_title = "".join(c if c.isalnum() else "_" for c in title)
-                file_path = os.path.join(save_dir, f"{safe_title}.pdf")
+                # safe_title = "".join(c if c.isalnum() else "_" for c in title)
+                # file_path = os.path.join(save_dir, f"{safe_title}.pdf")
+                safe_doi = "".join('' if c == '/' else c for c in doi)
+                file_path = os.path.join(save_dir, f"{safe_doi}.pdf")
 
                 # 分块写入文件
                 with open(file_path, "wb") as f:
