@@ -10,11 +10,11 @@ import http.client
 
 Port = '5000'
 
-# API配置
-API_HOST = "api.bltcy.ai"
-API_KEY = "sk-1zejrP7CKGPUXASwGpow3vOQ1Pjl5QzeU8xCjMrOEMSbqFQd"
-API_MODEL = "gpt-3.5-turbo"
-MAX_TOKENS = 1024
+# # API配置
+# API_HOST = "api.bltcy.ai"
+# API_KEY = "sk-1zejrP7CKGPUXASwGpow3vOQ1Pjl5QzeU8xCjMrOEMSbqFQd"
+# API_MODEL = "gpt-3.5-turbo"
+# MAX_TOKENS = 1024
 class DataAnalyzer:
     """数据分析工具，使用本地大模型分析CSV数据"""
     
