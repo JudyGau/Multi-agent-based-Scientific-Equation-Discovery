@@ -3,3 +3,9 @@ numpy==1.26.4
 pandas==2.2.1
 scipy==1.12.0
 requests>=2.31.0
+openai == 2.53.0
+
+beautifulsoup4 == 4.15.0
+openai== 2.53.0
+tqdm == 4.70.0
+pymupdf ==1.28.2
