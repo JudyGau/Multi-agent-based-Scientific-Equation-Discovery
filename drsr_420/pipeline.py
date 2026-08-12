@@ -144,8 +144,8 @@ def main(
     result = analyzer.analyze(
         inputs,
         """
-        csv
-        {csv_data}
+    csv
+    {csv_data}
     You are a data analysis expert. I have provided a dataset structure for a magnetorheological effect question as follows:
     The first two columns are independent variables:
     """+
