@@ -6,6 +6,61 @@ from sympy import nsimplify, dotprint
 import llm
 
 from drsr_420.sensitivity_prune import SensitivityPruner
+from drsr_420.tools.read_paper import read_paper
+from drsr_420.tools.search_paper import search_paper
+
+
+def explain_re_act(client: llm.LLMClient, content: str):
+    if client is not None:
+        try:
+            # responses = []
+            # think_responses = []
+
+            messages = []
+            messages.append({"role": "user", "content": content})
+            resp = client.chat([{"role": "user", "content": content}])
+
+            while True:
+                print("========================思考过程========================\n")
+                print(resp.get('reasoning_content', ''))
+                print("====================================================\n")
+
+                tool_calls = resp.get('tool_calls', [])
+                messages.append({"role": "assistant", "content": resp.get('content', ''), "tool_calls": tool_calls})
+
+                # 如果调了 tool，执行后回传
+                if tool_calls:
+                    print("调用了工具：", tool_calls)
+
+                    for tc in tool_calls:
+                        fn_name = tc.get('function', {}).get('name', '')
+                        args = json.loads(tc.get('function', {}).get('arguments', []))
+                        result = ""
+                        if fn_name == "search_paper":
+                            result = search_paper(**args)
+                        elif fn_name == "read_paper":
+                            result = read_paper(**args)
+                        else:
+                            result = json.dumps({"error": "unknown tool"})
+
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.get('id', ''),
+                            "content": result
+                        })
+
+                    resp = client.chat(messages)
+                # 如果未调用，则跳出循环
+                else:
+                    return resp.get('content', '')
+                    # responses.append(resp.get('content', ''))
+                    # think_responses.append(resp.get('reasoning_content', ''))
+
+            # return (responses, think_responses) if self._batch_inference else (responses[0], think_responses[0])
+        except Exception as e:
+            print(f"API请求发生错误: {str(e)}")
+            # return ([""] * repeat_prompt, [""] * repeat_prompt) if self._batch_inference else ("", "")
+
 
 def find_best_eq(results_root: str):
     # results_root = "experiments/MRFCompress-Cuboid_20260712-150715"  # 改为你的目录
@@ -100,10 +155,10 @@ def find_best_eq(results_root: str):
                         except Exception as e:
                             print(f"[WARN] Failed to init LLM client: {e}")
 
+                        # resp = client.chat([{"role": "user", "content": content}])
+                        # explain = resp.get("content","")
 
-                        resp = client.chat([{"role": "user", "content": content}])
-                        explain = resp.get("content","")
-
+                        explain = explain_re_act(client, content)
                         print(explain)
 
                         # 将动态渲染的 explain 保存到本次实验目录，便于调试
