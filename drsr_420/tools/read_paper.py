@@ -44,10 +44,10 @@ def read_paper(title_doi: list[tuple[str, str]], save_dir="pdf_downloads") -> st
     headers = {
         'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
         'accept-language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7,es-ES;q=0.6,es;q=0.5',
-        'cache-control': 'no-cache',
+        'cache-control': 'max-age=0',
         'pragma': 'no-cache',
         'priority': 'u=0, i',
-        'sec-ch-ua': '"Not;A=Brand";v="8", "Chromium";v="150", "Microsoft Edge";v="150"',
+        'sec-ch-ua': '"Not=A?Brand";v="99", "Microsoft Edge";v="151", "Chromium";v="151"',
         'sec-ch-ua-mobile': '?0',
         'sec-ch-ua-platform': '"Windows"',
         'sec-fetch-dest': 'document',
@@ -55,7 +55,7 @@ def read_paper(title_doi: list[tuple[str, str]], save_dir="pdf_downloads") -> st
         'sec-fetch-site': 'none',
         'sec-fetch-user': '?1',
         'upgrade-insecure-requests': '1',
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36 Edg/151.0.0.0',
     }
 
     cookies = {
