@@ -75,16 +75,16 @@ def read_paper(title_doi: list[tuple[str, str]], save_dir="pdf_downloads") -> st
 
         '__ddg1_' : 'CeSMSD6vG9cbBUhNgEZC',
         '__ddgid_' : 'bWJgM74dLEQqdIsH',
-        '__ddg9_' : '114.101.214.75',
-        '__ddgmark_' : 'JDwRHa4WjGEWX81T',
-        '__ddg5_' : 'ni93fRH1XSKYX6fg',
+        '__ddg9_' : '112.32.136.114',
+        '__ddgmark_' : 'Py3toAtBOyjZhvUH',
+        '__ddg5_' : 'ZYmdRTIB54WpAp5z',
         '__ddg2_' : '3713k9Eb5ZCXTZbp',
         'ddg_last_challenge' : '1786093482052',
-        'PHPSESSID' : '3a26b98a3c5eee422b4ed949f536e070',
+        'PHPSESSID' : '1cb151d12013f5a9d94ad21d84e21f3e',
         'session' : 'd8181b66b46f21c48320fd96d257e873',
         'refresh' : '1786093506.7948',
-        '__ddg10_' : '1786093887',
-        '__ddg8_' : 'mpzVzBawbwhrTV8k',
+        '__ddg10_' : '1786500725',
+        '__ddg8_' : 'FT9PAhB6baveZXHD',
 
     }
 
