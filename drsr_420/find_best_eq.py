@@ -10,7 +10,7 @@ from drsr_420.tools.read_paper import read_paper
 from drsr_420.tools.search_paper import search_paper
 
 
-def explain_re_act(client: llm.LLMClient, content: str):
+def explain_re_act(client: llm.LLMClient, content: str) -> str | None:
     if client is not None:
         try:
             # responses = []
