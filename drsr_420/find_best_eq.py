@@ -125,7 +125,8 @@ def expr_substitution(func: str, params: list) -> str:
             if inter_vars[symbol.name] is not None:
                 expr.subs(symbol, inter_vars[symbol.name])
 
-        print(expr)
+        expr = expr.n(2)
+        print(f"代入中间变量后的表达式: {expr}")
         return expr
     else:
         print("未找到 return")
