@@ -64,7 +64,7 @@ def explain_re_act(client: llm.LLMClient, content: str) -> str | None:
 
 def expr_substitution(func: str, params: list) -> str:
 
-    # params = [round(x, 2) for x in params]
+    params = [round(x, 2) for x in params]
 
     dependent_match = re.search(r'Dependent:\s*(\w+)', func)
     if dependent_match:
@@ -80,8 +80,56 @@ def expr_substitution(func: str, params: list) -> str:
     else:
         print("未找到自变量")
 
+    # 将具体数值代入参数
     for i in range(MAX_NPARAMS):
         func = func.replace(f"params[{i}]", str(params[i]))
+
+    # 将np.替换为sp.
+    func.replace("np.","")
+
+
+
+    inter_vars = {}
+    # 遍历func的每行
+    for line in func.splitlines():
+        equal_match = re.search(r'=', line)
+
+        if equal_match:
+            # independent = equal_match.group(1)
+
+            equation = line.split("=")
+
+            eq_left = equation[0]
+            # var = sp.Symbol(eq_left)
+
+            eq_right = equation[1]
+            expr = sp.parse_expr(eq_right)
+
+            inter_vars[eq_left] = expr
+
+            for symbol in expr.free_symbols:
+                if inter_vars[symbol.name] is not None:
+                    expr.subs(symbol, inter_vars[symbol.name])
+
+            inter_vars[eq_left] = expr
+
+
+
+
+            # expr = expr.n(2)
+        else:
+            print("跳过该行")
+
+
+    # while True:
+    #     equal_match = re.search(r'=', func)
+    #
+    #     if independent_match:
+    #         independent = independent_match.group(1)
+    #     else:
+    #         print("未找到自变量")
+
+
 
     match = re.search(r'return\s+(.*)', func)
     if match:
