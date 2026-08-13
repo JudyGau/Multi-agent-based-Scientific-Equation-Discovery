@@ -87,7 +87,6 @@ def expr_substitution(func: str, params: list) ->  sp.Expr | None:
     func.replace("minimum", "Min")
 
 
-
     inter_vars = {}
     # 遍历func的每行
     for line in func.splitlines():
@@ -116,13 +115,6 @@ def expr_substitution(func: str, params: list) ->  sp.Expr | None:
         else:
             print("跳过该行")
 
-    # while True:
-    #     equal_match = re.search(r'=', func)
-    #
-    #     if independent_match:
-    #         independent = independent_match.group(1)
-    #     else:
-    #         print("未找到自变量")
 
     match = re.search(r'return\s+(.*)', func)
     if match:
@@ -138,21 +130,6 @@ def expr_substitution(func: str, params: list) ->  sp.Expr | None:
     else:
         print("未找到 return")
 
-    # dependent_match = re.search(r'Dependent:\s*(\w+)', func)
-    # if dependent_match:
-    #     # print(match.group(1))
-    #     dependent = dependent_match.group(1)
-    #     func=func.replace("return",f"return {dependent} =")
-    # else:
-    #     print("未找到因变量")
-    # match = re.search(r'return\s+(.*)', func)
-    # if match:
-    #     expr_str = match.group(1)
-    #     print(expr_str)
-    # else:
-    #     print("未找到 return")
-    #
-    # return ""
 
 def find_best_eq(results_root: str):
     # results_root = "experiments/MRFCompress-Cuboid_20260712-150715"  # 改为你的目录
@@ -312,6 +289,7 @@ def find_best_eq(results_root: str):
         # # 转换为 SymPy 表达式
         # expr = sp.parse_expr(expr_str)
         # expr = expr.n(2)
+        
         expr = expr_substitution(func, params)
         print(f"剪纸前的表达式式为 {dependent} =")
         sp.pprint(expr)
