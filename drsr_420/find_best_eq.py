@@ -83,6 +83,8 @@ def expr_substitution(func: str, params: list) ->  sp.Expr | None:
     func.replace("np.","")
 
     # 将maximum 替换为 Piecewise
+    func.replace("maximum", "Max")
+    func.replace("minimum", "Min")
 
 
 
