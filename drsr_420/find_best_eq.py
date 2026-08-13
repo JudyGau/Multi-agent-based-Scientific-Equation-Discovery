@@ -3,6 +3,8 @@ import re
 import sympy as sp
 from graphviz import Source
 from sympy import nsimplify, dotprint
+from sympy.parsing import sym_expr
+
 import llm
 from drsr_420.evaluate_on_problems import MAX_NPARAMS
 
@@ -62,7 +64,7 @@ def explain_re_act(client: llm.LLMClient, content: str) -> str | None:
             print(f"API请求发生错误: {str(e)}")
             # return ([""] * repeat_prompt, [""] * repeat_prompt) if self._batch_inference else ("", "")
 
-def expr_substitution(func: str, params: list) -> str:
+def expr_substitution(func: str, params: list) ->  sp.Expr | None:
 
     params = [round(x, 2) for x in params]
 
@@ -79,6 +81,9 @@ def expr_substitution(func: str, params: list) -> str:
 
     # 将np.替换为sp.
     func.replace("np.","")
+
+    # 将maximum 替换为 Piecewise
+
 
 
     inter_vars = {}
@@ -262,26 +267,26 @@ def find_best_eq(results_root: str):
             print(f"[INFO] Failed to init LLM client: {e}")
             pass
 
-        params = [round(x, 2) for x in params]
-
-        match = re.search(r'Dependent:\s*(\w+)', func)
-        if match:
-            # print(match.group(1))
-            dependent = match.group(1)
-            # func=func.replace("return",f"return {dependent} =")
-        else:
-            print("未找到因变量")
-
-
-        for i in range(len(params)):
-            func=func.replace(f"params[{i}]", str(params[i]))
-
-        match = re.search(r'return\s+(.*)', func)
-        if match:
-            expr_str = match.group(1)
-            print(expr_str)
-        else:
-            print("未找到 return")
+        # params = [round(x, 2) for x in params]
+        #
+        # match = re.search(r'Dependent:\s*(\w+)', func)
+        # if match:
+        #     # print(match.group(1))
+        #     dependent = match.group(1)
+        #     # func=func.replace("return",f"return {dependent} =")
+        # else:
+        #     print("未找到因变量")
+        #
+        #
+        # for i in range(len(params)):
+        #     func=func.replace(f"params[{i}]", str(params[i]))
+        #
+        # match = re.search(r'return\s+(.*)', func)
+        # if match:
+        #     expr_str = match.group(1)
+        #     print(expr_str)
+        # else:
+        #     print("未找到 return")
 
         # print(f"[BEST] score={score} file={path} params={params} function:{func}")
 
@@ -300,11 +305,12 @@ def find_best_eq(results_root: str):
         )
 
         # 字符串替换 np.log -> log, np.exp -> exp
-        expr_str = expr_str.replace('np.asarray','').replace('np.log', 'log').replace('np.exp', 'exp').replace('np.sin', 'sin').replace('np.cos', 'cos').replace('np.sqrt','sqrt').replace('np.maximum','maximum')
+        # expr_str = expr_str.replace('np.asarray','').replace('np.log', 'log').replace('np.exp', 'exp').replace('np.sin', 'sin').replace('np.cos', 'cos').replace('np.sqrt','sqrt').replace('np.maximum','maximum')
 
-        # 转换为 SymPy 表达式
-        expr = sp.parse_expr(expr_str)
-        expr = expr.n(2)
+        # # 转换为 SymPy 表达式
+        # expr = sp.parse_expr(expr_str)
+        # expr = expr.n(2)
+        expr = expr_substitution(func, params)
         print(f"剪纸前的表达式式为 {dependent} =")
         sp.pprint(expr)
         # 保存为PNG图片
