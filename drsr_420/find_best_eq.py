@@ -77,7 +77,6 @@ def expr_substitution(func: str, params: list) -> str:
     independent_match = re.search(r'Independents:\s+(.*)', func)
     if independent_match:
         independent = independent_match.group(1)
-
     else:
         print("未找到自变量")
 
