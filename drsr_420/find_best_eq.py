@@ -173,7 +173,8 @@ def find_best_eq(results_root: str):
 
 
                         break
-        except Exception:
+        except Exception as e:
+            print(f"[INFO] Failed to init LLM client: {e}")
             pass
 
         params = [round(x, 2) for x in params]
@@ -214,7 +215,7 @@ def find_best_eq(results_root: str):
         )
 
         # 字符串替换 np.log -> log, np.exp -> exp
-        expr_str = expr_str.replace('np.asarray','').replace('np.log', 'log').replace('np.exp', 'exp').replace('np.sin', 'sin').replace('np.cos', 'cos').replace('np.sqrt','sqrt')
+        expr_str = expr_str.replace('np.asarray','').replace('np.log', 'log').replace('np.exp', 'exp').replace('np.sin', 'sin').replace('np.cos', 'cos').replace('np.sqrt','sqrt').replace('np.maximum','maximum')
 
         # 转换为 SymPy 表达式
         expr = sp.parse_expr(expr_str)
