@@ -8,7 +8,7 @@ import os
 from tqdm import tqdm
 from drsr_420.tools.tools_description import tools
 
-import fitz  # PyMuPDF
+import pymupdf  # PyMuPDF
 
 from drsr_420.tools.search_paper import search_paper
 
@@ -107,7 +107,7 @@ def read_paper(title_doi: list[tuple[str, str]], save_dir="pdf_downloads") -> st
 
             if os.path.exists(file_path):
                 print(f"在本地文献库找到文献: {file_path}")
-                doc = fitz.open(file_path)
+                doc = pymupdf.open(file_path)
                 full_text = ""
                 for page_num in range(doc.page_count):
                     page = doc.load_page(page_num)
@@ -200,7 +200,7 @@ def read_paper(title_doi: list[tuple[str, str]], save_dir="pdf_downloads") -> st
 
                 print(f"文件保存成功: {file_path}")
 
-                doc = fitz.open(file_path)
+                doc = pymupdf.open(file_path)
                 full_text = ""
                 for page_num in range(doc.page_count):
                     page = doc.load_page(page_num)
