@@ -105,15 +105,13 @@ def expr_substitution(func: str, params: list) -> str:
             eq_right = equation[1]
             expr = sp.parse_expr(eq_right)
 
-            inter_vars[eq_left] = expr
+            # inter_vars[eq_left] = expr
 
             for symbol in expr.free_symbols:
                 if inter_vars[symbol.name] is not None:
                     expr.subs(symbol, inter_vars[symbol.name])
 
             inter_vars[eq_left] = expr
-
-
 
 
             # expr = expr.n(2)
