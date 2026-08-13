@@ -66,13 +66,6 @@ def expr_substitution(func: str, params: list) -> str:
 
     params = [round(x, 2) for x in params]
 
-    dependent_match = re.search(r'Dependent:\s*(\w+)', func)
-    if dependent_match:
-        # print(match.group(1))
-        dependent = dependent_match.group(1)
-        func=func.replace("return",f"return {dependent} =")
-    else:
-        print("未找到因变量")
 
     independent_match = re.search(r'Independents:\s+(.*)', func)
     if independent_match:
@@ -86,7 +79,6 @@ def expr_substitution(func: str, params: list) -> str:
 
     # 将np.替换为sp.
     func.replace("np.","")
-
 
 
     inter_vars = {}
@@ -113,11 +105,9 @@ def expr_substitution(func: str, params: list) -> str:
 
             inter_vars[eq_left] = expr
 
-
             # expr = expr.n(2)
         else:
             print("跳过该行")
-
 
     # while True:
     #     equal_match = re.search(r'=', func)
@@ -127,16 +117,34 @@ def expr_substitution(func: str, params: list) -> str:
     #     else:
     #         print("未找到自变量")
 
-
-
     match = re.search(r'return\s+(.*)', func)
     if match:
         expr_str = match.group(1)
-        print(expr_str)
+        expr = sp.parse_expr(expr_str)
+        for symbol in expr.free_symbols:
+            if inter_vars[symbol.name] is not None:
+                expr.subs(symbol, inter_vars[symbol.name])
+
+        print(expr)
+        return expr
     else:
         print("未找到 return")
 
-    return ""
+    # dependent_match = re.search(r'Dependent:\s*(\w+)', func)
+    # if dependent_match:
+    #     # print(match.group(1))
+    #     dependent = dependent_match.group(1)
+    #     func=func.replace("return",f"return {dependent} =")
+    # else:
+    #     print("未找到因变量")
+    # match = re.search(r'return\s+(.*)', func)
+    # if match:
+    #     expr_str = match.group(1)
+    #     print(expr_str)
+    # else:
+    #     print("未找到 return")
+    #
+    # return ""
 
 def find_best_eq(results_root: str):
     # results_root = "experiments/MRFCompress-Cuboid_20260712-150715"  # 改为你的目录
