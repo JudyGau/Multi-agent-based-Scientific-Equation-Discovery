@@ -66,13 +66,20 @@ def expr_substitution(func: str, params: list) -> str:
 
     # params = [round(x, 2) for x in params]
 
-    match = re.search(r'Dependent:\s*(\w+)', func)
-    if match:
+    dependent_match = re.search(r'Dependent:\s*(\w+)', func)
+    if dependent_match:
         # print(match.group(1))
-        dependent = match.group(1)
+        dependent = dependent_match.group(1)
         func=func.replace("return",f"return {dependent} =")
     else:
         print("未找到因变量")
+
+    independent_match = re.search(r'Independents:\s+(.*)', func)
+    if independent_match:
+        independent = independent_match.group(1)
+
+    else:
+        print("未找到自变量")
 
     for i in range(MAX_NPARAMS):
         func = func.replace(f"params[{i}]", str(params[i]))
