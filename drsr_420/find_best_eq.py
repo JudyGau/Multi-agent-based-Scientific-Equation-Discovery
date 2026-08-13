@@ -289,7 +289,7 @@ def find_best_eq(results_root: str):
         # # 转换为 SymPy 表达式
         # expr = sp.parse_expr(expr_str)
         # expr = expr.n(2)
-        
+
         expr = expr_substitution(func, params)
         print(f"剪纸前的表达式式为 {dependent} =")
         sp.pprint(expr)
