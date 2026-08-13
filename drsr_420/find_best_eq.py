@@ -4,6 +4,7 @@ import sympy as sp
 from graphviz import Source
 from sympy import nsimplify, dotprint
 import llm
+from drsr_420.evaluate_on_problems import MAX_NPARAMS
 
 from drsr_420.sensitivity_prune import SensitivityPruner
 from drsr_420.tools.read_paper import read_paper
@@ -61,6 +62,29 @@ def explain_re_act(client: llm.LLMClient, content: str) -> str | None:
             print(f"API请求发生错误: {str(e)}")
             # return ([""] * repeat_prompt, [""] * repeat_prompt) if self._batch_inference else ("", "")
 
+def expr_substitution(func: str, params: list) -> str:
+
+    # params = [round(x, 2) for x in params]
+
+    match = re.search(r'Dependent:\s*(\w+)', func)
+    if match:
+        # print(match.group(1))
+        dependent = match.group(1)
+        func=func.replace("return",f"return {dependent} =")
+    else:
+        print("未找到因变量")
+
+    for i in range(MAX_NPARAMS):
+        func = func.replace(f"params[{i}]", str(params[i]))
+
+    match = re.search(r'return\s+(.*)', func)
+    if match:
+        expr_str = match.group(1)
+        print(expr_str)
+    else:
+        print("未找到 return")
+
+    return ""
 
 def find_best_eq(results_root: str):
     # results_root = "experiments/MRFCompress-Cuboid_20260712-150715"  # 改为你的目录
