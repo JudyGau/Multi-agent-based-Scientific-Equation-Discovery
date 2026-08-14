@@ -81,7 +81,7 @@ def expr_substitution(func: str, params: list) ->  sp.Expr | None:
         func = func.replace(f"params[{i}]", str(params[i]))
 
     # 将np.替换为sp. 将maximum 替换为 Piecewise
-    func = func.replace("np.","").replace("maximum", "Max").replace("minimum", "Min")
+    func = func.replace("np.","").replace("maximum", "Max").replace("minimum", "Min").replace("N")
 
     inter_vars = {}
     for var_str in independent_list:
@@ -101,7 +101,9 @@ def expr_substitution(func: str, params: list) ->  sp.Expr | None:
             var = sp.Symbol(eq_left)
 
             eq_right = equation[1].strip()
-            expr = sp.parse_expr(eq_right)
+
+            N_symbol = sp.Symbol('N')
+            expr = sp.parse_expr(eq_right,{'N': N_symbol})
 
             # inter_vars[eq_left] = expr
 
