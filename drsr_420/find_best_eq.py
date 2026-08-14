@@ -241,7 +241,7 @@ def find_best_eq(results_root: str):
 
                         break
         except Exception as e:
-            print(f"[INFO] Failed to init LLM client: {e}")
+            print(f"[WARN] Failed to init LLM client: {e}")
             pass
 
         # params = [round(x, 2) for x in params]
@@ -271,11 +271,14 @@ def find_best_eq(results_root: str):
                 基于敏感度分析剪枝
                 移除对输出影响小于阈值的项
                 """
+        dependent = re.search(r'Dependent:\s*(\w+)', func).group(1)
+        independent = re.search(r'Independents:\s+(.*)', func).group(1)
+
         # 创建智能剪枝器
         pruner = SensitivityPruner(
             # X_sample=X_sample,
             # expr=expr,
-            symbols=sp.symbols('lambda12 lambda23'),
+            symbols=sp.symbols(independent),
             threshold=0.1,
             sample_range=(1, 14)
             # mse_threshold=0.1  # 默认允许10% MSE增加
