@@ -82,7 +82,7 @@ def expr_substitution(func: str, params: list) ->  sp.Expr | None:
     # 将np.替换为sp. 将maximum 替换为 Piecewise
     func = func.replace("np.","").replace("maximum", "Max").replace("minimum", "Min")
 
-    inter_vars = {}
+    inter_vars = {independent: None}
     # 遍历func的每行
     for line in func.splitlines():
         equal_match = re.search(r'=', line)
