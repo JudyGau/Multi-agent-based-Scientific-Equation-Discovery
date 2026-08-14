@@ -119,8 +119,8 @@ def expr_substitution(func: str, params: list) ->  sp.Expr | None:
         expr_str = match.group(1)
         expr = sp.parse_expr(expr_str, {'N': sp.Symbol('N')})
         for symbol in expr.free_symbols:
-            if inter_vars[symbol.name] is not None:
-                expr.subs(symbol, inter_vars[symbol.name])
+            if inter_vars[symbol] is not None:
+                expr = expr.subs(symbol, inter_vars[symbol])
 
         expr = expr.n(2)
         print(f"代入中间变量后的表达式: {expr}")
