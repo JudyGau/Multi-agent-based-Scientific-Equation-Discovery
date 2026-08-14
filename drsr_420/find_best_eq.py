@@ -79,13 +79,8 @@ def expr_substitution(func: str, params: list) ->  sp.Expr | None:
     for i in range(MAX_NPARAMS):
         func = func.replace(f"params[{i}]", str(params[i]))
 
-    # 将np.替换为sp.
-    func.replace("np.","")
-
-    # 将maximum 替换为 Piecewise
-    func.replace("maximum", "Max")
-    func.replace("minimum", "Min")
-
+    # 将np.替换为sp. 将maximum 替换为 Piecewise
+    func = func.replace("np.","").replace("maximum", "Max").replace("minimum", "Min")
 
     inter_vars = {}
     # 遍历func的每行
@@ -316,3 +311,7 @@ def find_best_eq(results_root: str):
 
         src2 = Source(dotprint(pruned_expr))
         src2.render(f'{results_root}/pruned_expr_tree', view=True)  # 保存为PDF并显示
+
+
+if __name__ == "__main__":
+    find_best_eq("..\\experiments\\MRFCompress-Ellipsoid_20260813-133229")
