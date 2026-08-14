@@ -274,6 +274,9 @@ def find_best_eq(results_root: str):
         dependent = re.search(r'Dependent:\s*(\w+)', func).group(1)
         independent = re.search(r'Independents:\s+(.*)', func).group(1)
 
+        # 加上','以便变量字符串被转换为元组tuple
+        independent = independent + ','
+
         # 创建智能剪枝器
         pruner = SensitivityPruner(
             # X_sample=X_sample,
