@@ -72,6 +72,7 @@ def expr_substitution(func: str, params: list) ->  sp.Expr | None:
     independent_match = re.search(r'Independents:\s+(.*)', func)
     if independent_match:
         independent = independent_match.group(1)
+        independent_list = independent.split(',')
     else:
         print("未找到自变量")
 
@@ -82,7 +83,10 @@ def expr_substitution(func: str, params: list) ->  sp.Expr | None:
     # 将np.替换为sp. 将maximum 替换为 Piecewise
     func = func.replace("np.","").replace("maximum", "Max").replace("minimum", "Min")
 
-    inter_vars = {independent: None}
+    inter_vars = {}
+    for var in independent_list:
+        inter_vars[var] = None
+
     # 遍历func的每行
     for line in func.splitlines():
         equal_match = re.search(r'=', line)
@@ -93,7 +97,7 @@ def expr_substitution(func: str, params: list) ->  sp.Expr | None:
             equation = line.split("=")
 
             eq_left = equation[0]
-            # var = sp.Symbol(eq_left)
+            var = sp.Symbol(eq_left)
 
             eq_right = equation[1]
             expr = sp.parse_expr(eq_right)
@@ -101,10 +105,10 @@ def expr_substitution(func: str, params: list) ->  sp.Expr | None:
             # inter_vars[eq_left] = expr
 
             for symbol in expr.free_symbols:
-                if inter_vars[symbol.name] is not None:
-                    expr.subs(symbol, inter_vars[symbol.name])
+                if inter_vars[symbol] is not None:
+                    expr.subs(symbol, inter_vars[symbol])
 
-            inter_vars[eq_left] = expr
+            inter_vars[var] = expr
 
             # expr = expr.n(2)
         else:
