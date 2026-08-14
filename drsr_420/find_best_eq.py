@@ -101,11 +101,7 @@ def expr_substitution(func: str, params: list) ->  sp.Expr | None:
             var = sp.Symbol(eq_left)
 
             eq_right = equation[1].strip()
-
-            N_symbol = sp.Symbol('N')
-            expr = sp.parse_expr(eq_right,{'N': N_symbol})
-
-            # inter_vars[eq_left] = expr
+            expr = sp.parse_expr(eq_right,{'N': sp.Symbol('N')})
 
             for symbol in expr.free_symbols:
                 if inter_vars[symbol] is not None:
@@ -121,7 +117,7 @@ def expr_substitution(func: str, params: list) ->  sp.Expr | None:
     match = re.search(r'return\s+(.*)', func)
     if match:
         expr_str = match.group(1)
-        expr = sp.parse_expr(expr_str)
+        expr = sp.parse_expr(expr_str, {'N': sp.Symbol('N')})
         for symbol in expr.free_symbols:
             if inter_vars[symbol.name] is not None:
                 expr.subs(symbol, inter_vars[symbol.name])
