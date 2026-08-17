@@ -80,6 +80,10 @@ def expr_substitution(func: str, params: list) ->  sp.Expr | None:
     for i in range(MAX_NPARAMS):
         func = func.replace(f"params[{i}]", str(params[i]))
 
+    # 去除注释部分
+    pattern = "\"\"\".*?\"\"\""  # 非贪婪匹配
+    func = re.sub(pattern, "", func)
+
     # 将np.替换为sp. 将maximum 替换为 Piecewise
     func = func.replace("np.","").replace("maximum", "Max").replace("minimum", "Min")
 
