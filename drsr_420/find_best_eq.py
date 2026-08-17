@@ -88,12 +88,12 @@ def expr_substitution(func: str, params: list) ->  sp.Expr | None:
     func = func.replace("np.","").replace("maximum", "Max").replace("minimum", "Min").replace("where", "Piecewise")
 
     # 更改 Piecewise 函数的调用格式
-    def replfunc(match):
-        parameter_str = match.group(1)
+    def replfunc(m):
+        parameter_str = m.group(0)
         parameter_list = parameter_str.split(',')
         cond, true_val, false_val  = parameter_list[0].strip(), parameter_list[1].strip(), parameter_list[2].strip()
 
-        return f"Piecewise(({true_val}, {cond}), ({false_val}, True))"
+        return f"Piecewise(({true_val}, {cond}), ({false_val}, True))\n"
 
     func = re.sub("Piecewise\(.*\)",replfunc, func,flags=re.DOTALL)
 
