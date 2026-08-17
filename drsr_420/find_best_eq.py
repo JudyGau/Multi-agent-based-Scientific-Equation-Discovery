@@ -91,11 +91,10 @@ def expr_substitution(func: str, params: list) ->  sp.Expr | None:
     def replfunc(m):
         parameter_str = m.group(0)
         parameter_list = parameter_str.split(',')
-        cond, true_val, false_val  = parameter_list[0].strip(), parameter_list[1].strip(), parameter_list[2].strip()
-
+        cond, true_val, false_val  = parameter_list[0].strip().strip("Piecewise("), parameter_list[1].strip(), parameter_list[2].strip().strip(")\n")
         return f"Piecewise(({true_val}, {cond}), ({false_val}, True))\n"
 
-    func = re.sub("Piecewise\(.*\)",replfunc, func,flags=re.DOTALL)
+    func = re.sub("Piecewise\\(.*?\\)\n",replfunc, func,flags=re.DOTALL)
 
     inter_vars = {}
     for var_str in independent_list:
