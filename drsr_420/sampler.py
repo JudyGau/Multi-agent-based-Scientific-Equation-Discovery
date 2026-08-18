@@ -879,6 +879,7 @@ class LocalLLM(LLM):
                 responses = []
                 think_responses = []
                 for _ in range(repeat_prompt):
+                    # 初始化上下文
                     messages=[]
                     messages.append({"role": "user", "content": content})
                     resp = client.chat([{"role": "user", "content": content}])
