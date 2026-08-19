@@ -311,7 +311,7 @@ def find_best_eq(results_root: str):
         print(f"剪纸前的表达式式为 {dependent} =")
         sp.pprint(expr)
         # 保存为PNG图片
-        sp.preview(expr, output='png', filename=f'{results_root}/expr.png', viewer=None)
+        sp.preview(expr, output='png', filename=f'{results_root}/expr.png', viewer='file')
 
         # 使用智能剪枝
         pruned_expr = pruner.prune(expr, verbose=True)
@@ -324,7 +324,7 @@ def find_best_eq(results_root: str):
         print(f"剪纸后的表达式式为 {dependent} =")
         sp.pprint(pruned_expr)
         # 保存为PNG图片
-        sp.preview(pruned_expr, output='png', filename=f'{results_root}/prunedExpr.png', viewer=None)
+        sp.preview(pruned_expr, output='png', filename=f'{results_root}/prunedExpr.png', viewer='file')
 
         print(".......")
 
