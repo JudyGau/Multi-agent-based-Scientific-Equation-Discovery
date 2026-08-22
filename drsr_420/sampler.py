@@ -106,6 +106,7 @@ class Sampler:
             'temperature': float(0.4),
             'top_p': float(0.9),
             'frequency_penalty': float(0.1),
+            'tools': None
         })
         self._llm_client_residual=llm_client
 

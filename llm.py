@@ -81,6 +81,7 @@ class LLMClient:
             'frequency_penalty': 0.2,
             'n': 1,
             'stream': False,
+            'options':{}
         }
 
     def _provider_name(self) -> str:
@@ -139,11 +140,13 @@ class LLMClient:
             "messages": messages,
             "tools" : tools,
             "tool_choice" : "auto",
+            "options":{},
+            # "think": "false",
         }
         # 仅透传 OpenAI Chat Completions 兼容字段，避免提供商拒绝未知参数
         allowed_keys = {
             'max_tokens', 'temperature', 'top_p', 'top_k', 'n', 'stream',
-            'presence_penalty', 'frequency_penalty', 'stop', 'logprobs',
+            'presence_penalty', 'frequency_penalty', 'stop', 'logprobs','options'
         }
         if isinstance(self.kwargs, dict):
             for k, v in self.kwargs.items():
@@ -186,7 +189,7 @@ class LLMClient:
 
             message = response_data['choices'][0].get('message', {})
             content = message.get('content', '') or ''
-            reasoning_content = message.get('reasoning_content', '') or ''
+            reasoning_content = message.get('reasoning', '') or ''
 
             tool_calls = message.get('tool_calls', [])
 

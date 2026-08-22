@@ -164,6 +164,9 @@ if __name__ == '__main__':
     # 解析 api_key：支持字符串与字典（按 provider 或完整 model）
     api_key_cfg = llm_config.get('api_key', '')
     api_key = ''
+    # 解析 host
+    host = llm_config.get('host','')
+
     if isinstance(api_key_cfg, dict):
         def _get_case_insensitive(d: dict, k: str):
             for kk, vv in d.items():
@@ -192,7 +195,7 @@ if __name__ == '__main__':
                 base_url=llm_config.get('base_url') or 'https://api.deepinfra.com/v1/openai',
             )
         elif provider in ('ollama', 'local'):
-            client = llm_mod.OllamaClient(api_key=api_key, model=pure_model)
+            client = llm_mod.OllamaClient(api_key=api_key, model=pure_model, base_url=host)
         elif provider in ('cstcloud', 'cst', 'cst-cloud', 'keji', 'keji-yun'):
             client = llm_mod.CSTCloudClient(api_key=api_key, model=pure_model)
         else:
@@ -204,6 +207,7 @@ if __name__ == '__main__':
             'temperature': float(llm_config.get('temperature', 0.6) or 0.6),
             'top_p': float(llm_config.get('top_p', 0.3) or 0.3),
             'frequency_penalty': float(llm_config.get('frequency_penalty', 0.1)),
+            'options': llm_config.get('options', {}),
             # 'top_k': int(llm_config.get('top_k', 30) or 30),
         })
         print(f"[INFO] LLM client initialized: provider={provider}, model={pure_model}, kwargs={client.kwargs}")
