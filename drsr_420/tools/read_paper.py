@@ -22,7 +22,7 @@ deepseek = OpenAI(
 
 
 # ── 工具 2：web visit ───────────────────────
-def read_paper(title_doi: list[tuple[str, str]], save_dir="pdf_downloads") -> str :
+def read_paper(title_doi: list[tuple[str, str]] | tuple[str, str], save_dir="pdf_downloads") -> str :
     """
     调 Serper 的 WebPage API，
     返回『已摘选结构化』的 JSON 字符串，方便模型消费。
@@ -95,6 +95,9 @@ def read_paper(title_doi: list[tuple[str, str]], save_dir="pdf_downloads") -> st
 
 
     textlist = []
+
+    if type(title_doi)==tuple:
+        title_doi = [title_doi]
 
     for title, pdf_url in tqdm(title_doi, desc="下载PDF"):
         try:
