@@ -1,6 +1,8 @@
 import json
 import http.client
 import re
+from typing import List
+
 from bs4 import BeautifulSoup
 from openai import OpenAI
 import requests
@@ -96,7 +98,7 @@ def read_paper(title_doi: list[tuple[str, str]] | tuple[str, str], save_dir="pdf
 
     textlist = []
 
-    if type(title_doi)==tuple:
+    if isinstance(title_doi, list) and all(isinstance(item, str) for item in title_doi):
         title_doi = [title_doi]
 
     for title, pdf_url in tqdm(title_doi, desc="下载PDF"):
