@@ -876,10 +876,11 @@ class LocalLLM(LLM):
         # 优先使用传入的 llm_client
         client = getattr(self, "_llm_client", None)
         if client is not None:
-            try:
-                responses = []
-                think_responses = []
-                for _ in range(repeat_prompt):
+            # try:
+            responses = []
+            think_responses = []
+            for _ in range(repeat_prompt):
+                try:
                     # 初始化上下文
                     messages=[]
                     messages.append({"role": "user", "content": content})
@@ -915,16 +916,25 @@ class LocalLLM(LLM):
                                 })
 
                             resp = client.chat(messages)
+                            if resp is None:
+                                print("Error in LLMclient.chat(): resp is none")
+                                break
+
                         # 如果未调用，则跳出循环
                         else:
                             responses.append(resp.get('content', ''))
                             think_responses.append(resp.get('reasoning_content', ''))
                             break
 
-                return (responses, think_responses) if self._batch_inference else (responses[0], think_responses[0])
-            except Exception as e:
-                print(f"API请求发生错误: {str(e)}")
-                return ([""] * repeat_prompt, [""] * repeat_prompt) if self._batch_inference else ("", "")
+                except Exception as e:
+                    print(f"API请求发生错误: {str(e)}")
+                    responses.append('')
+                    think_responses.append('')
+
+            return (responses, think_responses) if self._batch_inference else (responses[0], think_responses[0])
+            # except Exception as e:
+            #     print(f"API请求发生错误: {str(e)}")
+            #     return ([""] * repeat_prompt, [""] * repeat_prompt) if self._batch_inference else ("", "")
         
         # fallback 到 http.client
         try:
