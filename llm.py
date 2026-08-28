@@ -165,7 +165,7 @@ class LLMClient:
 
         start_time = time.time()
         try:
-            response = requests.post(request_url, headers=headers, json=payload, timeout=(10,1200))
+            response = requests.post(request_url, headers=headers, json=payload, timeout=(10,3600))
             # 状态码错误先抛出异常（下方 except 会打印详情）
             response.raise_for_status()
             # 尝试解析 JSON；失败时打印前 500 字符文本
