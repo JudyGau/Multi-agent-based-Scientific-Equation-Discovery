@@ -917,8 +917,8 @@ class LocalLLM(LLM):
 
                             resp = client.chat(messages)
                             if resp is None:
-                                print("Error in LLMclient.chat(): resp is none")
-                                break
+                                # print("Error in LLMclient.chat(): resp is none")
+                                raise Exception("Error in LLMclient.chat(): resp is none")
 
                         # 如果未调用，则跳出循环
                         else:
