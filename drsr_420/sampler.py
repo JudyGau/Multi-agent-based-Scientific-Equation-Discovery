@@ -928,8 +928,8 @@ class LocalLLM(LLM):
 
                 except Exception as e:
                     print(f"API请求发生错误: {str(e)}")
-                    responses.append('')
-                    think_responses.append('')
+                    responses.append("")
+                    think_responses.append("")
 
             return (responses, think_responses) if self._batch_inference else (responses[0], think_responses[0])
             # except Exception as e:
