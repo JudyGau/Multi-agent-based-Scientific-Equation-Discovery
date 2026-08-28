@@ -344,9 +344,6 @@ class LLMClient:
                 "tool_calls": tool_calls,
             }
 
-        except Exception as e:
-            print(e)
-
         except requests.exceptions.RequestException as e:
             print(f"通过 requests 调用 API 时出错: {e}")
             if e.response is not None:
@@ -357,6 +354,10 @@ class LLMClient:
                         print("错误详情(TEXT):", e.response.text[:500])
                     except Exception:
                         pass
+            raise
+
+        except Exception as e:
+            print(e)
             raise
 
 class DeepSeekClient(LLMClient):
