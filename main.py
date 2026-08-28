@@ -203,11 +203,11 @@ if __name__ == '__main__':
             client = llm_mod.BltClient(api_key=api_key, model=pure_model)
         # 将部分生成参数写入 client.kwargs
         client.kwargs.update({
-            'max_tokens': int(llm_config.get('max_tokens', 1024) or 1024),
+            'max_completion_tokens': int(llm_config.get('max_completion_tokens', 1024) or 1024),
             'temperature': float(llm_config.get('temperature', 0.6) or 0.6),
             'top_p': float(llm_config.get('top_p', 0.3) or 0.3),
             'frequency_penalty': float(llm_config.get('frequency_penalty', 0.1)),
-            'options': llm_config.get('options', {}),
+            # 'options': llm_config.get('options', {}),
             # 'top_k': int(llm_config.get('top_k', 30) or 30),
         })
         print(f"[INFO] LLM client initialized: provider={provider}, model={pure_model}, kwargs={client.kwargs}")

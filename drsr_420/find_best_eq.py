@@ -225,7 +225,7 @@ def find_best_eq(results_root: str):
                                 client = llm.BltClient(api_key=api_key, model=pure_model)
                             # 将部分生成参数写入 client.kwargs
                             client.kwargs.update({
-                                'max_tokens': int(llm_config.get('max_tokens', 1024) or 1024),
+                                'max_completion_tokens': int(llm_config.get('max_tokens', 1024) or 1024),
                                 'temperature': float(llm_config.get('temperature', 0.6) or 0.6),
                                 'top_p': float(llm_config.get('top_p', 0.3) or 0.3),
                                 # 'top_k': int(llm_config.get('top_k', 30) or 30),

@@ -888,7 +888,7 @@ class LocalLLM(LLM):
                     while True:
                         print("========================思考过程========================\n")
                         print(resp.get('reasoning_content', ''))
-                        print("====================================================\n")
+                        print("=================================== =================\n")
 
                         tool_calls = resp.get('tool_calls', [])
                         messages.append({"role":"assistant","content": resp.get('content',''),"tool_calls":tool_calls})

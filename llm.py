@@ -74,14 +74,16 @@ class LLMClient:
         }
         self._cum_time_seconds: float = 0.0
         self.kwargs = {
-            'max_tokens': 1024,  # 更安全的默认值，避免超过部分模型上限
+            'max_completion_tokens': 1024,  # 更安全的默认值，避免超过部分模型上限
             'temperature': 0.5,
             'top_p': 0.5,
             # 'top_k': 30,
             'frequency_penalty': 0.2,
             'n': 1,
             'stream': False,
-            'options':{}
+            # 'options':{},
+            # 'enable_thinking': True
+
         }
 
     def _provider_name(self) -> str:
@@ -111,13 +113,14 @@ class LLMClient:
         request_url = f"{self.base_url.rstrip('/')}/chat/completions"
 
         model_name = self.model
-        if 'qwen3' in model_name.lower():
-            if '/think' in model_name:
-                self.kwargs['enable_thinking'] = True
-                model_name = model_name.replace('/think', '')
-            else:
-                self.kwargs['enable_thinking'] = False
-                model_name = model_name.replace('/think', '')
+
+        # if 'qwen3' in model_name.lower():
+        #     if '/think' in model_name:
+        #         self.kwargs['enable_thinking'] = True
+        #         model_name = model_name.replace('/think', '')
+        #     else:
+        #         self.kwargs['enable_thinking'] = False
+        #         model_name = model_name.replace('/think', '')
 
         # tools = [{
         #     "type": "function",
@@ -140,12 +143,13 @@ class LLMClient:
             "messages": messages,
             "tools" : tools,
             "tool_choice" : "auto",
-            "options":{},
+            # "options":{},
+            "extra_body":{"enable_thinking": True},
             # "think": "false",
         }
         # 仅透传 OpenAI Chat Completions 兼容字段，避免提供商拒绝未知参数
         allowed_keys = {
-            'max_tokens', 'temperature', 'top_p', 'top_k', 'n', 'stream',
+            'max_completion_tokens', 'temperature', 'top_p', 'top_k', 'n', 'stream',
             'presence_penalty', 'frequency_penalty', 'stop', 'logprobs','options'
         }
         if isinstance(self.kwargs, dict):
@@ -154,14 +158,14 @@ class LLMClient:
                     payload[k] = v
         # 对输出 token 上限做保护（部分模型 4k 上限，统一取不超过 4096）
         try:
-            if isinstance(payload.get('max_tokens'), int) and payload['max_tokens'] > 65536:
-                payload['max_tokens'] = 65536
+            if isinstance(payload.get('max_completion_tokens'), int) and payload['max_completion_tokens'] > 65536:
+                payload['max_completion_tokens'] = 65536
         except Exception:
             pass
 
         start_time = time.time()
         try:
-            response = requests.post(request_url, headers=headers, json=payload, timeout=120)
+            response = requests.post(request_url, headers=headers, json=payload, timeout=(10,1200))
             # 状态码错误先抛出异常（下方 except 会打印详情）
             response.raise_for_status()
             # 尝试解析 JSON；失败时打印前 500 字符文本
@@ -189,7 +193,7 @@ class LLMClient:
 
             message = response_data['choices'][0].get('message', {})
             content = message.get('content', '') or ''
-            reasoning_content = message.get('reasoning', '') or ''
+            reasoning_content = message.get('reasoning_content', '') or ''
 
             tool_calls = message.get('tool_calls', [])
 
@@ -492,7 +496,7 @@ if __name__ == '__main__':
     # response_content = client.chat(messages)
     # print(response_content)
 
-    deepseek_api_key = 'sk-3970c8c4922f49fd89761fe3ad4a5eb5'
+    deepseek_api_key = 'xxx'
     # deepseek_api_key = os.getenv("DEEPSEEK_API_KEY", "your-deepseek-api-key")
     if deepseek_api_key == "your-deepseek-api-key":
         print("请设置 DEEPSEEK_API_KEY 环境变量或直接在代码中提供您的 API 密钥。")
