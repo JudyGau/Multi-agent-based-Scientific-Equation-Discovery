@@ -4,7 +4,7 @@ tools = [
         "type": "function",
         "function": {
             "name": "search_paper",
-            "description": "根据关键词 搜索中/英文论文，返回DOI、标题、期刊/会议名称、作者、年份、被引量等。",
+            "description": "根据关键词 搜索中/英文论文，返回文献的元数据(DOI、标题、期刊/会议名称、作者、年份、被引量等)，但无法直接获取文献内容",
             "parameters": {
                 "type": "object",
                 "properties": {
