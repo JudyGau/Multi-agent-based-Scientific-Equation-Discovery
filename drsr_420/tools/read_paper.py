@@ -11,13 +11,30 @@ from tqdm import tqdm
 from drsr_420.tools.tools_description import tools
 
 import pymupdf  # PyMuPDF
-
+import llm
 from drsr_420.tools.search_paper import search_paper
 
 # ── 客户端 ──────────────────────────────────────────────
 deepseek = OpenAI(
     api_key="xxx",
     base_url="https://api.deepseek.com",        # 兼容 OpenAI 格式
+)
+
+with open("./llm_explain.config", 'r', encoding='utf-8') as f:
+    llm_config = json.load(f)
+# 构造一次性的 LLM 客户端实例（按任务传递，避免并行任务相互干扰）
+# 模型名格式：provider/model，例如 CSTCloud/gpt-oss-120b
+    model_name = llm_config.get('model')
+    if not model_name or '/' not in model_name:
+        raise ValueError("缺少模型提供商：请在 llm.config 的 model 字段使用 'provider/model' 格式，例如 'CSTCloud/gpt-oss-120b'")
+    provider, pure_model = llm.parse_provider_model(model_name)
+
+api_key = llm_config.get('api_key', '')
+
+host = llm_config.get('host', '')
+client_read = OpenAI(
+    api_key=api_key,
+    base_url=host,
 )
 
 # SERPER_KEY = "ac28c1aac4d446f3de5c8e79ea6d406727509455"
@@ -120,7 +137,25 @@ def read_paper(title_doi: list[tuple[str, str]] | tuple[str, str], save_dir="pdf
                     full_text += f"\n--- Page {page_num + 1} ---\n{text}"
                 doc.close()
                 print(f"文件读取成功: {file_path}")
-                textlist.append(full_text)
+                # 2. 发起聊天请求
+                response = client_read.chat.completions.create(
+                    model = pure_model,  # 替换为你下载的模型名称
+                    messages=[
+                        {"role": "system", "content": "You are a helpful assistant, you need to read literature and summarize."},
+                        {"role": "user", "content": f"{full_text}"}
+                    ],
+                    temperature=0.4,
+                    frequency_penalty=0.1,
+                    top_p=0.9,
+                    max_completion_tokens=llm_config.get("max_completion_tokens"),
+                )
+
+                # 3. 打印回复
+                summary = response.choices[0].message.content
+                print("======总结结果======")
+                print(summary)
+                print("==================")
+                textlist.append(summary)
 
                 #分析下一个文献
                 continue
