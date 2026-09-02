@@ -2,12 +2,12 @@
 # 运行方式（需在项目根目录 c:\ResearchCode\drsr-main 下）：
 #   python -m drsr_420.tools.mcp_server          # stdio 传输（MCP 协议默认）
 #   python -m drsr_420.tools.mcp_server --http   # 单 streamable HTTP 端点，127.0.0.1:8000/mcp
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from drsr_420.tools.search_paper import search_paper as _search_paper_impl
 from drsr_420.tools.read_paper import read_paper as _read_paper_impl
 
-mcp = FastMCP("drsr-tools")
+mcp = MCPServer("drsr-tools")
 
 
 @mcp.tool(
