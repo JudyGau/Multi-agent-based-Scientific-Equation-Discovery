@@ -34,8 +34,7 @@ import http.client
 import os
 import traceback
 from drsr_420 import prompt_config as pc
-from drsr_420.tools.read_paper import read_paper
-from drsr_420.tools.search_paper import search_paper
+from drsr_420.tool_runner import mcp_call_tool
 from llm import LLMClient
 
 Port = '5000'
@@ -922,13 +921,7 @@ class LocalLLM(LLM):
                             for tc in tool_calls:
                                 fn_name = tc.get('function', {}).get('name', '')
                                 args = json.loads(tc.get('function', {}).get('arguments', []))
-                                result=""
-                                if fn_name == "search_paper":
-                                    result = search_paper(**args)
-                                elif fn_name == "read_paper":
-                                    result = read_paper(**args)
-                                else:
-                                    result = json.dumps({"error": "unknown tool"})
+                                result = mcp_call_tool(fn_name, args)
 
                                 messages.append({
                                     "role": "tool",
@@ -985,14 +978,7 @@ class LocalLLM(LLM):
                             fn_name = tc.get('function', {}).get('name', '')
                             args = json.loads(tc.get('function', {}).get('arguments', []))
 
-                            result = ""
-
-                            if fn_name == "search_paper":
-                                result = search_paper(**args)
-                            elif fn_name == "read_paper":
-                                result = read_paper(**args)
-                            else:
-                                result = json.dumps({"error": "unknown tool"})
+                            result = mcp_call_tool(fn_name, args)
 
                             messages.append({
                                 "role": "tool",
