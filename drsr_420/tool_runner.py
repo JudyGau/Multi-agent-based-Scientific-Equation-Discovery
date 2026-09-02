@@ -30,6 +30,10 @@ class MCPStdioClient:
             command=command,
             args=list(server_args or _SERVER_ARGS),
             cwd=str(cwd or _ROOT),
+            # mcp 的 stdio_client 只透传白名单环境变量，PYTHONUTF8/PYTHONIOENCODING
+            # 会被丢弃，导致服务子进程退回 GBK 编码，中文/tqdm 进度条在控制台乱码。
+            # 这里显式补上，保证子进程所有输出按 UTF-8 编码。
+            env={"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
         )
         self._loop = None
         self._session = None

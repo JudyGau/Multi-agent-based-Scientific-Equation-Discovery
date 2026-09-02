@@ -1,6 +1,7 @@
 import json
 import http.client
 import re
+import sys
 from typing import List
 
 from bs4 import BeautifulSoup
@@ -149,7 +150,7 @@ def read_paper(title_doi: list[tuple[str, str]] | tuple[str, str], save_dir="pdf
             file_path = os.path.join(save_dir, f"{safe_doi}.pdf")
 
             if os.path.exists(file_path):
-                print(f"在本地文献库找到文献: {file_path}")
+                print(f"在本地文献库找到文献: {file_path}", file=sys.stderr)
                 doc = pymupdf.open(file_path)
                 full_text = ""
                 for page_num in range(doc.page_count):
@@ -157,7 +158,7 @@ def read_paper(title_doi: list[tuple[str, str]] | tuple[str, str], save_dir="pdf
                     text = page.get_text()
                     full_text += f"\n--- Page {page_num + 1} ---\n{text}"
                 doc.close()
-                print(f"文件读取成功: {file_path}")
+                print(f"文件读取成功: {file_path}", file=sys.stderr)
                 # 2. 发起聊天请求（使用项目自身 LLM 客户端，兼容空 api_key 的本地服务）
                 client, cfg = _get_reader()
                 client.kwargs.update({
@@ -182,8 +183,8 @@ def read_paper(title_doi: list[tuple[str, str]] | tuple[str, str], save_dir="pdf
                 continue
             else:
 
-                print(f"本地文献库不存在文献: file_path {file_path}, title_url {(title, pdf_url)}")
-                textlist.append(f"本地文献库不存在文献: title_url {(title, pdf_url)}")
+                print(f"本地文献库不存在文献: file_path {file_path}, title_url {(title, pdf_url)}", file=sys.stderr)
+                textlist.append(f"本地文献库不存在文献: title_url {(title, pdf_url)}", file=sys.stderr)
 
 
             pdf_url = "https://sci-hub.st/" + pdf_url
@@ -202,8 +203,8 @@ def read_paper(title_doi: list[tuple[str, str]] | tuple[str, str], save_dir="pdf
             if response.status_code == 200:
                 # 验证确实是 HTML
                 if "<html" not in response.text[:500].lower():
-                    print("[!] 返回的不是 HTML 页面，可能镜像失效或 DOI 未收录")
-                    print(f"    响应前 300 字符: {response.text[:300]}")
+                    print("[!] 返回的不是 HTML 页面，可能镜像失效或 DOI 未收录",file=sys.stderr)
+                    print(f"    响应前 300 字符: {response.text[:300]}",file=sys.stderr)
                     # exit(1)
 
                 # 解析 HTML，提取真实 PDF 地址 ──────────
@@ -215,7 +216,7 @@ def read_paper(title_doi: list[tuple[str, str]] | tuple[str, str], save_dir="pdf
                 if meta and meta.get("content"):
                     pdf_url = meta["content"]
                     pdf_url = "https://sci-hub.st" + pdf_url
-                    print(f"找到 meta name = citation_pdf_url, content = {pdf_url}")
+                    print(f"找到 meta name = citation_pdf_url, content = {pdf_url}",file=sys.stderr)
 
 
                 # sci-hub 未收录，尝试找到官网的pdf_url
@@ -224,15 +225,15 @@ def read_paper(title_doi: list[tuple[str, str]] | tuple[str, str], save_dir="pdf
                     a = soup.find("a", attrs={"translate": "zh:here"})
                     if a and a.get("href"):
                         pdf_url = a.get("href")
-                        print(f"找到 a translate = zh:here, href = {pdf_url}")
+                        print(f"找到 a translate = zh:here, href = {pdf_url}",file=sys.stderr)
 
                 if not pdf_url:
                     print("[!] 未找到 PDF 链接，页面结构可能已变化")
                     print(f"    HTML 字符:\n{response.text}")
                     # exit(1)
             else:
-                print(f"下载失败: title_url {(title, pdf_url)} | 状态码: {response.status_code}")
-                textlist.append(f"下载失败: title_url {(title, pdf_url)} | 状态码: {response.status_code}")
+                print(f"下载失败: title_url {(title, pdf_url)} | 状态码: {response.status_code}",file=sys.stderr)
+                textlist.append(f"下载失败: title_url {(title, pdf_url)} | 状态码: {response.status_code}",file=sys.stderr)
                 continue
 
 
@@ -247,7 +248,7 @@ def read_paper(title_doi: list[tuple[str, str]] | tuple[str, str], save_dir="pdf
 
             if response.status_code == 200:
 
-                print(f"下载成功: title_url {(title, pdf_url)} | 状态码: {response.status_code}")
+                print(f"下载成功: title_url {(title, pdf_url)} | 状态码: {response.status_code}",file=sys.stderr)
                 # 替换文件名中的非法字符
                 # safe_title = "".join(c if c.isalnum() else "_" for c in title)
                 # file_path = os.path.join(save_dir, f"{safe_title}.pdf")
@@ -259,7 +260,7 @@ def read_paper(title_doi: list[tuple[str, str]] | tuple[str, str], save_dir="pdf
                     for chunk in response.iter_content(1024):
                         f.write(chunk)
 
-                print(f"文件保存成功: {file_path}")
+                print(f"文件保存成功: {file_path}",file=sys.stderr)
 
                 doc = pymupdf.open(file_path)
                 full_text = ""
@@ -268,16 +269,16 @@ def read_paper(title_doi: list[tuple[str, str]] | tuple[str, str], save_dir="pdf
                     text = page.get_text()
                     full_text += f"\n--- Page {page_num + 1} ---\n{text}"
                 doc.close()
-                print(f"文件读取成功: {file_path}")
+                print(f"文件读取成功: {file_path}", file=sys.stderr)
                 textlist.append(full_text)
             else:
-                print(f"下载失败: title_url {(title, pdf_url)} | 状态码: {response.status_code}")
-                textlist.append(f"下载失败: title_url {(title, pdf_url)} | 状态码: {response.status_code}")
+                print(f"下载失败: title_url {(title, pdf_url)} | 状态码: {response.status_code}",file=sys.stderr)
+                textlist.append(f"下载失败: title_url {(title, pdf_url)} | 状态码: {response.status_code}",file=sys.stderr)
 
         except requests.exceptions.RequestException as e:
-            print(f"请求异常: {title} | 错误: {e}")
+            print(f"请求异常: {title} | 错误: {e}",file=sys.stderr)
         except Exception as e:
-            print(f"未知错误: {title} | 错误: {e}")
+            print(f"未知错误: {title} | 错误: {e}",file=sys.stderr)
 
     return json.dumps(textlist)
 
