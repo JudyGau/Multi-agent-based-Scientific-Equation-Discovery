@@ -1,4 +1,5 @@
 import json
+import sys
 
 import requests
 MAILTO = "zhuqg@mail.ustc.edu.cn"
@@ -37,7 +38,9 @@ def search_paper(query: str, num: int=10) -> str:
                         for a in it.get("author", [])[:5]]
         })
 
-    print(results)
+    # 注意：经 MCP stdio 运行时 stdout 被改道且块缓冲，print 不可见；
+    # 调试输出走 stderr 才能显示到控制台。
+    print(results, file=sys.stderr)
     results = json.dumps(results, ensure_ascii=False)
     return results
 
