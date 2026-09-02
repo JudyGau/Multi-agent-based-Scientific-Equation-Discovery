@@ -120,9 +120,28 @@ def expr_substitution(func: str, params: list) ->  sp.Expr | None:
             print("跳过该行")
 
 
-    match = re.search(r'return\s+(.*)', func)
+    match = re.search(r'return\s+(.*)', func, re.DOTALL)
     if match:
-        expr_str = match.group(1)
+        expr_str = match.group(1).strip()
+        # 兼容多行括号式 return：
+        #   return (
+        #       expr1
+        #       + expr2
+        #   )
+        # 取出最外层括号内的内容并合并为单行，再交给 parse_expr。
+        if expr_str.startswith('('):
+            depth = 0
+            end_idx = len(expr_str)
+            for i, ch in enumerate(expr_str):
+                if ch == '(':
+                    depth += 1
+                elif ch == ')':
+                    depth -= 1
+                    if depth == 0:
+                        end_idx = i
+                        break
+            expr_str = expr_str[1:end_idx]
+        expr_str = ' '.join(expr_str.splitlines())
         expr = sp.parse_expr(expr_str, {'N': sp.Symbol('N')})
         for symbol in expr.free_symbols:
             if inter_vars[symbol] is not None:
