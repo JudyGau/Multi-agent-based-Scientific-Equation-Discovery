@@ -923,6 +923,10 @@ class LocalLLM(LLM):
                                 args = json.loads(tc.get('function', {}).get('arguments', []))
                                 result = mcp_call_tool(fn_name, args)
 
+                                print("======工具调用结果======")
+                                print(result)
+                                print("======================")
+
                                 messages.append({
                                     "role": "tool",
                                     "tool_call_id": tc.get('id', ''),

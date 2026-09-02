@@ -173,9 +173,9 @@ def read_paper(title_doi: list[tuple[str, str]] | tuple[str, str], save_dir="pdf
 
                 # 3. 打印回复
                 summary = response["content"]
-                print("======总结结果======")
-                print(summary)
-                print("==================")
+                # print("======总结结果======")
+                # print(summary)
+                # print("==================")
                 textlist.append(summary)
 
                 #分析下一个文献
