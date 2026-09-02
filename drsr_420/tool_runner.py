@@ -99,7 +99,8 @@ class MCPStdioClient:
             if getattr(c, "text", None) is not None
         ]
         text = "\n".join(parts)
-        if resp.isError:
+        # mcp>=2.x 中 CallToolResult 字段为 snake_case 的 is_error（旧版 1.x 为 isError）
+        if resp.is_error:
             return json.dumps({"error": text})
         return text
 
