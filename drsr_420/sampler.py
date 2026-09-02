@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import re
+import copy
 from abc import ABC, abstractmethod
 
 from typing import Collection, Sequence, Type, Any
@@ -39,13 +40,34 @@ from llm import LLMClient
 
 Port = '5000'
 
-from main import args
-
 # API配置
 API_HOST = "api.bltcy.ai"
 API_KEY = "sk-1zejrP7CKGPUXASwGpow3vOQ1Pjl5QzeU8xCjMrOEMSbqFQd"
 API_MODEL = "gpt-3.5-turbo"
 MAX_TOKENS = 1024
+
+
+def _clone_llm_client(client, **kwargs_overrides):
+    """基于现有 LLMClient 复制一份独立实例，使各实例 kwargs 互不影响。
+
+    原先对同一个 llm_client 连续执行 kwargs.update，导致采样/经验/残差三个用途
+    的生成参数互相覆盖（最终全部变成 temperature=0.4），并覆盖了 llm.config 中
+    用户配置的温度。这里通过浅拷贝 + 独立 kwargs 字典修复。
+    """
+    if client is None:
+        return None
+    new_client = copy.copy(client)
+    new_client.kwargs = dict(client.kwargs)
+    new_client.kwargs.update(kwargs_overrides)
+    # 重置独立实例的累计统计，避免计数重复累加
+    new_client._call_index = 0
+    new_client._cum_tokens = {
+        'prompt': 0, 'thinking': 0, 'content': 0, 'total': 0,
+    }
+    new_client._cum_time_seconds = 0.0
+    return new_client
+
+
 class LLM(ABC):
     def __init__(self, samples_per_prompt: int) -> None:
         self._samples_per_prompt = samples_per_prompt
@@ -94,21 +116,20 @@ class Sampler:
         self._prompt_ctx = prompt_ctx
         self._llm_client = llm_client
 
-        llm_client.kwargs.update({
-            'temperature': float(0.0),
-            'top_p': float(1.0),
-            'frequency_penalty': float(0.0),
-            'tools': None
-        })
-        self._llm_client_experience = llm_client
-
-        llm_client.kwargs.update({
-            'temperature': float(0.4),
-            'top_p': float(0.9),
-            'frequency_penalty': float(0.1),
-            'tools': None
-        })
-        self._llm_client_residual=llm_client
+        # 采样、经验分析、残差分析各自使用独立 temperature 的客户端副本，
+        # 避免原地修改同一个 llm_client 的 kwargs 互相覆盖（并覆盖 llm.config 用户设置）。
+        self._llm_client_experience = _clone_llm_client(
+            llm_client,
+            temperature=float(0.0),
+            top_p=float(1.0),
+            frequency_penalty=float(0.0),
+        )
+        self._llm_client_residual = _clone_llm_client(
+            llm_client,
+            temperature=float(0.4),
+            top_p=float(0.9),
+            frequency_penalty=float(0.1),
+        )
 
         # 传递上下文给 LLM，用于渲染指令与头部
         try:
@@ -989,4 +1010,5 @@ class LocalLLM(LLM):
             return (responses, think_responses) if self._batch_inference else (responses[0], think_responses[0])
         except Exception as e:
             print(f"API请求发生错误: {str(e)}")
+            return ([""] * repeat_prompt, [""] * repeat_prompt) if self._batch_inference else ("", "")
             return ([""] * repeat_prompt, [""] * repeat_prompt) if self._batch_inference else ("", "")

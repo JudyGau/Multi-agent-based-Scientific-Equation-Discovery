@@ -148,6 +148,14 @@ class LocalSandbox(Sandbox):
         self._numba_accelerate = numba_accelerate
         self._last_params = None
 
+        # numba 是可选加速依赖：未安装时自动降级为非加速评估，避免所有样本评估失败
+        if self._numba_accelerate:
+            try:
+                import numba  # noqa: F401
+            except Exception as e:
+                print(f"[WARN] numba 未安装，已关闭 numba 加速评估（{e}）")
+                self._numba_accelerate = False
+
 #################################### 02版本
     def run(self, program: str, function_to_run: str, function_to_evolve: str, 
         # 02 版本

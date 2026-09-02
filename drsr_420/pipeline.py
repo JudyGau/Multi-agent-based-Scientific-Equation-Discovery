@@ -125,8 +125,8 @@ def main(
             pass
     analyzer = data_analyse_real.DataAnalyzer(timeout=600, base_dir=results_root, llm_client=llm_client, seed=seed)  # 可以自定义参数
 
-    dependent_name = kwargs.get('prompt_ctx', None).dependent
-    feature_names = kwargs.get('prompt_ctx', None).feature_names
+    # PromptContext 用于动态渲染初次数据分析/残差分析提示（变量名、因变量、输出格式均动态化）
+    prompt_ctx = kwargs.get('prompt_ctx', None)
     # 分析指定的CSV文件
     # {np.concatenate(
     #     (inputs.get('data', None).get('inputs', None), inputs.get('data', None).get('outputs', None).reshape(-1, 1)),
@@ -141,52 +141,11 @@ def main(
     # col_l0 = client.get_collection("L0_literature", embedding_function=ef)
     # context_l0 = get_context("椭球 颗粒 磁流变 本构 屈服应力", col_l0)
 
+    # 初次数据分析：提示模板由 PromptContext 动态渲染（变量名/因变量/输出格式动态化），避免领域与变量名硬编码
+    initial_analysis_prompt = prompt_ctx.render_initial_analysis_prompt() if prompt_ctx else None
     result = analyzer.analyze(
         inputs,
-        """
-    csv
-    {csv_data}
-    You are a data analysis expert. I have provided a dataset structure for a magnetorheological effect question as follows:
-    The first two columns are independent variables:
-    """+
-    f"""{feature_names}
-
-    The third column is the dependent variable {dependent_name}(magnetorheological effect).
-    Each row represents a set of independent variables (lambda12, lambda23) and their corresponding dependent variable {dependent_name} value, and the residual value.
-
-    Task Requirements:
-
-    1.Please help me analyze and summarize the influence of the changes in the values of different independent variables on the dependent variable, 
-    as well as the possible intrinsic relationships among different independent variables.
-
-    Your response only needs to answer your analysis results in the form below, and you don't need to show your analysis process.
-
-    """ +
-        """
-    2.##Output Format##:
-    STRICTLY deliver results in the following structured format:
-
-    Deliver results in the following structured format:
-
-      "output_format": {
-        "analysis": {
-          "independent_to_dependent_relationships": {
-            "lambda12 ": [
-              "Hint: Here you need to analyze the functional relationship between lambda12 and """+ f"{dependent_name}" + """ in different intervals"
-            ],
-            "lambda23 ": [
-              "Hint: Here you need to analyze the functional relationship between lambda23 and """+ f"{dependent_name}" + """ in different intervals"
-            ]
-          },
-          "inter_relationships_between_independents": {
-            "lambda12 vs lambda23": [
-              "Hint: Here you need to analyze the possible functional relationship between lambda12 and lambda23 in different intervals. If not, you can leave it blank."
-            ]
-          }
-        }
-      }
-
-            """,
+        initial_analysis_prompt,
         # max_rows=1000,  # 可选：限制行数
         verbose=True    # 可选：显示详细信息
     )
@@ -196,7 +155,6 @@ def main(
     print(result)
 
     # Set global max sample nums.
-    prompt_ctx = kwargs.get('prompt_ctx', None)
     samplers = [sampler.Sampler(database, evaluators, 
                                 config.samples_per_prompt, 
                                 max_sample_nums=max_sample_nums, 

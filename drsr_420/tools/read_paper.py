@@ -4,7 +4,6 @@ import re
 from typing import List
 
 from bs4 import BeautifulSoup
-from openai import OpenAI
 import requests
 import os
 from tqdm import tqdm
@@ -14,28 +13,50 @@ import pymupdf  # PyMuPDF
 import llm
 from drsr_420.tools.search_paper import search_paper
 
-# ── 客户端 ──────────────────────────────────────────────
-deepseek = OpenAI(
-    api_key="xxx",
-    base_url="https://api.deepseek.com",        # 兼容 OpenAI 格式
-)
+# ── 客户端（懒加载，避免模块导入时创建客户端而崩溃）────
+def _load_llm_config():
+    """读取 ./llm.config。"""
+    with open("./llm.config", 'r', encoding='utf-8') as f:
+        return json.load(f)
 
-with open("./llm_explain.config", 'r', encoding='utf-8') as f:
-    llm_config = json.load(f)
-# 构造一次性的 LLM 客户端实例（按任务传递，避免并行任务相互干扰）
-# 模型名格式：provider/model，例如 CSTCloud/gpt-oss-120b
-    model_name = llm_config.get('model')
-    if not model_name or '/' not in model_name:
-        raise ValueError("缺少模型提供商：请在 llm.config 的 model 字段使用 'provider/model' 格式，例如 'CSTCloud/gpt-oss-120b'")
-    provider, pure_model = llm.parse_provider_model(model_name)
 
-api_key = llm_config.get('api_key', '')
+def _build_client(config):
+    """基于 llm.config 构建项目自身的 LLM 客户端（复用 llm.ClientFactory）。
 
-host = llm_config.get('host', '')
-client_read = OpenAI(
-    api_key=api_key,
-    base_url=host,
-)
+    llm.config 使用 'host' 键作为 base_url，这里映射为 ClientFactory 需要的 'base_url'。
+    使用项目自研客户端（基于 requests），兼容 api_key 为空串的本地服务。
+    """
+    cfg = dict(config)
+    if not cfg.get('base_url') and cfg.get('host'):
+        cfg['base_url'] = cfg['host']
+    return llm.ClientFactory.from_config(cfg)
+
+
+_reader_client = None
+_reader_config = None
+
+
+def _get_reader():
+    """懒加载文献阅读/总结客户端（首次调用时构建并缓存）。"""
+    global _reader_client, _reader_config
+    if _reader_client is None:
+        _reader_config = _load_llm_config()
+        model_name = _reader_config.get('model')
+        if not model_name or '/' not in model_name:
+            raise ValueError("缺少模型提供商：请在 llm.config 的 model 字段使用 'provider/model' 格式，例如 'CSTCloud/gpt-oss-120b'")
+        _reader_client = _build_client(_reader_config)
+    return _reader_client, _reader_config
+
+
+_agent_client = None
+
+
+def _get_agent_client():
+    """懒加载 agent_run 使用的客户端（基于 llm.config 配置的模型）。"""
+    global _agent_client
+    if _agent_client is None:
+        _agent_client = _build_client(_load_llm_config())
+    return _agent_client
 
 # SERPER_KEY = "ac28c1aac4d446f3de5c8e79ea6d406727509455"
 
@@ -137,21 +158,21 @@ def read_paper(title_doi: list[tuple[str, str]] | tuple[str, str], save_dir="pdf
                     full_text += f"\n--- Page {page_num + 1} ---\n{text}"
                 doc.close()
                 print(f"文件读取成功: {file_path}")
-                # 2. 发起聊天请求
-                response = client_read.chat.completions.create(
-                    model = pure_model,  # 替换为你下载的模型名称
-                    messages=[
-                        {"role": "system", "content": "You are a helpful assistant, you need to read literature and summarize."},
-                        {"role": "user", "content": f"{full_text}"}
-                    ],
-                    temperature=0.4,
-                    frequency_penalty=0.1,
-                    top_p=0.9,
-                    max_completion_tokens=llm_config.get("max_completion_tokens"),
-                )
+                # 2. 发起聊天请求（使用项目自身 LLM 客户端，兼容空 api_key 的本地服务）
+                client, cfg = _get_reader()
+                client.kwargs.update({
+                    'temperature': 0.4,
+                    'frequency_penalty': 0.1,
+                    'top_p': 0.9,
+                    'max_completion_tokens': cfg.get("max_completion_tokens"),
+                })
+                response = client.chat([
+                    {"role": "system", "content": "You are a helpful assistant, you need to read literature and summarize."},
+                    {"role": "user", "content": f"{full_text}"}
+                ])
 
                 # 3. 打印回复
-                summary = response.choices[0].message.content
+                summary = response["content"]
                 print("======总结结果======")
                 print(summary)
                 print("==================")
@@ -293,21 +314,19 @@ def agent_run(user_query: str, model: str = "deepseek-v4-pro"):
         {"role": "user", "content": user_query},
     ]
 
+    client = _get_agent_client()
+    client.model = model  # 允许调用方指定模型名
+
     # 第一轮：让模型决定是否调工具
-    resp = deepseek.chat.completions.create(
-        model=model,
-        messages=messages,
-        tools=tools,
-        tool_choice="auto",
-    )
-    msg = resp.choices[0].message
+    resp = client.chat(messages)
+    msg = resp
 
     while True:
         # print("========================思考过程========================\n")
         # print(resp.get('reasoning_content', ''))
         # print("====================================================\n")
 
-        tool_calls = msg.tool_calls
+        tool_calls = msg.get('tool_calls') or []
         messages.append(msg)
 
         # 如果调了 tool，执行后回传
@@ -315,8 +334,8 @@ def agent_run(user_query: str, model: str = "deepseek-v4-pro"):
             print("调用了工具：", tool_calls)
 
             for tc in tool_calls:
-                fn_name = tc.function.name
-                args = json.loads(tc.function.arguments)
+                fn_name = tc.get('function', {}).get('name')
+                args = json.loads(tc.get('function', {}).get('arguments', '{}') or '{}')
                 result = ''
                 if fn_name == "search_paper":
                     result = search_paper(**args)
@@ -327,24 +346,16 @@ def agent_run(user_query: str, model: str = "deepseek-v4-pro"):
 
                 messages.append({
                     "role": "tool",
-                    "tool_call_id": tc.id,
+                    "tool_call_id": tc.get('id', ''),
                     "content": result
                 })
 
             # 第二轮：模型拿到 Scholar 结果后做自然语言回答
-            resp = deepseek.chat.completions.create(
-                model=model,
-                messages=messages,
-                tools=tools,
-                tool_choice="auto",
-            )
-            msg = resp.choices[0].message
-            # return final.choices[0].message.content
+            resp = client.chat(messages)
+            msg = resp
         # 如果未调用，则跳出循环
         else:
-            # responses.append(resp.get('content', ''))
-            # think_responses.append(resp.get('reasoning_content', ''))
-            return msg.content
+            return msg.get('content', '')
 
 
 # ── 试运行 ──────────────────────────────────────────────

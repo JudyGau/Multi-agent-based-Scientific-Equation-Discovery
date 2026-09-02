@@ -289,21 +289,10 @@ class PromptContext:
     def render_residual_block_title(self):
         return residual_block_title.format(problem=self.problem)
 
-    def render_residual_analysis_prompt(self, last_analysis, residual, sample):
+    def _output_format_block(self) -> str:
+        """构建输出格式块（变量名、因变量、两两组合均动态生成）。"""
         inds = self.features
         dep = self.dependent
-
-        role_lines = [
-            "The independent variables are:",
-            *[
-                f"- {name}: {desc}" if desc else f"- {name}"
-                for name, desc in self.normalized_feature_descriptions
-            ],
-            "",
-            f"The dependent variable is {self.dependent_text}.",
-            "The forth column contains residuals (observed - predicted).",
-        ]
-        role_text = "\n".join(role_lines)
 
         ind_to_dep = "\n".join([
             f'        "{name} ": [\n'
@@ -322,14 +311,7 @@ class PromptContext:
         if not inter_lines:
             inter_lines = '        "": []'
 
-        dynamic_part = (
-            f"{role_text}\n\n"
-            "Task Requirements:\n\n"
-            "1. Analyze and summarize how changes of each independent variable influence the dependent variable, "
-            "and the possible intrinsic relationships among independent variables.\n\n"
-            "Your response should follow the structure below; no need to show the reasoning process.\n\n"
-            '2.##Output Format##:\n'
-            'STRICTLY deliver results in the following structured format:\n\n'
+        return (
             '  "output_format": {\n'
             '    "analysis": {\n'
             '      "independent_to_dependent_relationships": {\n'
@@ -342,11 +324,62 @@ class PromptContext:
             '  }\n'
         )
 
+    def _task_section(self, role_text: str) -> str:
+        """构建“任务要求 + 输出格式引导”段落（初次分析与残差分析共用）。"""
+        return (
+            f"{role_text}\n\n"
+            "Task Requirements:\n\n"
+            "1. Analyze and summarize how changes of each independent variable influence the dependent variable, "
+            "and the possible intrinsic relationships among independent variables.\n\n"
+            "Your response should follow the structure below; no need to show the reasoning process.\n\n"
+            '2.##Output Format##:\n'
+            'STRICTLY deliver results in the following structured format:\n\n'
+        )
+
+    def render_initial_analysis_prompt(self) -> str:
+        """渲染“初次数据分析”提示模板。
+
+        返回模板包含 {csv_data} 占位符，由 DataAnalyzer.analyze 替换为实际数据内容。
+        变量名、因变量、输出格式均按 PromptContext 动态渲染，避免领域/变量名硬编码。
+        """
+        role_lines = [
+            "The independent variables are:",
+            *[
+                f"- {name}: {desc}" if desc else f"- {name}"
+                for name, desc in self.normalized_feature_descriptions
+            ],
+            "",
+            f"The dependent variable is {self.dependent_text}.",
+            "Each row represents a set of independent variables and the corresponding dependent variable value.",
+        ]
+        role_text = "\n".join(role_lines)
+
+        return (
+            "csv\n{csv_data}\n"
+            "You are a data analysis expert. I have provided a dataset for scientific analysis.\n"
+            f"{self._task_section(role_text)}\n"
+            f"{self._output_format_block()}"
+        )
+
+    def render_residual_analysis_prompt(self, last_analysis, residual, sample):
+        role_lines = [
+            "The independent variables are:",
+            *[
+                f"- {name}: {desc}" if desc else f"- {name}"
+                for name, desc in self.normalized_feature_descriptions
+            ],
+            "",
+            f"The dependent variable is {self.dependent_text}.",
+            "The forth column contains residuals (observed - predicted).",
+        ]
+        role_text = "\n".join(role_lines)
+
         return (
             "You are a data analysis expert.\n"
             f"Background: {self.background_text}\n"
             f"previous conclusions:{last_analysis}\n"
             f"dataset:{residual}\n"
             f"The equation corresponding to the residuals:{sample}\n\n"
-            f"{dynamic_part}"
+            f"{self._task_section(role_text)}\n"
+            f"{self._output_format_block()}"
         )

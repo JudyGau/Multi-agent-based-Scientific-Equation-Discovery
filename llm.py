@@ -144,7 +144,7 @@ class LLMClient:
             "tools" : tools,
             "tool_choice" : "auto",
             # "options":{},
-            "extra_body":{"enable_thinking": True},
+            "extra_body":{"enable_thinking": True, "reasoning_effort": "high"},
             # "think": "false",
         }
         # 仅透传 OpenAI Chat Completions 兼容字段，避免提供商拒绝未知参数
