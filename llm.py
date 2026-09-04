@@ -8,7 +8,7 @@ from drsr_420.tools.tools_description import tools
 """统一的 LLM 客户端封装。
 
 提供商/模型命名规则：'provider/model'，provider 大小写不敏感，model 保留大小写与路径。
-当前支持：deepseek、siliconflow、deepinfra、ollama、blt、cstcloud（科技云）。
+当前支持：deepseek、siliconflow、deepinfra、ollama、blt、cstcloud（科技云）、glm（智谱）。
 """
 import requests
 from typing import List, Dict, Tuple
@@ -101,6 +101,8 @@ class LLMClient:
                 return 'ollama'
             if 'cstcloud' in url or 'uni-api.cstcloud.cn' in url:
                 return 'cstcloud'
+            if 'bigmodel' in url or 'zhipu' in url or 'glm' in url:
+                return 'glm'
         except Exception:
             pass
         return 'llm'
@@ -400,6 +402,20 @@ class BltClient(LLMClient):
         base_url = base_url or os.getenv('BLT_API_BASE', 'https://api.bltcy.ai/v1')
         super().__init__(api_key=api_key, model=model, base_url=base_url)
 
+class ZhipuClient(LLMClient):
+    """GLM（智谱）提供商，OpenAI Chat Completions 兼容接口。
+
+    默认基址：https://open.bigmodel.cn/api/paas/v4
+    使用示例：model="glm/glm-5.3-flash"
+    api_key 为智谱开放平台的 'id.secret' 格式；建议环境变量：ZHIPU_API_KEY
+    """
+    def __init__(self, api_key: str, model: str, base_url: str = None):
+        base_url = base_url or os.getenv('ZHIPU_API_BASE', 'https://open.bigmodel.cn/api/paas/v4')
+        super().__init__(api_key=api_key, model=model, base_url=base_url)
+
+# 兼容旧拼写
+GLMClient = ZhipuClient
+
 def parse_provider_model(model_str: str) -> Tuple[str, str]:
     """
     解析模型字符串为 (provider, model)。
@@ -480,8 +496,11 @@ class ClientFactory:
         elif provider in ('cstcloud', 'cst', 'cst-cloud', 'keji', 'keji-yun'):
             # 科技云：默认基址 https://uni-api.cstcloud.cn/v1
             return CSTCloudClient(api_key=_require_api_key(api_key, 'CSTCLOUD_API_KEY'), model=model, base_url=base_url or 'https://uni-api.cstcloud.cn/v1')
+        elif provider in ('glm', 'glm4', 'zhipu', 'bigmodel', 'big-model'):
+            # GLM（智谱）：默认基址 https://open.bigmodel.cn/api/paas/v4
+            return ZhipuClient(api_key=_require_api_key(api_key, 'ZHIPU_API_KEY'), model=model, base_url=base_url or 'https://open.bigmodel.cn/api/paas/v4')
         else:
-            raise ValueError(f"不支持的提供商: {provider}，请使用 'deepseek'、'siliconflow'、'deepinfra'、'blt'、'cstcloud' 或 'ollama'")
+            raise ValueError(f"不支持的提供商: {provider}，请使用 'deepseek'、'siliconflow'、'deepinfra'、'blt'、'cstcloud'、'glm' 或 'ollama'")
         
 
 

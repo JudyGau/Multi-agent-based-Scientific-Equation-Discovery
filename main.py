@@ -198,6 +198,12 @@ if __name__ == '__main__':
             client = llm_mod.OllamaClient(api_key=api_key, model=pure_model, base_url=host)
         elif provider in ('cstcloud', 'cst', 'cst-cloud', 'keji', 'keji-yun'):
             client = llm_mod.CSTCloudClient(api_key=api_key, model=pure_model)
+        elif provider in ('glm', 'glm4', 'zhipu', 'bigmodel', 'big-model'):
+            client = llm_mod.ZhipuClient(
+                api_key=api_key,
+                model=pure_model,
+                base_url=llm_config.get('base_url') or 'https://open.bigmodel.cn/api/paas/v4',
+            )
         else:
             # 默认走 BLT 网关（OpenAI 兼容）
             client = llm_mod.BltClient(api_key=api_key, model=pure_model)

@@ -17,7 +17,7 @@ from drsr_420.tools.search_paper import search_paper
 # ── 客户端（懒加载，避免模块导入时创建客户端而崩溃）────
 def _load_llm_config():
     """读取 ./llm.config。"""
-    with open("./llm.config", 'r', encoding='utf-8') as f:
+    with open("./llm_summary.config", 'r', encoding='utf-8') as f:
         return json.load(f)
 
 

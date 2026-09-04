@@ -11,6 +11,7 @@ import os
 import re
 import threading
 from abc import ABC, abstractmethod
+from pathlib import Path
 
 import numpy as np
 
@@ -33,14 +34,28 @@ DEFAULT_CONFIG = {
 _CONFIG_PATH = "rag.config"
 
 
+# 项目根目录（用于在任意工作目录下都能定位 rag.config）
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _resolve_config_path(path: str) -> Path:
+    """解析配置路径：NotFound 时优先从项目根目录兜底，避免依赖当前工作目录。"""
+    p = Path(path)
+    if p.is_absolute() or p.exists() or not path:
+        return p
+    candidate = _REPO_ROOT / p
+    return candidate if candidate.exists() else p
+
+
 def load_config(path=_CONFIG_PATH) -> dict:
     """读取配置文件，缺失时使用内置默认值。"""
     cfg = dict(DEFAULT_CONFIG)
+    resolved = _resolve_config_path(path)
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(resolved, "r", encoding="utf-8") as f:
             cfg.update(json.load(f))
     except FileNotFoundError:
-        pass
+        print(f"[RAG] 配置文件不存在: {resolved}，使用默认配置")
     except Exception as e:
         print(f"[RAG] 读取 {path} 失败，使用默认配置: {e}")
     return cfg
