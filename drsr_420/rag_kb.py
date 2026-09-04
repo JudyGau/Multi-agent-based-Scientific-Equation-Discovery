@@ -29,10 +29,10 @@ DEFAULT_CONFIG = {
     "k": 5,
     "query_prefix": "",
     "default_query": "磁流变 颗粒 本构 屈服应力 压缩",
-    "embed_batch_size": 64,
-    "embed_max_retries": 6,
-    "embed_backoff_base": 1.0,
-    "embed_batch_interval": 0.3,
+    # "embed_batch_size": 64,
+    # "embed_max_retries": 6,
+    # "embed_backoff_base": 1.0,
+    # "embed_batch_interval": 0.3,
 }
 
 _CONFIG_PATH = "rag.config"
