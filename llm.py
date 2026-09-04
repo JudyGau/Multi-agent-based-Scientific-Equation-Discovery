@@ -165,6 +165,17 @@ class LLMClient:
         except Exception:
             pass
 
+        # 智谱 GLM 兼容性适配：其 v4 接口不接受 extra_body 这一非法字段，
+        # 输出上限参数名为 max_tokens（而非 OpenAI 的 max_completion_tokens），
+        # 且 claims 该接口可带 tools，但实测发送当前 tools 会导致 1210 参数错误，
+        # 因此对 GLM 去掉 tools / tool_choice（工具调用如需走 MCP 独立执行）。
+        if self._provider_name() == 'glm':
+            payload.pop('extra_body', None)
+            payload.pop('tools', None)
+            payload.pop('tool_choice', None)
+            if 'max_completion_tokens' in payload:
+                payload['max_tokens'] = payload.pop('max_completion_tokens')
+
         start_time = time.time()
         try:
             response = requests.post(request_url, headers=headers, json=payload, timeout=(10,3600))
