@@ -29,6 +29,10 @@ DEFAULT_CONFIG = {
     "k": 5,
     "query_prefix": "",
     "default_query": "磁流变 颗粒 本构 屈服应力 压缩",
+    "embed_batch_size": 64,
+    "embed_max_retries": 6,
+    "embed_backoff_base": 1.0,
+    "embed_batch_interval": 0.3,
 }
 
 _CONFIG_PATH = "rag.config"
@@ -90,30 +94,77 @@ class SentenceTransformerEmbedder(EmbeddingModel):
 
 
 class APIEmbedder(EmbeddingModel):
-    """OpenAI 兼容 /embeddings API 后端（如 SiliconFlow、OpenAI）。"""
+    """OpenAI 兼容 /embeddings API 后端（如智谱、SiliconFlow、OpenAI）。
 
-    def __init__(self, api_host: str, api_key: str, api_model: str):
+    内置限流保护：429/5xx 会按指数退避自动重试（优先遵循 Retry-After 响应头），
+    并可在请求批次间加入固定间隔，避免触发服务端 429。
+    """
+
+    def __init__(self, api_host: str, api_key: str, api_model: str,
+                 batch_size: int = 64,
+                 max_retries: int = 6,
+                 backoff_base: float = 1.0,
+                 batch_interval: float = 0.3):
         self._api_host = api_host.rstrip("/")
         self._api_key = api_key
         self._api_model = api_model
+        self._batch_size = int(batch_size or 64)
+        self._max_retries = int(max_retries or 6)
+        self._backoff_base = float(backoff_base or 1.0)
+        self._batch_interval = float(batch_interval or 0.0)
+
+    def _post(self, url: str, headers: dict, payload: dict):
+        """带无限流退避重试的 POST，返回成功响应。"""
+        import requests
+        import time
+        last_exc = None
+        for attempt in range(self._max_retries + 1):
+            try:
+                resp = requests.post(url, json=payload, headers=headers, timeout=60)
+            except requests.exceptions.RequestException as e:
+                # 网络类错误也退避重试
+                last_exc = e
+                time.sleep(self._backoff_base * (2 ** attempt))
+                continue
+
+            # 限流(429)或服务端错误(5xx)：退避重试，优先用 Retry-After
+            if resp.status_code == 429 or resp.status_code >= 500:
+                wait = self._backoff_base * (2 ** attempt)
+                retry_after = resp.headers.get("Retry-After")
+                if retry_after:
+                    try:
+                        wait = max(wait, float(retry_after))
+                    except ValueError:
+                        pass
+                if attempt >= self._max_retries:
+                    resp.raise_for_status()
+                time.sleep(wait)
+                continue
+
+            resp.raise_for_status()
+            return resp
+
+        if last_exc is not None:
+            raise last_exc
+        # 理论不可达
+        raise requests.exceptions.Timeout("embedding 请求最终失败")
 
     def embed(self, texts):
-        import requests
+        import time
         url = f"{self._api_host}/embeddings"
         headers = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
         out = []
-        batch_size = 64
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
-            resp = requests.post(
-                url, json={"model": self._api_model, "input": batch},
-                headers=headers, timeout=60,
-            )
-            resp.raise_for_status()
+        n = len(texts)
+        for i in range(0, n, self._batch_size):
+            batch = texts[i:i + self._batch_size]
+            resp = self._post(url, headers, {"model": self._api_model, "input": batch})
             data = resp.json()["data"]
             out.extend(d["embedding"] for d in sorted(data, key=lambda x: x["index"]))
+            # 批次之间小睡，降低触发限流的概率
+            if self._batch_interval and i + self._batch_size < n:
+                time.sleep(self._batch_interval)
         return out
 
 
@@ -133,7 +184,11 @@ def get_embedder(config=None) -> EmbeddingModel:
     with _embedder_lock:
         if cfg.get("backend") == "api":
             _embedder = APIEmbedder(
-                cfg.get("api_host", ""), cfg.get("api_key", ""), cfg.get("api_model", "bge-m3"))
+                cfg.get("api_host", ""), cfg.get("api_key", ""), cfg.get("api_model", "bge-m3"),
+                batch_size=cfg.get("embed_batch_size", 64),
+                max_retries=cfg.get("embed_max_retries", 6),
+                backoff_base=cfg.get("embed_backoff_base", 1.0),
+                batch_interval=cfg.get("embed_batch_interval", 0.3))
         else:
             _embedder = SentenceTransformerEmbedder(
                 cfg.get("model", DEFAULT_CONFIG["model"]), cfg.get("query_prefix", ""))
