@@ -197,7 +197,18 @@ def find_best_eq(results_root: str):
                         head = (f"你是一名力学工程师/应用力学家，对给定公式做逐项力学解释，以下是一个磁流变液的含参本构公式和这个公式的推导逻辑，因变量是磁流变效应 {dependent}，" +
                                 f"自变量是 {independent}，其中lambda12＝L1/L2 和 lambda23=L2/L3，L1, L2, and L3 分别是颗粒的长轴，中轴和短轴,请你据此对这个公式从力学角度进行详细的解释")
                         tail = "请你根据以上内容对这个公式从力学角度进行详细的解释"
-                        content = head + "\n" + eq +"\n" + thinking_content + "\n" +tail
+                        # RAG 检索增强：注入相关文献背景，帮助模型从物理机理角度解释（失败/库为空时静默跳过）
+                        rag_block = ""
+                        try:
+                            from drsr_420.rag_kb import get_kb, load_config
+                            _rag_cfg = load_config()
+                            rag_block = get_kb().get_context(
+                                _rag_cfg.get('default_query', independent), k=_rag_cfg.get('k', 5))
+                        except Exception as _e:
+                            print(f"[RAG] 解释阶段文献检索失败（跳过）: {_e}")
+                        content = head + "\n" + eq + "\n" + thinking_content \
+                            + ("\n\n### 以下是相关文献背景，供力学解释参考 ###\n\n" + rag_block if rag_block else "") \
+                            + "\n" + tail
 
                         with open("./llm_explain.config", 'r', encoding='utf-8') as f:
                             llm_config = json.load(f)

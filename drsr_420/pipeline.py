@@ -132,17 +132,28 @@ def main(
     #     (inputs.get('data', None).get('inputs', None), inputs.get('data', None).get('outputs', None).reshape(-1, 1)),
     #     axis=1)}
 
-    # from chromadb import PersistentClient
-    # from chromadb.utils import embedding_functions
-    #
-    # # 初始化 Chroma 客户端
-    # client = PersistentClient(path="./knowledge_base/chroma_db")
-    # ef = embedding_functions.SentenceTransformerEmbeddingFunction("BAAI/bge-small-zh-v1.5")
-    # col_l0 = client.get_collection("L0_literature", embedding_function=ef)
-    # context_l0 = get_context("椭球 颗粒 磁流变 本构 屈服应力", col_l0)
-
     # 初次数据分析：提示模板由 PromptContext 动态渲染（变量名/因变量/输出格式动态化），避免领域与变量名硬编码
     initial_analysis_prompt = prompt_ctx.render_initial_analysis_prompt() if prompt_ctx else None
+    # RAG 检索增强：从文献知识库检索物理背景并注入初次分析提示（检索失败或库为空时静默跳过，不影响主流程）
+    if initial_analysis_prompt:
+        try:
+            from drsr_420 import prompt_config as _pc
+            from drsr_420.rag_kb import get_kb, load_config
+            _rag_cfg = load_config()
+            _rag_query = (
+                kwargs.get('rag_query', None)
+                or (prompt_ctx.background_text if prompt_ctx else None)
+                or _rag_cfg.get('default_query', '')
+            )
+            _kb = get_kb()
+            _lit_ctx = _kb.get_context(_rag_query, k=_rag_cfg.get('k', 5)) if _kb.count() > 0 else ""
+            _block = f"{_pc.literature_block_title}{_lit_ctx}\n" if _lit_ctx else ""
+            initial_analysis_prompt = initial_analysis_prompt.replace("{literature_context}", _block)
+            if _lit_ctx:
+                print(f"[RAG] 已注入 {_lit_ctx.count(chr(10))} 行文献上下文（{_rag_query}）")
+        except Exception as _e:
+            initial_analysis_prompt = initial_analysis_prompt.replace("{literature_context}", "")
+            print(f"[RAG] 文献上下文注入失败（跳过）: {_e}")
     result = analyzer.analyze(
         inputs,
         initial_analysis_prompt,

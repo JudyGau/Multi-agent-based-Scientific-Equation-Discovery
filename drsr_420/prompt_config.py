@@ -68,6 +68,13 @@ residual_block_title = (
     "which will assist you in answering the question. ###\n\n"
 )
 
+# RAG 文献知识库检索结果注入区块标题
+# pipeline 检索到文献上下文后替换 {literature_context} 占位符，检索不到时替换为空串。
+literature_block_title = (
+    "\n\n### The following are relevant excerpts retrieved from the literature knowledge base. "
+    "Use them as physical background when analyzing the data. ###\n\n"
+)
+
 
 # 采样阶段：任务头（追加在发送前）
 head_template = (
@@ -357,6 +364,7 @@ class PromptContext:
         return (
             "csv\n{csv_data}\n"
             "You are a data analysis expert. I have provided a dataset for scientific analysis.\n"
+            "{literature_context}"
             f"{self._task_section(role_text)}\n"
             f"{self._output_format_block()}"
         )

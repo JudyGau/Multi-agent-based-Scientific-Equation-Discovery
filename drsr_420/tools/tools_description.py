@@ -48,4 +48,58 @@ tools = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "ingest_paper",
+            "description": (
+                "将本地已有的 PDF 文献文件嵌入到 RAG 文献知识库。"
+                "入参 pdf_path 为 PDF 文件路径（可相对项目根目录，如 'pdf_downloads/xxx.pdf'），"
+                "doi 与 title 可选。返回入库的片段数量。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pdf_path": {
+                        "type": "string",
+                        "description": "PDF 文件路径，可相对项目根目录。",
+                    },
+                    "doi": {
+                        "type": "string",
+                        "description": "文献 DOI（可选，用于去重与溯源）。",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "文献标题（可选）。",
+                    },
+                },
+                "required": ["pdf_path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_kb",
+            "description": (
+                "在 RAG 文献知识库中检索与 query 语义相关的文献片段，返回 top-k 条命中"
+                "（标题、DOI、来源文件、正文、相似度距离）。知识库需已用 ingest_paper 或 CLI 入库。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "检索关键词或问题描述。",
+                    },
+                    "k": {
+                        "type": "integer",
+                        "description": "返回条数，默认 5。",
+                        "default": 5,
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
 ]

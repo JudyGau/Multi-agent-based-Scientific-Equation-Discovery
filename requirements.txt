@@ -10,3 +10,7 @@ mcp>=1.0
 beautifulsoup4 == 4.15.0
 tqdm == 4.70.0
 pymupdf ==1.28.2
+
+# RAG 文献知识库
+chromadb==1.5.9
+sentence-transformers==5.6.1
