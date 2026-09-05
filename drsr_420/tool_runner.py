@@ -10,6 +10,7 @@
 #     确保 read_paper 内的 './llm_summary.config' 等相对路径可用。
 #   - 依赖：mcp>=1.0（见 requirements.txt）。
 import json
+import sys
 import threading
 from pathlib import Path
 
@@ -25,7 +26,10 @@ _SERVER_ARGS = ["-m", "drsr_420.tools.mcp_server"]
 class MCPStdioClient:
     """通过 stdio 连接、并在后台事件循环中复用单个 MCP 服务器子进程的同步客户端。"""
 
-    def __init__(self, command="python", server_args=None, cwd=None):
+    def __init__(self, command=None, server_args=None, cwd=None):
+        # 默认使用与主进程相同的 Python 解释器，避免 PATH 中的 python 缺少项目依赖
+        if command is None:
+            command = sys.executable
         self._params = StdioServerParameters(
             command=command,
             args=list(server_args or _SERVER_ARGS),

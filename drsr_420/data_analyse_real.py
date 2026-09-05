@@ -1,4 +1,5 @@
 import time
+import copy
 import numpy as np
 import pandas as pd
 import io
@@ -196,7 +197,15 @@ STRICTLY deliver results in the following structured format:
         try:
             if self.llm_client is None:
                 raise RuntimeError('DataAnalyzer requires llm_client, but got None')
-            resp = self.llm_client.chat([
+            # 克隆客户端，设置本次调用的思考强度（智谱推理模型：thinking 开启时 reasoning_effort 生效，medium 为中档）
+            llm_client = copy.copy(self.llm_client)
+            llm_client.kwargs = dict(llm_client.kwargs)
+            if llm_client._provider_name() == 'glm':
+                llm_client.kwargs['thinking'] = {'type': 'enabled'}
+                llm_client.kwargs['reasoning_effort'] = 'medium'
+                # 数据分析仅需简短结论，限制输出长度，避免 max_tokens 过大导致服务端长时间生成
+                llm_client.kwargs['max_tokens'] = 8192
+            resp = llm_client.chat([
                 {"role": "system", "content": pc.system_prompt},
                 {"role": "user", "content": prompt},
             ])

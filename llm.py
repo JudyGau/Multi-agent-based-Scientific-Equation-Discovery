@@ -194,6 +194,9 @@ class LLMClient:
     def _adapt_payload(self, payload: dict) -> None:
         """按提供商修正请求体，兼容非标准 OpenAI 接口。"""
         if self._provider_name() != 'glm':
+            # 非智谱提供商不支持 'thinking'/'reasoning_effort'（仅智谱推理模型支持），避免被拒绝
+            payload.pop('thinking', None)
+            payload.pop('reasoning_effort', None)
             return
         # 智谱 v4 不接受 extra_body（openai SDK 专用字段）
         payload.pop('extra_body', None)
