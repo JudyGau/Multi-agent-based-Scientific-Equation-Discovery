@@ -88,7 +88,7 @@ def main(
                 database.load_checkpoint(checkpoint_path)
                 with open(checkpoint_path, "r", encoding="utf-8") as f:
                     ckpt = json.load(f)
-                sampler.Sampler.set_global_sample_nums(int(ckpt.get("global_sample_nums", 1)))
+                sampler.SamplingOrchestrator.set_global_sample_nums(int(ckpt.get("global_sample_nums", 1)))
                 print(f"[INFO] 已从 checkpoint 恢复：全局采样数={ckpt.get('global_sample_nums')}")
             except Exception as e:
                 print(f"[WARN] 恢复 checkpoint 失败（从头开始）: {e}")
@@ -197,7 +197,7 @@ def main(
                 sandbox_class=class_config.sandbox_class,
             ) for _ in range(config.num_evaluators)
         ]
-        samplers.append(sampler.Sampler(
+        samplers.append(sampler.SamplingOrchestrator(
             database, evals,
             config.samples_per_prompt,
             max_sample_nums=max_sample_nums,

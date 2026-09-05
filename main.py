@@ -38,7 +38,7 @@ args = parser.parse_args()
 
 if __name__ == '__main__':
     # Load config and parameters
-    class_config = config.ClassConfig(llm_class=sampler.LocalLLM, sandbox_class=evaluator.LocalSandbox)
+    class_config = config.ClassConfig(llm_class=sampler.Sampler, sandbox_class=evaluator.LocalSandbox)
 
     # 计算实验总时长（秒）
     wall_limit_seconds = int(args.timeout_in_seconds) if args.timeout_in_seconds and args.timeout_in_seconds > 0 else None

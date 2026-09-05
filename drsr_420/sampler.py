@@ -1,19 +1,12 @@
-# Copyright 2023 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#    http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+"""LLM 采样与编排：生成方程（Sampler）与采样主循环（SamplingOrchestrator）。
 
-""" Class for sampling new program skeletons. """
+职责拆分（各组件可独立单测）：
+- Sampler（生成方程）：调用 LLM 生成方程程序骨架，含提示词构造（指令/任务头/经验注入）。
+- ToolCaller（MCP 工具循环）：与 LLM 多轮对话并自动执行工具调用。见 tool_caller.py
+- ExperienceSummarizer（经验总结）：分析方程与得分给出改进建议。见 experience_summarizer.py
+- ResidualAnalyzer（残差分析）：根据残差分析方程。见 residual_analyzer.py
+- SamplingOrchestrator（采样编排）：sample() 主循环，编排上述组件与评估/经验缓冲/断点续跑。
+"""
 from __future__ import annotations
 
 import re
@@ -29,17 +22,24 @@ import threading
 from drsr_420 import evaluator
 from drsr_420 import buffer
 from drsr_420 import config as config_lib
-import requests
 import json
-import http.client
 import os
 import traceback
 import csv
 from drsr_420 import prompt_config as pc
-from drsr_420.tool_runner import mcp_call_tool
 from llm import LLMClient
 
+from drsr_420.tool_caller import ToolCaller
+from drsr_420.experience_summarizer import ExperienceSummarizer
+from drsr_420.residual_analyzer import ResidualAnalyzer
+
 Port = '5000'
+
+# API配置
+API_HOST = "api.bltcy.ai"
+API_KEY = "sk-1zejrP7CKGPUXASwGpow3vOQ1Pjl5QzeU8xCjMrOEMSbqFQd"
+API_MODEL = "gpt-3.5-turbo"
+MAX_TOKENS = 1024
 
 # 多 sampler 并行时保护共享文件读写与全局采样计数
 _SAMPLER_LOCK = threading.Lock()
@@ -51,12 +51,6 @@ def _atomic_write_json(path: str, data) -> None:
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     os.replace(tmp, path)
-
-# API配置
-API_HOST = "api.bltcy.ai"
-API_KEY = "sk-1zejrP7CKGPUXASwGpow3vOQ1Pjl5QzeU8xCjMrOEMSbqFQd"
-API_MODEL = "gpt-3.5-turbo"
-MAX_TOKENS = 1024
 
 
 def _clone_llm_client(client, **kwargs_overrides):
@@ -96,10 +90,322 @@ class LLM(ABC):
     # self._samples_per_prompt = 4 每一次prompt都生成四个相互独立的回答
 
 
+class Sampler(LLM):
+    """生成方程：调用 LLM 生成方程程序骨架。
 
-class Sampler:
-    """ Node that samples program skeleton continuations and sends them for analysis. """
-    _global_samples_nums: int = 1 
+    提示词构造（指令、任务头、历史经验/残差注入）与 MCP 工具循环都封装在此，
+    工具循环委托给 ToolCaller。
+    """
+
+    def __init__(self, samples_per_prompt: int, batch_inference: bool = True, trim=True,
+                 prompt_ctx: pc.PromptContext | None = None,
+                 llm_client: LLMClient | None = None) -> None:
+        """
+        Args:
+            batch_inference: Use batch inference when sample equation program skeletons. The batch size equals to the samples_per_prompt.
+        """
+        super().__init__(samples_per_prompt)
+
+        self._prompt_ctx = prompt_ctx
+        self._llm_client = llm_client
+        instruction_prompt = (self._prompt_ctx.render_instruction() if self._prompt_ctx else pc.instruction_prompt)
+        self._batch_inference = batch_inference
+        self._instruction_prompt = instruction_prompt
+        self._trim = trim
+        # MCP 工具循环组件
+        self._tool_caller = ToolCaller(llm_client)
+        # 本地文件目录（用于加载经验/残差），由 draw_samples 时设置
+        self._base_dir = "."
+
+        ####################################
+        # 添加会话ID存储
+        self._conversation_ids = {}  # 用于存储每个样本的对话ID
+
+    def draw_samples(self, prompt: str, config: config_lib.Config) -> tuple[list[Any] | list[str], list[Any]] | None:
+        """Returns multiple equation program skeleton hypotheses for the given `prompt`."""
+        # 记录统一结果目录供本地路径引用
+        try:
+            self._base_dir = config.results_root or "."
+        except Exception:
+            self._base_dir = "."
+
+        # 统一走本地批量请求（已使用注入的 llm_client）
+        return self._draw_samples_local(prompt, config)
+
+    def _draw_samples_local(self, prompt: str, config: config_lib.Config) -> tuple[list[Any] | list[str], list[
+        Any]] | None:
+        # instruction
+        prompt = '\n'.join([self._instruction_prompt, prompt])
+        while True:
+            try:
+                all_samples = []
+                all_thinking_contents = []
+                # response from llm server
+                if self._batch_inference:
+                    print("运行了_draw_samples_local的_batch_inference分支")
+                    content = self._build_request_content(prompt)
+                    first_responses, thinking_contents = self._tool_caller.complete(
+                        content, self._samples_per_prompt)
+                    print("成功运行first_responses = ToolCaller.complete")
+                    print(first_responses)
+                    all_samples = list(first_responses)
+                    all_thinking_contents = list(thinking_contents)
+                else:
+                    for _ in range(self._samples_per_prompt):
+                        content = self._build_request_content(prompt)
+                        first_responses, _second_responses = self._tool_caller.complete(content, 1)
+                        all_samples.append(first_responses)
+
+                # trim equation program skeleton body from samples
+                if self._trim:
+                    all_samples = [_extract_body(sample, config) for sample in all_samples]
+
+                return all_samples, all_thinking_contents
+            except Exception:
+                print(Exception)
+                continue
+
+    def _draw_samples_api(self, prompt: str, config: config_lib.Config) -> Collection[str]:
+        all_samples = []
+        prompt = '\n'.join([self._instruction_prompt, prompt])
+        for _ in range(self._samples_per_prompt):
+            try:
+                resp = self._llm_client.chat([{"role": "user", "content": prompt}])
+                response = resp.get('content', '')
+                if self._trim:
+                    response = _extract_body(response, config)
+                all_samples.append(response)
+            except Exception:
+                all_samples.append("")
+        return all_samples
+
+    def _build_request_content(self, content: str) -> str:
+        """构造最终发送给 LLM 的内容：任务头 + 历史经验/残差注入。"""
+        content = content.strip('\n').strip()
+
+        # 尝试加载经验数据
+        try:
+            # 计算经验文件中所有类别经验的总数
+            current_sample_order = 0
+
+            experience_file = os.path.join(getattr(self, "_base_dir", "."), "experiences.json")
+
+            if os.path.exists(experience_file):
+                with open(experience_file, "r", encoding="utf-8") as f:
+                    experiences = json.load(f)
+
+                # 统计所有类别的经验总数
+                for category in ["None", "Good", "Bad"]:
+                    if category in experiences:
+                        current_sample_order += len(experiences[category])
+
+                # 准备存储筛选后的各类经验。
+                # 规则：
+                # - None：始终参与注入，最多 3 条；
+                # - Good / Bad：各自独立以 0.5 概率参与注入，最多 2 条；
+                # - 经验筛选范围与原逻辑保持一致。
+                filtered_experiences = {"None": [], "Good": [], "Bad": []}
+                optional_category_probability = 0.5
+                category_max_samples = {"None": 3, "Good": 2, "Bad": 2}
+
+                # 根据当前 sample_order 选择合适的经验
+                for category in ["None", "Good", "Bad"]:
+                    if category not in experiences or not experiences[category]:
+                        continue
+
+                    # None 类经验始终注入；Good / Bad 先按概率决定是否注入。
+                    if category != "None" and random.random() >= optional_category_probability:
+                        continue
+
+                    # 筛选符合条件的经验
+                    if current_sample_order <= 50:
+                        # sample_order < 50 时，不限制经验的 sample_order
+                        filtered_category = experiences[category]
+                    else:
+                        # sample_order > 50 时，只选择 sample_order 在当前值的 0.7~1 倍范围内的经验
+                        min_order = current_sample_order * 0.7
+                        max_order = current_sample_order
+                        filtered_category = [
+                            exp for exp in experiences[category]
+                            if "sample_order" in exp and min_order <= exp["sample_order"] <= max_order
+                        ]
+
+                    filtered_experiences[category] = filtered_category
+
+                # 合并所有类别的经验
+                all_selected_experiences = []
+                for category, exps in filtered_experiences.items():
+                    for exp in exps:
+                        experience_entry = {
+                            "type": category,
+                            "analysis": exp.get("analysis", ""),
+                            "sample_order": exp.get("sample_order", "unknown"),
+                        }
+
+                        # 对于 None 类别，添加错误信息（如果有）
+                        if category == "None" and "error" in exp:
+                            error_msg = exp["error"]
+                            # 移除特定错误信息（如果需要）
+                            if error_msg == "Execution Error: too many values to unpack (expected 5)":
+                                error_msg = ""
+
+                            if error_msg:
+                                experience_entry["error"] = error_msg
+
+                        all_selected_experiences.append(experience_entry)
+
+                # 如果有经验可用，构建经验提示
+                if all_selected_experiences:
+                    experience_prompt = pc.ideas_block_title
+
+                    # 为每个经验分配编号
+                    for i, exp in enumerate(all_selected_experiences, 1):
+                        experience_prompt += pc.idea_item_prefix.format(index=i)
+                        print("=================================sample_order: ==================================\n", exp['sample_order'])
+
+                        # 限制经验分析文本最多500个字符
+                        analysis_text = exp["analysis"] if exp.get("analysis") else ""
+                        if len(analysis_text) > 500:
+                            analysis_text = analysis_text[:500] + "..."
+                        experience_prompt += analysis_text
+
+                        experience_prompt += "\n---\n\n"
+
+                    # 将经验添加到原始内容中
+                    content = experience_prompt + "\n\n" + content
+
+            # 有p的几率进入以下代码：
+            p = 0.5  # 设置执行概率为50%，你可以根据需要调整这个值
+
+            if random.random() < p and os.path.exists(experience_file):
+                print("use residual_analyze: True")
+
+                residual_file = os.path.join(getattr(self, "_base_dir", "."), "residual_analyze.json")
+                if os.path.exists(residual_file):
+                    with open(residual_file, "r", encoding="utf-8") as f:
+                        experiences = json.load(f)
+
+                    # 提取最后一条信息
+                    if experiences:
+                        last_experience = experiences[-1]
+                        last_analysis = last_experience.get("analysis", "")
+                        last_sample_order = last_experience.get("sample_order", "unknown")
+                        last_equation = last_experience.get("equation", "")
+                        if last_equation is not None:
+                            # 构建提示
+                            experience_prompt = (
+                                self._prompt_ctx.render_residual_block_title()
+                                if hasattr(self, "_prompt_ctx") and self._prompt_ctx is not None
+                                else pc.residual_block_title.format(problem=pc.problem_name_in_prompt)
+                            )
+                            if len(last_analysis) > 2000:
+                                last_analysis = last_analysis[:2000] + "..."
+                            experience_prompt += last_analysis
+                            print("=================================sample_order: ==================================\n", last_sample_order)
+                            # 将经验添加到原始内容中
+                            content = experience_prompt + "\n\n" + content
+                        else:
+                            # 构建提示
+                            experience_prompt = (
+                                self._prompt_ctx.render_residual_block_title()
+                                if hasattr(self, "_prompt_ctx") and self._prompt_ctx is not None
+                                else pc.residual_block_title.format(problem=pc.problem_name_in_prompt)
+                            )
+                            if isinstance(last_analysis, list):
+                                last_analysis = last_analysis[0] if last_analysis else ""
+                            if len(last_analysis) > 2000:
+                                last_analysis = last_analysis[:2000] + "..."
+                            experience_prompt += last_analysis
+
+                            # 将经验添加到原始内容中
+                            content = experience_prompt + "\n\n" + content
+
+        except Exception as e:
+            print(f"加载经验数据时出错: {str(e)}")
+            print("Error details:")
+            traceback.print_exc()  # 输出详细的错误堆栈信息
+
+        # 添加任务头
+        if hasattr(self, "_prompt_ctx") and self._prompt_ctx is not None:
+            head = self._prompt_ctx.render_head()
+        else:
+            head = pc.head_template.format(
+                dependent=pc.dependent_name_in_prompt,
+                problem=pc.problem_name_in_prompt,
+                independent=pc.independent_name_in_prompt,
+            )
+        content = head + '\n' + content
+        print("========================最终输入给大模型的content========================\n")
+        print(content)
+        return content
+
+
+def _extract_body(sample: str, config: config_lib.Config) -> str:
+    """
+    Extract the function body from a response sample, removing any preceding descriptions
+    and the function signature. Preserves indentation.
+    ------------------------------------------------------------------------------------------------------------------
+    Input example:
+    ```
+    This is a description...
+    def function_name(...):
+        return ...
+    Additional comments...
+    ```
+    ------------------------------------------------------------------------------------------------------------------
+    Output example:
+    ```
+        return ...
+    Additional comments...
+    ```
+    ------------------------------------------------------------------------------------------------------------------
+    If no function definition is found, returns the original sample.
+    """
+    # 提取 python 代码
+    match = re.search(r'```([\s\S]*?)```', sample)
+    if match:
+        sample = match.group(1).strip()
+    else:
+        print("No python code found, returning original sample.")
+
+    # 去除LLM回复中的python
+    sample = sample.replace('python', '')
+
+    # 检测缺少缩进的return语句，并加上缩进'    '
+    if (sample[:6] == 'return'):
+        sample = '    ' + sample
+        return sample
+
+    # 检测多一个缩进的return语句，并改成一个缩进'    '
+    if (sample[:14] == '        return'):
+        sample = sample.replace('        ', '    ')
+        return sample
+
+    lines = sample.splitlines()
+    func_body_lineno = 0
+    find_def_declaration = False
+
+    for lineno, line in enumerate(lines):
+        # find the first 'def' program statement in the response
+        if (line[:3] == 'def'):
+            func_body_lineno = lineno
+            find_def_declaration = True
+            break
+
+    if find_def_declaration:
+        # 统一处理：直接保留函数定义后的原始缩进与内容
+        code = ''
+        for line in lines[func_body_lineno + 1:]:
+            code += line + '\n'
+        return code
+
+    return sample
+
+
+class SamplingOrchestrator:
+    """采样编排器：连续采样方程、评估并写入经验缓冲，支持断点续跑与并行 sampler。"""
+
+    _global_samples_nums: int = 1
 
     def __init__(
             self,
@@ -145,7 +451,14 @@ class Sampler:
             frequency_penalty=float(0.1),
         )
 
-        # 传递上下文给 LLM，用于渲染指令与头部
+        # 经验总结与残差分析组件
+        self._summarizer = ExperienceSummarizer(
+            self._llm_client_experience, prompt_ctx=self._prompt_ctx)
+        self._analyzer = ResidualAnalyzer(
+            self._llm_client_residual, prompt_ctx=self._prompt_ctx,
+            results_root=config.results_root)
+
+        # 传递上下文给 LLM，用于渲染指令与头部（生成方程组件 = Sampler）
         try:
             self._llm = llm_class(samples_per_prompt, prompt_ctx=self._prompt_ctx, llm_client=self._llm_client)
         except TypeError:
@@ -157,10 +470,6 @@ class Sampler:
         self._max_sample_nums = max_sample_nums
         self.config = config
 
-# 旧示例（已过时）：
-# python main.py --problem_name oscillator1 --spec_path ./specs/specification_oscillator1_numpy.txt
-# 新推荐（动态 CSV 模式）：
-# python main.py --problem_name oscillator1 --data_csv ./data/oscillator1/train.csv --background "..."
     def sample(self, **kwargs):
         """ Continuously gets prompts, samples programs, sends them for analysis. """
         start_time = time.time()
@@ -174,7 +483,7 @@ class Sampler:
             # stop the search process if hit global max sample nums
             if self._max_sample_nums and self._get_global_sample_nums() >= self._max_sample_nums:
                 break
-            
+
             prompt = self._database.get_prompt()    # 从岛上拿一个可参考的方程框架 - 故可以独立反思
 
             island_id = prompt.island_id
@@ -186,10 +495,9 @@ class Sampler:
 
             print("调用大模型处理")
 
-            # 01 版本
-            # samples, sed_rep = self._llm.draw_samples(prompt.code,self.config) # 向大模型采样出一个方程框架 - 核心
-            samples, thinking_contents = self._llm.draw_samples(prompt.code,self.config) # 向大模型采样出一个方程框架 - 核心
-            
+            # 向大模型采样出一个方程框架 - 核心
+            samples, thinking_contents = self._llm.draw_samples(prompt.code, self.config)
+
             sample_time = (time.time() - reset_time) / self._samples_per_prompt
 
             print("获得了samples，在95行")
@@ -207,7 +515,7 @@ class Sampler:
                 self._global_sample_nums_plus_one()
                 cur_global_sample_nums = self._get_global_sample_nums()
                 chosen_evaluator: evaluator.Evaluator = np.random.choice(self._evaluators)
-                score, error_msg ,residual= chosen_evaluator.analyse(
+                score, error_msg, residual = chosen_evaluator.analyse(
                     sample,
                     prompt.island_id,
                     prompt.version_generated,
@@ -223,18 +531,16 @@ class Sampler:
                 print('===================从chosen_evaluator.analyse中获得残差=====================\n')
                 print(residual)
                 if score is not None and score > best_score:
-                # if score is not None :#先为了调试，都搞一遍，上面的才是需要的
                     temp_best_score.append(score)
-                    #如果score比temp_best_score中的最大值大，就更新best
+                    # 如果score比temp_best_score中的最大值大，就更新best
                     if score >= max(temp_best_score):
                         best_id = id
                         if_best = True
                         print("我在这里变成true了")
-                        residual_data=residual
+                        residual_data = residual
                         best_sample = sample
                         best_score_for_sample = score
-            # print("一共有多少个sample？",i)
-                    
+
             print("score_for_sample: ")
             print(score_for_sample)
             print("===========error_for_samlple:============================\n ")
@@ -248,18 +554,20 @@ class Sampler:
                     quality_for_sample.append('Good')
                 else:
                     quality_for_sample.append('Bad')
+
             print("quality_for_sample:")
             print('================================检查一下if_best的值====================\n')
             print(if_best)
             # 调用分析函数进行分析
             try:
-                #先直接进入第三次
+                # 先直接进入第三次
                 print("\n===== 方程和分数分析开始 =====")
-                analysis_result = self.analyze_equations_with_scores(samples, quality_for_sample, error_for_samlple, prompt)
+                analysis_result = self._summarizer.analyze(
+                    samples, quality_for_sample, error_for_samlple, prompt)
                 print("总的分析结果：---------")
                 print(analysis_result)
                 print("===== 方程和分数分析结束 =====\n")
-                
+
                 # 添加第三次对话：残差分析
                 print("\n===== 残差分析开始 =====")
                 print(residual_data)
@@ -267,7 +575,7 @@ class Sampler:
                 if residual_data is not None and if_best:
                     # 只对有效样本进行残差分析
                     if_best = False
-                    residual_result = self.analyze_equations_with_residual(best_sample,residual_data)
+                    residual_result = self._analyzer.analyze(best_sample, residual_data)
                     print(f"样本残差分析结果: {residual_result}")
                     # 多线程下 residual_analyze.json 为读-改-写，需加锁防止丢失更新
                     with _SAMPLER_LOCK:
@@ -290,9 +598,6 @@ class Sampler:
                         # 创建新的残差分析记录
                         current_sample_order = self._get_global_sample_nums() - len(samples) + best_id  # 获取当前样本的顺序号
 
-                        # 计算残差统计信息
-                        res_values = residual_data[:, -1]  # 第三列是残差值
-
                         # 创建残差分析数据结构
                         residual_record = {
                             "sample_order": current_sample_order,
@@ -311,11 +616,8 @@ class Sampler:
                             print(f"成功更新残差分析JSON文件: {json_residual_file}")
                         except Exception as e:
                             print(f"保存残差分析JSON文件时出错: {e}")
-                
-                print("===== 残差分析结束 =====\n")
 
                 # 创建目录存放分析结果
-                # import os
                 # 多线程下 experiences.json 为读-改-写，需加锁防止丢失更新
                 with _SAMPLER_LOCK:
                     json_experience_file = os.path.join(self.config.results_root or ".", "experiences.json")
@@ -374,14 +676,13 @@ class Sampler:
                     except Exception as e:
                         print(f"保存 JSON 经验文件时出错: {e}")
             except Exception as e:
-                print(f"执行分析时出错: {str(e)}")
+                print(f"执行分析时出错: {e}")
+                traceback.print_exc()
 
-            # 工程加固：每轮结束记录进度 + 保存 checkpoint（断点续跑）
-            try:
-                self._append_progress(prompt.island_id, start_time)
-                self._save_checkpoint()
-            except Exception as e:
-                print(f"[WARN] 记录进度/checkpoint 失败: {e}")
+            # 每轮采样结束后保存 checkpoint（断点续跑）
+            self._save_checkpoint()
+            # 每轮采样结束后追加进度（可观测性）
+            self._append_progress(island_id, start_time)
 
     def _get_global_sample_nums(self) -> int:
         with _SAMPLER_LOCK:
@@ -430,636 +731,3 @@ class Sampler:
                     ])
         except Exception as e:
             print(f"[WARN] 写入 progress.csv 失败: {e}")
-
-
-
-    # 02 版本 good/bad/none的分析
-    def analyze_equations_with_scores(self, samples, quality_for_sample, error_for_sample, prompt):
-        """
-        让大模型分析方程及其得分，提供思考过程分析和改进建议
-        
-        Args:
-            samples: 生成的方程样本列表
-            scores: 对应的分数列表
-            prompt: 原始提示，用于提供上下文
-            
-        Returns:
-            analysis_result: 模型对方程的分析结果
-        """
-
-        analysis_results = []
-
-        i = 0
-
-        for sample_each in samples:
-
-            if hasattr(self, "_prompt_ctx") and self._prompt_ctx is not None:
-                new__question = self._prompt_ctx.render_analysis_question(
-                    quality_for_sample[i],
-                    error_for_sample[i] if quality_for_sample[i] == 'None' else None,
-                )
-            else:
-                if quality_for_sample[i] == 'Good':
-                    new__question = pc.analysis_question_good.format(
-                        dependent=pc.dependent_name_in_prompt,
-                        problem=pc.problem_name_in_prompt,
-                    )
-                elif quality_for_sample[i] == 'Bad':
-                    new__question = pc.analysis_question_bad.format(
-                        dependent=pc.dependent_name_in_prompt,
-                        problem=pc.problem_name_in_prompt,
-                    )
-                elif quality_for_sample[i] == 'None':
-                    new__question = pc.analysis_question_none.format(
-                        dependent=pc.dependent_name_in_prompt,
-                        problem=pc.problem_name_in_prompt,
-                        error=error_for_sample[i],
-                        budget_sentence=(
-                            "Treat this failure as a negative example rather than a requirement to satisfy. "
-                            "If the error is about parameter length or indexing, do not solve it by asking for more parameters. "
-                            "Instead, reduce parameter usage so the equation fits the evaluator's available parameter budget.\n"
-                        ),
-                    )
-            i += 1
-
-            analysis_prompt = pc.analysis_conversation_template.format(
-                prompt=prompt.code if hasattr(prompt, "code") else prompt,
-                sample=sample_each,
-                question=new__question,
-            )
-            # 调用远程API分析结果（仅使用注入的 llm_client）
-            try:
-                # resp = self._llm_client.chat([{"role": "user", "content": analysis_prompt}])
-                resp = self._llm_client_experience.chat([{"role": "user", "content": analysis_prompt}])
-                analysis_result = resp.get('content', '')
-                print(f"分析结果：{analysis_result}")
-                analysis_results.append(analysis_result)
-            except Exception as e:
-                print(f"分析请求发生错误: {str(e)}")
-                analysis_results.append(f"分析请求发生错误: {str(e)}")
-        return analysis_results
-
-    def analyze_equations_with_residual(self, sample, residual) -> str:
-        """
-    让大模型根据输入的残差分析方程，提供对数据的思考过程分析和改进建议
-    
-    Args:
-        sample: 生成的方程样本
-        residual: 输入的数据残差
-        prompt: 原始提示，用于提供上下文
-            
-    Returns:
-        analysis_result: 模型对方程的分析结果
-        """
-        print("========================进入了残差分析函数========================")
-        # 直接使用传入的残差数据
-        # 计算残差的统计信息
-        res_values = residual[:, -1]  # 第三列是残差值
-        mean_res = np.mean(res_values)
-        max_res = np.max(np.abs(res_values))
-        std_res = np.std(res_values)
-        
-        try:
-            import json
-            import os
-            import random
-            residual_file = os.path.join(self.config.results_root or ".", "residual_analyze.json")
-            if os.path.exists(residual_file):
-                with open(residual_file ,"r", encoding="utf-8") as f:
-                    experiences = json.load(f)
-                
-                #提取最后一条信息
-                if experiences:
-                    last_experience = experiences[-1]
-                    last_analysis = last_experience.get("analysis", "")
-        except Exception as e:
-            print(f"加载残差数据时出错: {str(e)}")
-            print("Error details:")
-            traceback.print_exc()
-
-
-        # 构建分析提示
-        if hasattr(self, "_prompt_ctx") and self._prompt_ctx is not None:
-            res_analyze = self._prompt_ctx.render_residual_analysis_prompt(last_analysis, residual, sample)
-        else:
-            res_analyze = pc.residual_analysis_prompt.format(
-                last_analysis=last_analysis,
-                residual=residual,
-                sample=sample,
-            )
-        
-        
-        print("========这是输入的残差提示词==========\n")
-        print(res_analyze)
-        # 调用远程API分析结果（仅使用注入的 llm_client）
-        try:
-            # resp = self._llm_client.chat([{"role": "user", "content": res_analyze}])
-            resp = self._llm_client_residual.chat([{"role": "user", "content": res_analyze}])
-            analysis_result = resp.get('content', '')
-            print(f"残差分析结果：{analysis_result}")
-            return analysis_result
-        except Exception as e:
-            print(f"残差分析请求发生错误: {str(e)}")
-            return f"分析请求发生错误: {str(e)}"
-
-
-def _extract_body(sample: str, config: config_lib.Config) -> str:
-    """
-    Extract the function body from a response sample, removing any preceding descriptions
-    and the function signature. Preserves indentation.
-    ------------------------------------------------------------------------------------------------------------------
-    Input example:
-    ```
-    This is a description...
-    def function_name(...):
-        return ...
-    Additional comments...
-    ```
-    ------------------------------------------------------------------------------------------------------------------
-    Output example:
-    ```
-        return ...
-    Additional comments...
-    ```
-    ------------------------------------------------------------------------------------------------------------------
-    If no function definition is found, returns the original sample.
-    """
-    # if sample.__contains__("pass"):
-    #     print("pass")
-
-    # 提取 python 代码
-    match=re.search(r'```([\s\S]*?)```', sample)
-    if match:
-        sample = match.group(1).strip()
-    else:
-        print("No python code found, returning original sample.")
-
-    # 去除LLM回复中的python
-    # sample = sample.replace('```', '')
-    sample = sample.replace('python', '')
-
-
-    #检测缺少缩进的return语句，并加上缩进'    '
-    if (sample[:6] == 'return'):
-        sample = '    ' + sample
-        return sample
-
-     # 检测多一个缩进的return语句，并改成一个缩进'    '
-    if (sample[:14] == '        return'):
-        sample = sample.replace('        ','    ')
-        return sample
-
-
-    lines = sample.splitlines()
-    func_body_lineno = 0
-    find_def_declaration = False
-
-    for lineno, line in enumerate(lines):
-        # find the first 'def' program statement in the response
-        if (line[:3] == 'def'):
-            func_body_lineno = lineno
-            find_def_declaration = True
-            break
-
-
-    if find_def_declaration:
-        # 统一处理：直接保留函数定义后的原始缩进与内容
-        code = ''
-        for line in lines[func_body_lineno + 1:]:
-            code += line + '\n'
-        return code
-
-
-    return sample
-
-
-
-class LocalLLM(LLM):
-    def __init__(self, samples_per_prompt: int, batch_inference: bool = True, trim=True,
-                 prompt_ctx: pc.PromptContext | None = None,
-                 llm_client: LLMClient | None = None) -> None:
-        """
-        Args:
-            batch_inference: Use batch inference when sample equation program skeletons. The batch size equals to the samples_per_prompt.
-        """
-        super().__init__(samples_per_prompt)
-
-        self._prompt_ctx = prompt_ctx
-        self._llm_client = llm_client
-        instruction_prompt = (self._prompt_ctx.render_instruction() if self._prompt_ctx else pc.instruction_prompt)
-        self._batch_inference = batch_inference
-        self._instruction_prompt = instruction_prompt
-        self._trim = trim
-
-        ####################################
-        # 添加会话ID存储
-        # self._conversation_ids = {}  # 用于存储每个样本的对话ID
-        
-        
-
-
-    def draw_samples(self, prompt: str, config: config_lib.Config) -> tuple[list[Any] | list[str], list[Any]] | None:
-        """Returns multiple equation program skeleton hypotheses for the given `prompt`."""
-        # 记录统一结果目录供本地路径引用
-        try:
-            self._base_dir = config.results_root or "."
-        except Exception:
-            self._base_dir = "."
-
-        # 统一走本地批量请求（已使用注入的 llm_client）
-        return self._draw_samples_local(prompt, config)
-
-
-    def _draw_samples_local(self, prompt: str, config: config_lib.Config) -> tuple[list[Any] | list[str], list[
-        Any]] | None:
-        # instruction
-        prompt = '\n'.join([self._instruction_prompt, prompt])
-        while True:
-            try:
-                all_samples = []
-                all_thinking_contents=[]
-                # response from llm server
-                if self._batch_inference:
-
-###############################################
-                    # 现在_do_request返回两组响应，只取第一组(方程实现)
-                    print("运行了_draw_samples_local的_batch_inference分支")
-
-                    first_responses, thinking_contents = self._do_request(prompt)
-                    # 01 版本
-                    # first_responses, second_responses = self._do_request(prompt)
-                    print("成功运行first_responses = self._do_request(prompt)")
-
-                    # all_samples = first_responses
-
-
-                    # 原代码
-                    # response = self._do_request(prompt)
-                    # for res in response:
-
-##################################################### 
-                    print(first_responses)                   
-                    for res in first_responses:
-                        all_samples.append(res)
-
-                    for thinking_content in thinking_contents:
-                        all_thinking_contents.append(thinking_content)
-
-                    # print("-------jjjjjjjjjjjjjjjj")
-                else:
-                    for _ in range(self._samples_per_prompt):
-                        # response = self._do_request(prompt)
-                        # all_samples.append(response)
-                        # print("________")
-                        first_responses, second_responses = self._do_request(prompt)
-                        all_samples.append(first_responses)
-
-                # print(all_samples)
-
-
-                # trim equation program skeleton body from samples
-                if self._trim:
-                    all_samples = [_extract_body(sample, config) for sample in all_samples]
-                
-                # print("处理过的all_samples")
-                # print(all_samples)
-                
-
-                # 01版本
-                # return all_samples, second_responses
-            
-                return all_samples, all_thinking_contents
-            except Exception:
-                print(Exception)
-                continue
-
-
-    def _draw_samples_api(self, prompt: str, config: config_lib.Config) -> Collection[str]:
-        all_samples = []
-        prompt = '\n'.join([self._instruction_prompt, prompt])
-        for _ in range(self._samples_per_prompt):
-            try:
-                resp = self._llm_client.chat([{"role": "user", "content": prompt}])
-                response = resp.get('content', '')
-                if self._trim:
-                    response = _extract_body(response, config)
-                all_samples.append(response)
-            except Exception:
-                all_samples.append("")
-        return all_samples
-    
-    
-    def _do_request(self, content: str) -> list[str] | str | list[Any] | tuple[list[Any], list[Any] | Any, Any] | Any:
-        content = content.strip('\n').strip()
-        # repeat the prompt for batch inference
-        repeat_prompt: int = self._samples_per_prompt if self._batch_inference else 1
-
-        # print('ttttttttttttttttttttttttttttttttttttttttt')
-        # print(content)
-        # print('ttttttttttttttttttttttttttttttttttttttttt')
-        # 添加 idea_lib
-
-        # 尝试加载经验数据
-        try:
-        # if True:
-
-
-            # 获取当前的 sample_order
-            # current_sample_order = self._get_global_sample_nums()
-            # print(f"当前 sample_order: {current_sample_order}")
-            
-            # 计算经验文件中所有类别经验的总数
-            current_sample_order = 0
-
-            experience_file = os.path.join(getattr(self, "_base_dir", "."), "experiences.json")
-
-            if os.path.exists(experience_file):
-                with open(experience_file, "r", encoding="utf-8") as f:
-                    experiences = json.load(f)
-                
-                # 统计所有类别的经验总数
-                for category in ["None", "Good", "Bad"]:
-                    if category in experiences:
-                        current_sample_order += len(experiences[category])
-                
-                # print(f"经验库中共有 {current_sample_order} 条经验")
-
-
-                
-                # 准备存储筛选后的各类经验。
-                # 规则：
-                # - None：始终参与注入，最多 3 条；
-                # - Good / Bad：各自独立以 0.5 概率参与注入，最多 2 条；
-                # - 经验筛选范围与原逻辑保持一致。
-                filtered_experiences = {"None": [], "Good": [], "Bad": []}
-                optional_category_probability = 0.5
-                category_max_samples = {"None": 3, "Good": 2, "Bad": 2}
-                
-                # 根据当前 sample_order 选择合适的经验
-                for category in ["None", "Good", "Bad"]:
-                    if category not in experiences or not experiences[category]:
-                        continue
-
-                    # None 类经验始终注入；Good / Bad 先按概率决定是否注入。
-                    if category != "None" and random.random() >= optional_category_probability:
-                        continue
-
-                    # 筛选符合条件的经验
-                    if current_sample_order <= 50:
-                        # sample_order < 50 时，不限制经验的 sample_order
-                        filtered_category = experiences[category]
-                    else:
-                        # sample_order > 50 时，只选择 sample_order 在当前值的 0.7~1 倍范围内的经验
-                        min_order = current_sample_order * 0.7
-                        max_order = current_sample_order
-                        filtered_category = [
-                            exp for exp in experiences[category] 
-                            if "sample_order" in exp and min_order <= exp["sample_order"] <= max_order
-                        ]
-                    
-                    # # 按类别上限随机抽样
-                    # if filtered_category:
-                    #     max_selected = category_max_samples[category]
-                    #     selected = random.sample(filtered_category, min(max_selected, len(filtered_category)))
-                    #     filtered_experiences[category] = selected
-
-                    # 不随机抽样，全部选择
-                    filtered_experiences[category] = filtered_category
-                
-                # 合并所有类别的经验
-                all_selected_experiences = []
-                for category, exps in filtered_experiences.items():
-                    for exp in exps:
-                        experience_entry = {
-                            "type": category,
-                            "analysis": exp.get("analysis", ""),
-                            "sample_order": exp.get("sample_order", "unknown"),
-                        }
-                        
-                        # 对于 None 类别，添加错误信息（如果有）
-                        if category == "None" and "error" in exp:
-                            error_msg = exp["error"]
-                            # 移除特定错误信息（如果需要）
-                            if error_msg == "Execution Error: too many values to unpack (expected 5)":
-                                error_msg = ""
-                            
-                            if error_msg:
-                                experience_entry["error"] = error_msg
-                        
-                        all_selected_experiences.append(experience_entry)
-                
-                # 如果有经验可用，构建经验提示
-                if all_selected_experiences:
-                    experience_prompt = pc.ideas_block_title
-                    
-                    # 为每个经验分配编号
-                    for i, exp in enumerate(all_selected_experiences, 1):
-                        experience_prompt += pc.idea_item_prefix.format(index=i)
-                        # experience_prompt += f"(sample_order: {exp['sample_order']})\n"
-                        print("=================================sample_order: ==================================\n", exp['sample_order'])
-                        
-                        # 限制经验分析文本最多100个字符
-                        analysis_text = exp["analysis"] if exp.get("analysis") else ""
-                        if len(analysis_text) > 500:
-                            analysis_text = analysis_text[:500] + "..."
-                        experience_prompt += analysis_text
-                        
-                        experience_prompt += "\n---\n\n"
-                    
-                    # 将经验添加到原始内容中
-                    content_with_lib = experience_prompt + "\n\n" + content
-                    # print(f"已添加 {len(all_selected_experiences)} 条历史经验到提示中")
-
-                    content = content_with_lib
-
-            #有p的几率进入以下代码：
-            p = 0.5  # 设置执行概率为50%，你可以根据需要调整这个值
-            
-            if random.random() < p and os.path.exists(experience_file):
-                print("use residual_analyze: True")
-
-                residual_file = os.path.join(getattr(self, "_base_dir", "."), "residual_analyze.json")
-                if os.path.exists(residual_file):
-                    with open(residual_file ,"r", encoding="utf-8") as f:
-                        experiences = json.load(f)
-                    
-                    #提取最后一条信息
-                    if experiences:
-                        last_experience = experiences[-1]
-                        last_analysis = last_experience.get("analysis", "")
-                        last_sample_order = last_experience.get("sample_order", "unknown")
-                        last_equation = last_experience.get("equation", "")
-                        if last_equation is not None:
-                        
-                            # 构建提示
-                            experience_prompt = (
-                                self._prompt_ctx.render_residual_block_title()
-                                if hasattr(self, "_prompt_ctx") and self._prompt_ctx is not None
-                                else pc.residual_block_title.format(problem=pc.problem_name_in_prompt)
-                            )
-                            # experience_prompt += f"经验{last_sample_order}：\n"
-                            # experience_prompt += f"(sample_order: {last_sample_order})\n"
-                            if len(last_analysis) > 2000:
-                                last_analysis = last_analysis[:2000] + "..."
-                            experience_prompt += last_analysis
-                            print("=================================sample_order: ==================================\n", last_sample_order)
-                            # 将经验添加到原始内容中
-                            content_with_residual = experience_prompt + "\n\n" + content
-
-                            content = content_with_residual
-                        
-                            # print(f"残差分析库中共有 {len(experiences)} 条经验")
-                        
-                        else:
-                            # 构建提示
-                            experience_prompt = (
-                                self._prompt_ctx.render_residual_block_title()
-                                if hasattr(self, "_prompt_ctx") and self._prompt_ctx is not None
-                                else pc.residual_block_title.format(problem=pc.problem_name_in_prompt)
-                            )
-                            # experience_prompt += f"经验{last_sample_order}：\n"
-                            # experience_prompt += f"(sample_order: {last_sample_order})\n"
-                            if isinstance(last_analysis, list):
-                                last_analysis = last_analysis[0] if last_analysis else ""
-                            # print(f"===========================last_analysis:=====================================\n {last_analysis}")
-                            if len(last_analysis) > 2000:
-                                last_analysis = last_analysis[:2000] + "..."
-                            experience_prompt += last_analysis
-
-                            # 将经验添加到原始内容中
-                            content_with_residual = experience_prompt + "\n\n" + content
-
-                            content = content_with_residual
-                        
-                            # print(f"残差分析库中共有 {len(experiences)} 条经验")
-
-
-        except Exception as e:
-            print(f"加载经验数据时出错: {str(e)}")
-            print("Error details:")
-            traceback.print_exc()  # 输出详细的错误堆栈信息
-        
-        # 重复提示以进行批量推理
-        repeat_prompt: int = self._samples_per_prompt if self._batch_inference else 1
-
-
-        if hasattr(self, "_prompt_ctx") and self._prompt_ctx is not None:
-            head = self._prompt_ctx.render_head()
-        else:
-            head = pc.head_template.format(
-                dependent=pc.dependent_name_in_prompt,
-                problem=pc.problem_name_in_prompt,
-                independent=pc.independent_name_in_prompt,
-            )
-        content = head +'\n'+ content
-        print("========================最终输入给大模型的content========================\n")
-        print(content)
-
-        # 优先使用传入的 llm_client
-        client = getattr(self, "_llm_client", None)
-        if client is not None:
-            # try:
-            responses = []
-            think_responses = []
-            for _ in range(repeat_prompt):
-                try:
-                    # 初始化上下文
-                    messages=[]
-                    messages.append({"role": "user", "content": content})
-                    resp = client.chat([{"role": "user", "content": content}])
-
-                    while True:
-                        print("========================思考过程========================\n")
-                        print(resp.get('reasoning_content', ''))
-                        print("=================================== =================\n")
-
-                        tool_calls = resp.get('tool_calls', [])
-                        messages.append({"role":"assistant","content": resp.get('content',''),"tool_calls":tool_calls})
-
-                        # 如果调了 tool，执行后回传
-                        if tool_calls:
-                            print("调用了工具：", tool_calls)
-
-                            for tc in tool_calls:
-                                fn_name = tc.get('function', {}).get('name', '')
-                                args = json.loads(tc.get('function', {}).get('arguments', []))
-                                result = mcp_call_tool(fn_name, args)
-
-                                print("======工具调用结果======")
-                                print(result)
-                                print("======================")
-
-                                messages.append({
-                                    "role": "tool",
-                                    "tool_call_id": tc.get('id', ''),
-                                    "content": result
-                                })
-
-                            resp = client.chat(messages)
-                            # if resp is None:
-                            #     # print("Error in LLMclient.chat(): resp is none")
-                            #     raise Exception("Error in LLMclient.chat(): resp is none")
-
-                        # 如果未调用，则跳出循环
-                        else:
-                            responses.append(resp.get('content', ''))
-                            think_responses.append(resp.get('reasoning_content', ''))
-                            break
-
-                except Exception as e:
-                    print(f"API请求发生错误: {str(e)}")
-                    responses.append("")
-                    think_responses.append("")
-
-            return (responses, think_responses) if self._batch_inference else (responses[0], think_responses[0])
-            # except Exception as e:
-            #     print(f"API请求发生错误: {str(e)}")
-            #     return ([""] * repeat_prompt, [""] * repeat_prompt) if self._batch_inference else ("", "")
-        
-        # fallback 到 http.client
-        try:
-            responses = []
-            think_responses = []
-            for _ in range(repeat_prompt):
-                messages = []
-                messages.append({"role": "user", "content": content})
-
-                resp = self._llm_client.chat([{"role": "user", "content": content}])
-
-                while True:
-
-                    print("========================思考过程========================\n")
-                    print(resp.get('reasoning_content', ''))
-                    print("====================================================\n")
-
-                    tool_calls = resp.get('tool_calls', [])
-
-                    messages.append({"role": "assistant", "content": resp.get('content',''), "tool_calls": tool_calls})
-
-                    # 如果调了 tool，执行后回传
-                    if tool_calls:
-                        print("调用了工具：", tool_calls)
-
-                        for tc in tool_calls:
-                            fn_name = tc.get('function', {}).get('name', '')
-                            args = json.loads(tc.get('function', {}).get('arguments', []))
-
-                            result = mcp_call_tool(fn_name, args)
-
-                            messages.append({
-                                "role": "tool",
-                                "tool_call_id": tc.get('id', ''),
-                                "content": result
-                            })
-
-                        resp = self._llm_client.chat(messages)
-                    # 如果未调用，则跳出循环
-                    else:
-                        responses.append(resp.get('content', ''))
-                        think_responses.append(resp.get('reasoning_content', ''))
-                        break
-
-            return (responses, think_responses) if self._batch_inference else (responses[0], think_responses[0])
-        except Exception as e:
-            print(f"API请求发生错误: {str(e)}")
-            return ([""] * repeat_prompt, [""] * repeat_prompt) if self._batch_inference else ("", "")
