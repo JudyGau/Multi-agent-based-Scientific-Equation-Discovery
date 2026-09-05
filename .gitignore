@@ -1,9 +1,24 @@
+# 运行产物
 results
+experiments
 *.pyc
+error.log
+
+# 配置文件（含 API 密钥，不入库）
 llm.config
 *.config
-experiments
+
+# 下载的文献 PDF
 /drsr_420/tools/pdf_downloads/
 /pdf_downloads/
-.idea/drsr-main.iml
+
+# 知识库（Chroma 持久化目录）
 /knowledge_base/
+/drsr_420/knowledge_base/
+
+# 虚拟环境与 IDE
+.venv/
+.venv1/
+.venv2/
+.idea/
+__pycache__/

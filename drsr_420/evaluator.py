@@ -29,7 +29,6 @@ from drsr_420 import code_manipulation
 from drsr_420 import buffer
 from drsr_420 import evaluator_accelerate
 from drsr_420 import evaluate_on_problems
-from drsr_420 import evaluate_on_problems_backup
 
 class _FunctionLineVisitor(ast.NodeVisitor):
     """ Visitor that finds the last line number of a function with a given name."""
@@ -247,8 +246,6 @@ class LocalSandbox(Sandbox):
             function_to_run = all_globals_namespace[function_to_run]
             evolved_function = all_globals_namespace[function_to_evolve]
             eval_out = evaluate_on_problems.evaluate(dataset, evolved_function)
-
-            # eval_out = evaluate_on_problems_backup.evaluate(dataset, evolved_function)
 
             # 兼容两种返回格式：旧(分数, 矩阵) / 新(分数, 矩阵, 参数)
             if isinstance(eval_out, tuple) and len(eval_out) == 3:

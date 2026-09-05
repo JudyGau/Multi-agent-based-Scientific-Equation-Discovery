@@ -173,18 +173,35 @@ _embedder_key = None
 _embedder_lock = threading.Lock()
 
 
+def _env_key_for_host(api_host: str) -> str:
+    """按 API 主机推断提供商环境变量名并读取密钥（api_key 留空时回退）。"""
+    host = (api_host or "").lower()
+    if "bigmodel" in host or "zhipu" in host:
+        return os.getenv("ZHIPU_API_KEY", "")
+    if "siliconflow" in host:
+        return os.getenv("SILICONFLOW_API_KEY", "")
+    if "deepseek" in host:
+        return os.getenv("DEEPSEEK_API_KEY", "")
+    if "deepinfra" in host:
+        return os.getenv("DEEPINFRA_API_KEY", "")
+    if "openai" in host:
+        return os.getenv("OPENAI_API_KEY", "")
+    return ""
+
+
 def get_embedder(config=None) -> EmbeddingModel:
     """进程级懒加载单例（仅首次调用才构造/加载模型）。"""
     global _embedder, _embedder_key
     cfg = config or load_config()
+    api_key = cfg.get("api_key") or _env_key_for_host(cfg.get("api_host", ""))
     key = (cfg.get("backend"), cfg.get("model"), cfg.get("api_host"),
-           cfg.get("api_key"), cfg.get("api_model"), cfg.get("query_prefix"))
+           api_key, cfg.get("api_model"), cfg.get("query_prefix"))
     if _embedder is not None and _embedder_key == key:
         return _embedder
     with _embedder_lock:
         if cfg.get("backend") == "api":
             _embedder = APIEmbedder(
-                cfg.get("api_host", ""), cfg.get("api_key", ""), cfg.get("api_model", "bge-m3"),
+                cfg.get("api_host", ""), api_key, cfg.get("api_model", "bge-m3"),
                 batch_size=cfg.get("embed_batch_size", 64),
                 max_retries=cfg.get("embed_max_retries", 6),
                 backoff_base=cfg.get("embed_backoff_base", 1.0),

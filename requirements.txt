@@ -1,16 +1,25 @@
-joblib
+# 核心依赖
 numpy==1.26.4
 pandas==2.2.1
 scipy==1.12.0
+joblib
 numba==0.66.0
 requests>=2.31.0
-openai==2.53.0
+
+# LLM 调用与 MCP 工具
 mcp>=1.0
 
-beautifulsoup4 == 4.15.0
-tqdm == 4.70.0
-pymupdf ==1.28.2
+# 公式解释（find_best_eq.py）
+sympy
+graphviz
 
-# RAG 文献知识库
+# 文献工具：PDF 解析与网页抓取
+beautifulsoup4==4.15.0
+tqdm==4.70.0
+pymupdf==1.28.2
+
+# RAG 文献知识库（Chroma）
 chromadb==1.5.9
-sentence-transformers==5.6.1
+
+# 可选：仅当 rag.config 使用 backend=local（本地嵌入）时需要；默认走 API 后端可不装
+# sentence-transformers==5.6.1

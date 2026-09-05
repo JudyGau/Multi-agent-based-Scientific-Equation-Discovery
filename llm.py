@@ -6,11 +6,15 @@
 import json
 import os
 import time
+from pathlib import Path
 from typing import List, Dict, Tuple
 
 import requests
 
 from drsr_420.tools.tools_description import tools
+
+# 项目根目录（llm.py 位于根目录，用于在任意工作目录下定位配置文件）
+_REPO_ROOT = Path(__file__).resolve().parent
 
 # 单次实验级别的全局 token 统计（需由调用方在实验开始前手动 reset）
 GLOBAL_TOKENS = {
@@ -42,6 +46,21 @@ def reset_global_time():
 def get_global_time() -> float:
     """获取本次实验的大模型总耗时（秒）。"""
     return float(GLOBAL_TIME_SECONDS)
+
+
+def load_llm_config(path: str = "llm.config") -> dict:
+    """读取 LLM 配置文件（JSON）。
+
+    - 相对路径找不到时自动回退到项目根目录，避免依赖当前工作目录；
+    - 返回的 dict 可直接传给 ``ClientFactory.from_config``。
+    """
+    p = Path(path)
+    if not p.is_absolute() and not p.exists():
+        cand = _REPO_ROOT / p
+        if cand.exists():
+            p = cand
+    with open(p, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 class LLMClient:

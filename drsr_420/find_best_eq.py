@@ -210,8 +210,7 @@ def find_best_eq(results_root: str):
                             + ("\n\n### 以下是相关文献背景，供力学解释参考 ###\n\n" + rag_block if rag_block else "") \
                             + "\n" + tail
 
-                        with open("./llm_explain.config", 'r', encoding='utf-8') as f:
-                            llm_config = json.load(f)
+                        llm_config = llm.load_llm_config("llm_explain.config")
                         # 由 ClientFactory 统一完成 provider 解析、api_key 解析、base_url 与生成参数注入
                         client = None
                         try:
