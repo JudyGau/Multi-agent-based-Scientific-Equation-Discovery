@@ -87,6 +87,7 @@ class SensitivityPruner:
     num_samples  : 随机采样点数（默认 500）。
     sample_range : 各变量的均匀采样区间（默认 [-3, 3]）。
     metric       : 敏感度指标，'relative'（相对）或 'absolute'（绝对）。
+    reduction    : 采样点上的聚合方式，'max'/'mean'/'median'/'p95'。
     seed         : 随机种子，保证可复现性。
 
     典型用法
@@ -104,18 +105,22 @@ class SensitivityPruner:
         num_samples: int = 100,
         sample_range: Tuple[float, float] = (-3.0, 3.0),
         metric: str = "relative",
+        reduction: str = "max",
         seed: Optional[int] = 42,
     ) -> None:
         if not symbols:
             raise ValueError("symbols 不能为空")
         if metric not in ("relative", "absolute"):
             raise ValueError("metric 须为 'relative' 或 'absolute'")
+        if reduction not in ("max", "mean", "median", "p95"):
+            raise ValueError("reduction 须为 'max'/'mean'/'median'/'p95'")
 
         self.symbols = list(symbols)
         self.threshold = threshold
         self.num_samples = num_samples
         self.sample_range = sample_range
         self.metric = metric
+        self.reduction = reduction
         self.seed = seed
 
         rng = np.random.default_rng(seed)
@@ -180,7 +185,7 @@ class SensitivityPruner:
         # Step 1: 递归剪枝各子项内部
         pruned_terms = [self._prune_node(t, depth + 1) for t in node.args]
 
-        # Step 2: 贪心移除 —— 按平均绝对贡献从小到大排序
+        # Step 2: 贪心移除 —— 按贡献从小到大排序
         kept: List[sp.Expr] = list(pruned_terms)
         self._greedy_remove(kept, neutral=sp.Integer(0),
                             kind="term_of_Add", depth=depth)
@@ -251,10 +256,14 @@ class SensitivityPruner:
                 return items[0]
             return (sp.Add if neutral == sp.Integer(0) else sp.Mul)(*items)
 
-        # 按各项在采样点上的平均绝对值排序（贡献小的优先尝试）
+        # 按各项在采样点上的贡献排序（贡献小的优先尝试）。
+        # 用 nanmedian 抗离群点；若全部无效则视为 0 贡献（最后再尝试移除）。
         def contrib(e):
             v = self._evaluate(e)
-            return float(np.nanmean(np.abs(v)))
+            valid = np.abs(v)[np.isfinite(v)]
+            if len(valid) == 0:
+                return 0.0
+            return float(np.nanmedian(valid))
 
         order = sorted(range(len(kept)), key=lambda i: contrib(kept[i]))
 
@@ -308,7 +317,9 @@ class SensitivityPruner:
         优先 lambdify（NumPy 向量化），失败时逐点 subs 备用。
         结果缓存以避免重复编译同一表达式。
         """
-        key = id(expr)  # SymPy 表达式不可变，id 可作缓存键
+        # 以规范化字符串为缓存键：结构等价（repr 相同）的表达式可复用求值结果，
+        # 比 id(expr) 命中率更高（贪心循环中反复构造同类父节点）。
+        key = repr(expr)
         if key in self._cache:
             return self._cache[key]
 
@@ -344,17 +355,30 @@ class SensitivityPruner:
 
     def _sensitivity(self, orig: np.ndarray, pruned: np.ndarray) -> float:
         """
-        计算 orig 与 pruned 之间的最大变化量（即敏感度）。
+        计算 orig 与 pruned 之间的变化量作为敏感度。
 
-        relative : max_k  |orig_k - pruned_k| / (|orig_k| + 1e-12)
-        absolute : max_k  |orig_k - pruned_k|
+        metric     : 'relative' → 逐点相对变化 |Δ|/(|orig|+1e-12)；
+                     'absolute' → 逐点绝对变化 |Δ|。
+        reduction  : 采样点上的聚合方式。
+            max    : max_k |Δ_k|        （默认，最保守）
+            mean   : mean_k |Δ_k|
+            median : median_k |Δ_k|     （抗离群点）
+            p95    : 95% 分位 |Δ_k|     （忽略罕见尖峰）
         """
         diff = np.abs(orig - pruned)
         if self.metric == "relative":
             denom = np.abs(orig) + 1e-12
             diff = diff / denom
         valid = diff[np.isfinite(diff)]
-        return float(np.max(valid)) if len(valid) else 0.0
+        if len(valid) == 0:
+            return 0.0
+        if self.reduction == "mean":
+            return float(np.mean(valid))
+        if self.reduction == "median":
+            return float(np.median(valid))
+        if self.reduction == "p95":
+            return float(np.percentile(valid, 95))
+        return float(np.max(valid))
 
     # ── 日志 ─────────────────────────────────────────────────
 
@@ -375,6 +399,7 @@ def sensitivity_prune(
     num_samples: int = 500,
     sample_range: Tuple[float, float] = (-3.0, 3.0),
     metric: str = "relative",
+    reduction: str = "max",
     seed: Optional[int] = 42,
     verbose: bool = False,
 ) -> Tuple[sp.Expr, PruneStats]:
@@ -389,6 +414,7 @@ def sensitivity_prune(
     num_samples  : 随机采样点数（默认 500）。
     sample_range : 各变量的采样区间（默认 [-3, 3]）。
     metric       : 'relative'（相对误差）或 'absolute'（绝对误差）。
+    reduction    : 采样点聚合方式 'max'/'mean'/'median'/'p95'（默认 'max'）。
     seed         : 随机种子（默认 42）。
     verbose      : 是否打印详细过程（默认 False）。
 
@@ -412,6 +438,7 @@ def sensitivity_prune(
         num_samples=num_samples,
         sample_range=sample_range,
         metric=metric,
+        reduction=reduction,
         seed=seed,
     )
     pruned = pruner.prune(expr, verbose=verbose)

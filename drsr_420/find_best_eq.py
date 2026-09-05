@@ -6,8 +6,6 @@ from sympy import nsimplify, dotprint
 from sympy.parsing import sym_expr
 
 import llm
-from drsr_420.evaluate_on_problems import MAX_NPARAMS
-
 from drsr_420.sensitivity_prune import SensitivityPruner
 from drsr_420.tool_runner import mcp_call_tool
 
@@ -57,20 +55,26 @@ def explain_re_act(client: llm.LLMClient, content: str) -> str | None:
             print(f"API请求发生错误: {str(e)}")
             # return ([""] * repeat_prompt, [""] * repeat_prompt) if self._batch_inference else ("", "")
 
-def expr_substitution(func: str, params: list) ->  sp.Expr | None:
+def expr_substitution(func: str, params: list) -> sp.Expr | None:
+    """把 LLM 返回的函数骨架字符串替换为具体参数值，解析为 SymPy 表达式。
 
-    params = [round(x, 2) for x in params]
+    失败（找不到自变量/return，或解析报错）时返回 None，由调用方兜底。
+    """
+    params = [round(x, 2) for x in (params or [])]
 
-
-    independent_match = re.search(r'Independents:\s+(.*)', func)
+    # 解析自变量列表：兼容逗号、中文逗号、空白分隔
+    independent_match = re.search(r'Independents:\s*(.*)', func)
     if independent_match:
         independent = independent_match.group(1)
-        independent_list = independent.split(', ')
+        independent_list = [
+            v.strip() for v in re.split(r'[,，\s]+', independent) if v.strip()
+        ]
     else:
-        print("未找到自变量")
+        print("未找到自变量，返回 None")
+        return None
 
-    # 将具体数值代入参数
-    for i in range(MAX_NPARAMS):
+    # 将具体数值代入参数（只替换实际存在的 params，避免越界）
+    for i in range(len(params)):
         func = func.replace(f"params[{i}]", str(params[i]))
 
     # 去除注释部分 """...""" 和 #...
@@ -89,72 +93,86 @@ def expr_substitution(func: str, params: list) ->  sp.Expr | None:
 
     func = re.sub("Piecewise\\(.*?\\)\n",replfunc, func,flags=re.DOTALL)
 
-    inter_vars = {}
-    for var_str in independent_list:
-        var = sp.Symbol(var_str)
-        inter_vars[var] = None
+    inter_vars = {sp.Symbol(var_str): None for var_str in independent_list}
 
     # 遍历func的每行
     for line in func.splitlines():
         equal_match = re.search(r'=', line)
 
         if equal_match:
-            # independent = equal_match.group(1)
-
             equation = line.split("=")
 
             eq_left = equation[0].strip()
             var = sp.Symbol(eq_left)
 
             eq_right = equation[1].strip()
-            expr = sp.parse_expr(eq_right,{'N': sp.Symbol('N')})
+            try:
+                expr = sp.parse_expr(eq_right, {'N': sp.Symbol('N')})
+            except Exception as e:
+                print(f"[WARN] 中间变量行解析失败（跳过）: {eq_left} = {eq_right} -> {e}")
+                continue
 
             for symbol in expr.free_symbols:
-                if inter_vars[symbol] is not None:
-                    expr = expr.subs(symbol, inter_vars[symbol])
+                prev = inter_vars.get(symbol)   # 未定义变量安全跳过（不再 KeyError）
+                if prev is not None:
+                    expr = expr.subs(symbol, prev)
 
             inter_vars[var] = expr
-
-            # expr = expr.n(2)
         else:
             print("跳过该行")
 
 
     match = re.search(r'return\s+(.*)', func, re.DOTALL)
-    if match:
-        expr_str = match.group(1).strip()
-        # 兼容多行括号式 return：
-        #   return (
-        #       expr1
-        #       + expr2
-        #   )
-        # 取出最外层括号内的内容并合并为单行，再交给 parse_expr。
-        if expr_str.startswith('('):
-            depth = 0
-            end_idx = len(expr_str)
-            for i, ch in enumerate(expr_str):
-                if ch == '(':
-                    depth += 1
-                elif ch == ')':
-                    depth -= 1
-                    if depth == 0:
-                        end_idx = i
-                        break
-            expr_str = expr_str[1:end_idx]
-        expr_str = ' '.join(expr_str.splitlines())
+    if not match:
+        print("未找到 return，返回 None")
+        return None
+
+    expr_str = match.group(1).strip()
+    # 兼容多行括号式 return：
+    #   return (
+    #       expr1
+    #       + expr2
+    #   )
+    # 取出最外层括号内的内容并合并为单行，再交给 parse_expr。
+    if expr_str.startswith('('):
+        depth = 0
+        end_idx = len(expr_str)
+        for i, ch in enumerate(expr_str):
+            if ch == '(':
+                depth += 1
+            elif ch == ')':
+                depth -= 1
+                if depth == 0:
+                    end_idx = i
+                    break
+        expr_str = expr_str[1:end_idx]
+    expr_str = ' '.join(expr_str.splitlines())
+    try:
         expr = sp.parse_expr(expr_str, {'N': sp.Symbol('N')})
-        for symbol in expr.free_symbols:
-            if inter_vars[symbol] is not None:
-                expr = expr.subs(symbol, inter_vars[symbol])
+    except Exception as e:
+        print(f"[WARN] return 表达式解析失败，返回 None: {e}")
+        return None
 
-        expr = expr.n(2)
-        print(f"代入中间变量后的表达式: {expr}")
-        return expr
-    else:
-        print("未找到 return")
+    for symbol in expr.free_symbols:
+        prev = inter_vars.get(symbol)
+        if prev is not None:
+            expr = expr.subs(symbol, prev)
+
+    expr = expr.n(2)
+    print(f"代入中间变量后的表达式: {expr}")
+    return expr
 
 
-def find_best_eq(results_root: str):
+def _safe_preview(expr, filename: str) -> None:
+    """容错地保存表达式预览图；缺 latex/工具链时仅告警，不中断流程。"""
+    try:
+        sp.preview(expr, output='png', filename=filename, viewer='file')
+    except Exception as e:
+        print(f"[WARN] 保存表达式图片失败（{filename}）: {e}")
+
+
+def find_best_eq(results_root: str, threshold: float = 0.1,
+                 sample_range: tuple = (1, 14)):
     # results_root = "experiments/MRFCompress-Cuboid_20260712-150715"  # 改为你的目录
     best = None
     for p in glob.glob(os.path.join(results_root, "samples", "*_samples_*.json")):
@@ -264,59 +282,62 @@ def find_best_eq(results_root: str):
 
         # print(f"[BEST] score={score} file={path} params={params} function:{func}")
 
-        """
-                基于敏感度分析剪枝
-                移除对输出影响小于阈值的项
-                """
-        dependent = re.search(r'Dependent:\s*(\w+)', func).group(1)
-        independent = re.search(r'Independents:\s+(.*)', func).group(1)
+        # ── 基于敏感度分析剪枝：移除对输出影响小于阈值的项 ──
+        dependent = re.search(r'Dependent:\s*(\w+)', func)
+        independent = re.search(r'Independents:\s*(.*)', func)
+        if not dependent or not independent:
+            print("[WARN] 无法从样本中解析 Dependent/Independents，跳过剪枝。")
+            return
+        dependent = dependent.group(1)
+        independent_str = independent.group(1)
 
-        # 加上','以便变量字符串被转换为元组tuple
-        independent = independent + ','
+        # 解析自变量符号列表（兼容逗号/中文逗号/空白分隔）
+        sym_names = [
+            v.strip() for v in re.split(r'[,，\s]+', independent_str) if v.strip()
+        ]
+        symbols = sp.symbols(sym_names)
+        if not symbols:
+            print("[WARN] 自变量列表为空，跳过剪枝。")
+            return
 
-        # 创建智能剪枝器
+        # 创建智能剪枝器（阈值/采样区间可配置）
         pruner = SensitivityPruner(
-            # X_sample=X_sample,
-            # expr=expr,
-            symbols=sp.symbols(independent),
-            threshold=0.1,
-            sample_range=(1, 14)
-            # mse_threshold=0.1  # 默认允许10% MSE增加
+            symbols=symbols,
+            threshold=threshold,
+            sample_range=sample_range,
         )
 
-        # 字符串替换 np.log -> log, np.exp -> exp
-        # expr_str = expr_str.replace('np.asarray','').replace('np.log', 'log').replace('np.exp', 'exp').replace('np.sin', 'sin').replace('np.cos', 'cos').replace('np.sqrt','sqrt').replace('np.maximum','maximum')
-
-        # # 转换为 SymPy 表达式
-        # expr = sp.parse_expr(expr_str)
-        # expr = expr.n(2)
-
         expr = expr_substitution(func, params)
-        print(f"剪纸前的表达式式为 {dependent} =")
+        if expr is None:
+            print("[WARN] 表达式解析失败，跳过剪枝。")
+            return
+
+        print(f"剪枝前的表达式为 {dependent} =")
         sp.pprint(expr)
-        # 保存为PNG图片
-        sp.preview(expr, output='png', filename=f'{results_root}/expr.png', viewer='file')
+        # 保存为PNG图片（无 latex/graphviz 环境时容错）
+        _safe_preview(expr, f'{results_root}/expr.png')
 
         # 使用智能剪枝
-        pruned_expr = pruner.prune(expr, verbose=True)
+        try:
+            pruned_expr = pruner.prune(expr, verbose=True)
+        except Exception as e:
+            print(f"[WARN] 剪枝失败: {e}")
+            return
 
+        pruned_expr = pruned_expr.n(2)
 
-        pruned_expr=pruned_expr.n(2)
-
-        # pruned_expr = sp.simplify(pruned_expr)
-
-        print(f"剪纸后的表达式式为 {dependent} =")
+        print(f"剪枝后的表达式为 {dependent} =")
         sp.pprint(pruned_expr)
-        # 保存为PNG图片
-        sp.preview(pruned_expr, output='png', filename=f'{results_root}/prunedExpr.png', viewer='file')
+        _safe_preview(pruned_expr, f'{results_root}/prunedExpr.png')
 
+        # 表达式树可视化（依赖 graphviz，失败时仅告警，不中断流程）
         print(".......")
-
-        src1 = Source(dotprint(expr))
-        src1.render(f'{results_root}/original_expr_tree', view=True)  # 保存为PDF并显示
-
-        src2 = Source(dotprint(pruned_expr))
-        src2.render(f'{results_root}/pruned_expr_tree', view=True)  # 保存为PDF并显示
+        for name, e in (("original_expr_tree", expr), ("pruned_expr_tree", pruned_expr)):
+            try:
+                src = Source(dotprint(e))
+                src.render(f'{results_root}/{name}', view=True)
+            except Exception as ex:
+                print(f"[WARN] 生成表达式树图失败（{name}，可能缺少 graphviz 环境）: {ex}")
 
 
 if __name__ == "__main__":
