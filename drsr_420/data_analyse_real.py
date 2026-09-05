@@ -202,7 +202,7 @@ STRICTLY deliver results in the following structured format:
             llm_client.kwargs = dict(llm_client.kwargs)
             if llm_client._provider_name() == 'glm':
                 llm_client.kwargs['thinking'] = {'type': 'enabled'}
-                llm_client.kwargs['reasoning_effort'] = 'medium'
+                llm_client.kwargs['reasoning_effort'] = 'low'
                 # 数据分析仅需简短结论，限制输出长度，避免 max_tokens 过大导致服务端长时间生成
                 llm_client.kwargs['max_tokens'] = 16384
             resp = llm_client.chat([
