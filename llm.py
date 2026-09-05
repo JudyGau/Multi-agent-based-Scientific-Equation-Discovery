@@ -56,12 +56,13 @@ LLM_REQUEST_BACKOFF_BASE = 2.0
 def _post_with_retry(url, headers, payload,
                      max_retries=LLM_REQUEST_MAX_RETRIES,
                      backoff_base=LLM_REQUEST_BACKOFF_BASE,
-                     timeout=(10, 3600)):
+                     timeout=(10, 3600),
+                     stream=False):
     """带指数退避的 POST 请求：网络异常与 429/5xx 自动重试。"""
     attempt = 0
     while True:
         try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
+            resp = requests.post(url, headers=headers, json=payload, timeout=timeout, stream=stream)
             if resp.status_code == 429 or resp.status_code >= 500:
                 retry_after = None
                 try:
@@ -134,7 +135,7 @@ class LLMClient:
             'temperature': 0.5,
             'top_p': 0.5,
             'n': 1,
-            'stream': False,
+            'stream': True,
         }
         # token 统计：实例级独立字典（原为类变量，会被多实例共享污染，故改为实例属性）
         self.tokens = {'prompt': 0, 'content': 0, 'reasoning': 0, 'total': 0}
@@ -200,117 +201,94 @@ class LLMClient:
         if 'max_completion_tokens' in payload:
             payload['max_tokens'] = payload.pop('max_completion_tokens')
 
-    def chat(self, messages: List[Dict[str, str]]) -> dict:
+    def chat(self, messages: List[Dict[str, str]], on_delta=None) -> dict:
+        """与 LLM 对话（默认流式）。
+
+        - 默认以 SSE 流式方式请求（stream=True），逐块累积后返回完整结果 dict，
+          返回结构与原先非流式调用完全一致，调用方无需改动；
+        - ``on_delta``：可选回调，每收到一个流式增量块时调用 ``on_delta(chunk)``，
+          chunk 为截至当前的累积值 ``{'content', 'reasoning_content', 'tool_calls'}``，
+          便于调用方实时显示输出（回调异常被忽略，不影响主流程）；
+        - 若 config 显式设置 stream=False，则回退到非流式路径（_chat_non_stream），
+          此时 on_delta 不会触发；
+        - 需要逐段输出（如控制台实时打印）的调用方可直接迭代 chat_stream()。
+        """
+        if self.kwargs.get('stream', True) is False:
+            return self._chat_non_stream(messages)
+        full_result = None
+        for chunk in self.chat_stream(messages):
+            if on_delta is not None and not chunk.get('final'):
+                try:
+                    on_delta(chunk)
+                except Exception:
+                    pass
+            if chunk.get('final'):
+                full_result = {k: v for k, v in chunk.items() if k != 'final'}
+        if full_result is None:
+            raise RuntimeError("流式调用未返回任何结果")
+        return full_result
+
+    def chat_stream(self, messages: List[Dict[str, str]]):
+        """SSE 流式调用生成器。
+
+        Yields:
+            增量块：{'content', 'reasoning_content', 'tool_calls'}，为截至当前已累积的结果；
+            最后一块额外携带 'final': True 与 'tokens'，结构与 chat() 的返回一致。
+        """
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
         request_url = f"{self.base_url.rstrip('/')}/chat/completions"
-
         payload = self._build_payload(messages)
+        payload['stream'] = True
 
         start_time = time.time()
         try:
-            response = _post_with_retry(request_url, headers, payload)
-            # 状态码错误先抛出异常（下方 except 会打印详情）
+            response = _post_with_retry(request_url, headers, payload, stream=True)
             response.raise_for_status()
-            # 尝试解析 JSON；失败时打印前 500 字符文本
-            try:
-                response_data = response.json()
-            except ValueError:
-                print("API 响应无法解析为 JSON，原始文本预览:", response.text[:500])
-                raise
 
-            # OpenAI 兼容接口错误格式：{"error": {...}}
-            if isinstance(response_data, dict) and 'error' in response_data:
-                err = response_data.get('error') or {}
-                print("API 返回错误:", {
-                    'type': err.get('type'),
-                    'code': err.get('code'),
-                    'message': err.get('message') or err,
-                })
-                raise requests.exceptions.HTTPError(f"API error: {err}")
-            # end_time = time.time()
+            acc_content: List[str] = []
+            acc_reasoning: List[str] = []
+            acc_tool_calls: Dict[int, dict] = {}
+            usage: dict = {}
 
-            # 保护性判断：缺少 choices 时打印提示
-            if 'choices' not in response_data or not response_data['choices']:
-                print("API 响应不包含 choices 字段或为空：", str(response_data)[:500])
-                raise requests.exceptions.HTTPError("API response missing choices")
+            if 'text/event-stream' not in (response.headers.get('Content-Type') or ''):
+                # 个别网关忽略 stream 参数、直接返回完整 JSON：按单块处理
+                full = self._finalize_response_data(response.json(), start_time)
+                yield {**full, 'final': True}
+                return
 
-            message = response_data['choices'][0].get('message', {})
-            content = message.get('content', '') or ''
-            reasoning_content = message.get('reasoning_content', '') or ''
-
-            tool_calls = message.get('tool_calls', [])
-
-            # token统计
-            usage = response_data.get('usage', {})
-            prompt_tokens = usage.get('prompt_tokens', 0)
-            completion_tokens = usage.get('completion_tokens', 0)
-            total_tokens = usage.get('total_tokens', 0)
-            reasoning_tokens = 0
-            if 'completion_tokens_details' in usage:
-                reasoning_tokens = usage['completion_tokens_details'].get('reasoning_tokens', 0)
-
-            self.tokens['prompt'] += prompt_tokens
-            self.tokens['content'] += completion_tokens - reasoning_tokens
-            self.tokens['reasoning'] += reasoning_tokens
-            self.tokens['total'] += total_tokens
-
-            # 更新单次实验全局统计
-            try:
-                GLOBAL_TOKENS['prompt'] += int(prompt_tokens)
-                GLOBAL_TOKENS['thinking'] += int(reasoning_tokens)
-                GLOBAL_TOKENS['content'] += int(completion_tokens - reasoning_tokens)
-                GLOBAL_TOKENS['total'] += int(total_tokens)
-            except Exception:
-                pass
-
-            # 实例级累计、全局耗时与打印
-            try:
-                elapsed = time.time() - start_time
-                self._cum_time_seconds += float(elapsed)
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                line = line.decode('utf-8', errors='replace').strip()
+                if not line.startswith('data:'):
+                    continue
+                data = line[len('data:'):].strip()
+                if data == '[DONE]':
+                    break
                 try:
-                    global GLOBAL_TIME_SECONDS
-                    GLOBAL_TIME_SECONDS += float(elapsed)
-                except Exception:
-                    pass
+                    chunk = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(chunk, dict) and chunk.get('usage'):
+                    usage = chunk['usage']
+                if isinstance(chunk, dict) and chunk.get('choices'):
+                    delta = chunk['choices'][0].get('delta') or {}
+                else:
+                    delta = {}
+                self._accumulate_stream_delta(acc_content, acc_reasoning, acc_tool_calls, delta)
+                yield {
+                    'content': ''.join(acc_content),
+                    'reasoning_content': ''.join(acc_reasoning),
+                    'tool_calls': self._assemble_tool_calls(acc_tool_calls),
+                }
 
-                self._call_index += 1
-                self._cum_tokens['prompt'] += int(prompt_tokens)
-                self._cum_tokens['thinking'] += int(reasoning_tokens)
-                self._cum_tokens['content'] += int(completion_tokens - reasoning_tokens)
-                self._cum_tokens['total'] += int(total_tokens)
-
-                provider = self._provider_name()
-                header = f"[{provider}][{self.model}] 第{self._call_index}次"
-                line_cur = (
-                    f"本次 tokens：prompt={int(prompt_tokens)}, thinking={int(reasoning_tokens)}, "
-                    f"content={int(completion_tokens - reasoning_tokens)}, total={int(total_tokens)}"
-                )
-                line_cum = (
-                    f"累计 tokens：prompt={self._cum_tokens['prompt']}, thinking={self._cum_tokens['thinking']}, "
-                    f"content={self._cum_tokens['content']}, total={self._cum_tokens['total']}"
-                )
-                line_time = (
-                    f"本次用时：{elapsed:.2f}s，"
-                    f"累计用时：{self._cum_time_seconds:.2f}s"
-                )
-                print(header + "\n" + line_cur + "\n" + line_cum + "\n" + line_time)
-            except Exception:
-                pass
-
-            return {
-                "content": content,
-                "reasoning_content": reasoning_content,
-                "tokens": {
-                    "prompt": prompt_tokens,
-                    "content": completion_tokens - reasoning_tokens,
-                    "reasoning": reasoning_tokens,
-                    "total": total_tokens
-                },
-                "tool_calls": tool_calls,
-            }
+            full = self._finalize_response(
+                ''.join(acc_content), ''.join(acc_reasoning),
+                self._assemble_tool_calls(acc_tool_calls), usage, start_time)
+            yield {**full, 'final': True}
 
         except requests.exceptions.RequestException as e:
             print(f"通过 requests 调用 API 时出错: {e}")
@@ -327,6 +305,173 @@ class LLMClient:
         except Exception as e:
             print(e)
             raise
+
+    def _chat_non_stream(self, messages: List[Dict[str, str]]) -> dict:
+        """非流式路径：config 显式设置 stream=False 时使用（行为与原实现一致）。"""
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        request_url = f"{self.base_url.rstrip('/')}/chat/completions"
+        payload = self._build_payload(messages)
+
+        start_time = time.time()
+        try:
+            response = _post_with_retry(request_url, headers, payload)
+            response.raise_for_status()
+            try:
+                response_data = response.json()
+            except ValueError:
+                print("API 响应无法解析为 JSON，原始文本预览:", response.text[:500])
+                raise
+            return self._finalize_response_data(response_data, start_time)
+
+        except requests.exceptions.RequestException as e:
+            print(f"通过 requests 调用 API 时出错: {e}")
+            if e.response is not None:
+                try:
+                    print("错误详情(JSON):", e.response.json())
+                except ValueError:
+                    try:
+                        print("错误详情(TEXT):", e.response.text[:500])
+                    except Exception:
+                        pass
+            raise
+
+        except Exception as e:
+            print(e)
+            raise
+
+    def _finalize_response_data(self, response_data: dict, start_time: float) -> dict:
+        """从完整 JSON 响应构造返回 dict（非流式与流式兜底共用）。"""
+        # OpenAI 兼容接口错误格式：{"error": {...}}
+        if isinstance(response_data, dict) and 'error' in response_data:
+            err = response_data.get('error') or {}
+            print("API 返回错误:", {
+                'type': err.get('type'),
+                'code': err.get('code'),
+                'message': err.get('message') or err,
+            })
+            raise requests.exceptions.HTTPError(f"API error: {err}")
+
+        # 保护性判断：缺少 choices 时打印提示
+        if 'choices' not in response_data or not response_data['choices']:
+            print("API 响应不包含 choices 字段或为空：", str(response_data)[:500])
+            raise requests.exceptions.HTTPError("API response missing choices")
+
+        message = response_data['choices'][0].get('message', {})
+        content = message.get('content', '') or ''
+        reasoning_content = message.get('reasoning_content', '') or ''
+        tool_calls = message.get('tool_calls', [])
+        usage = response_data.get('usage', {})
+        return self._finalize_response(content, reasoning_content, tool_calls, usage, start_time)
+
+    def _finalize_response(self, content: str, reasoning_content: str,
+                           tool_calls: list, usage: dict, start_time: float) -> dict:
+        """统计 token/耗时并构造统一返回 dict。"""
+        prompt_tokens = usage.get('prompt_tokens', 0)
+        completion_tokens = usage.get('completion_tokens', 0)
+        total_tokens = usage.get('total_tokens', 0)
+        reasoning_tokens = 0
+        if 'completion_tokens_details' in usage:
+            reasoning_tokens = usage['completion_tokens_details'].get('reasoning_tokens', 0)
+
+        self.tokens['prompt'] += prompt_tokens
+        self.tokens['content'] += completion_tokens - reasoning_tokens
+        self.tokens['reasoning'] += reasoning_tokens
+        self.tokens['total'] += total_tokens
+
+        # 更新单次实验全局统计
+        try:
+            GLOBAL_TOKENS['prompt'] += int(prompt_tokens)
+            GLOBAL_TOKENS['thinking'] += int(reasoning_tokens)
+            GLOBAL_TOKENS['content'] += int(completion_tokens - reasoning_tokens)
+            GLOBAL_TOKENS['total'] += int(total_tokens)
+        except Exception:
+            pass
+
+        # 实例级累计、全局耗时与打印
+        try:
+            elapsed = time.time() - start_time
+            self._cum_time_seconds += float(elapsed)
+            try:
+                global GLOBAL_TIME_SECONDS
+                GLOBAL_TIME_SECONDS += float(elapsed)
+            except Exception:
+                pass
+
+            self._call_index += 1
+            self._cum_tokens['prompt'] += int(prompt_tokens)
+            self._cum_tokens['thinking'] += int(reasoning_tokens)
+            self._cum_tokens['content'] += int(completion_tokens - reasoning_tokens)
+            self._cum_tokens['total'] += int(total_tokens)
+
+            provider = self._provider_name()
+            header = f"[{provider}][{self.model}] 第{self._call_index}次"
+            line_cur = (
+                f"本次 tokens：prompt={int(prompt_tokens)}, thinking={int(reasoning_tokens)}, "
+                f"content={int(completion_tokens - reasoning_tokens)}, total={int(total_tokens)}"
+            )
+            line_cum = (
+                f"累计 tokens：prompt={self._cum_tokens['prompt']}, thinking={self._cum_tokens['thinking']}, "
+                f"content={self._cum_tokens['content']}, total={self._cum_tokens['total']}"
+            )
+            line_time = (
+                f"本次用时：{elapsed:.2f}s，"
+                f"累计用时：{self._cum_time_seconds:.2f}s"
+            )
+            print(header + "\n" + line_cur + "\n" + line_cum + "\n" + line_time)
+        except Exception:
+            pass
+
+        return {
+            "content": content,
+            "reasoning_content": reasoning_content,
+            "tokens": {
+                "prompt": prompt_tokens,
+                "content": completion_tokens - reasoning_tokens,
+                "reasoning": reasoning_tokens,
+                "total": total_tokens
+            },
+            "tool_calls": tool_calls,
+        }
+
+    @staticmethod
+    def _accumulate_stream_delta(acc_content: List[str], acc_reasoning: List[str],
+                                 acc_tool_calls: Dict[int, dict], delta: dict) -> None:
+        """把单个 SSE chunk 的 delta 累积到缓冲区。"""
+        c = delta.get('content')
+        if c:
+            acc_content.append(c)
+        r = delta.get('reasoning_content')
+        if r:
+            acc_reasoning.append(r)
+        for tc in delta.get('tool_calls') or []:
+            idx = tc.get('index', 0)
+            slot = acc_tool_calls.setdefault(idx, {'id': '', 'name': '', 'arguments': []})
+            if tc.get('id'):
+                slot['id'] = tc['id']
+            fn = tc.get('function') or {}
+            if fn.get('name'):
+                slot['name'] = fn['name']
+            if fn.get('arguments'):
+                slot['arguments'].append(fn['arguments'])
+
+    @staticmethod
+    def _assemble_tool_calls(acc_tool_calls: Dict[int, dict]) -> list:
+        """把累积的 tool_calls 增量拼成 OpenAI 兼容的完整 tool_calls 列表。"""
+        calls = []
+        for idx in sorted(acc_tool_calls):
+            slot = acc_tool_calls[idx]
+            calls.append({
+                "id": slot['id'],
+                "type": "function",
+                "function": {
+                    "name": slot['name'],
+                    "arguments": ''.join(slot['arguments']),
+                },
+            })
+        return calls
 
 class DeepSeekClient(LLMClient):
     def __init__(self, api_key: str, model: str, base_url: str = "https://api.deepseek.com"):

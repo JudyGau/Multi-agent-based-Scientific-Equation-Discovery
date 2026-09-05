@@ -59,7 +59,10 @@ class ResidualAnalyzer:
         print(res_analyze)
         # 调用远程API分析结果（仅使用注入的 llm_client）
         try:
-            resp = self._llm_client.chat([{"role": "user", "content": res_analyze}])
+            resp = self._llm_client.chat([
+                {"role": "system", "content": pc.system_prompt},
+                {"role": "user", "content": res_analyze},
+            ])
             analysis_result = resp.get('content', '')
             print(f"残差分析结果：{analysis_result}")
             return analysis_result

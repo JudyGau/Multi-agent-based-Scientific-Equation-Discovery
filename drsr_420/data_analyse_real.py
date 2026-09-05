@@ -8,6 +8,8 @@ import json
 import os
 import http.client
 
+from drsr_420 import prompt_config as pc
+
 Port = '5000'
 
 # # API配置
@@ -141,21 +143,17 @@ class DataAnalyzer:
         if custom_prompt:
             return custom_prompt.replace("{csv_data}", csv_data)
         
-        # 默认提示
+        # 默认提示（通用兜底；主流程已通过 custom_prompt 注入 PromptContext 动态模板）
         return f"""
         csv
         {csv_data}
-You are a data analysis expert. I have provided a dataset structure for a damped nonlinear oscillator system as follows:
-The first two columns are independent variables:
-x(position), 
-v(velocity).
-
-The third column is the dependent variable a(acceleration).
-Each row represents a set of independent variables (x, v) and their corresponding dependent variable a value, and the residual value.
+You are a data analysis expert. I have provided a dataset for scientific analysis.
+The first columns are the independent variables, and the last column is the dependent variable.
+Each row represents a set of independent variables and the corresponding dependent variable value.
 
 Task Requirements:
 
-1.Please help me analyze and summarize the influence of the changes in the values of different independent variables on the dependent variable, 
+1. Please help me analyze and summarize the influence of the changes in the values of different independent variables on the dependent variable,
 as well as the possible intrinsic relationships among different independent variables.
 
 Your response only needs to answer your analysis results in the form below, and you don't need to show your analysis process.
@@ -164,21 +162,19 @@ Your response only needs to answer your analysis results in the form below, and 
 2.##Output Format##:
 STRICTLY deliver results in the following structured format:
 
-Deliver results in the following structured format:
-
   "output_format": {
     "analysis": {
       "independent_to_dependent_relationships": {
-        "x ": [
-          "Hint: Here you need to analyze the functional relationship between x and a in different intervals"
+        "independent variable1 ": [
+          "Hint: analyze the functional relationship between independent variable1 and the dependent variable in different intervals"
         ],
-        "v ": [
-          "Hint: Here you need to analyze the functional relationship between v and a in different intervals"
+        "independent variable2 ": [
+          "Hint: analyze the functional relationship between independent variable2 and the dependent variable in different intervals"
         ]
       },
       "inter_relationships_between_independents": {
-        "x vs v": [
-          "Hint: Here you need to analyze the possible functional relationship between x and v in different intervals. If not, you can leave it blank."
+        "independent variable1 vs independent variable2": [
+          "Hint: analyze the possible functional relationship between the two independent variables in different intervals. If not, you can leave it blank."
         ]
       }
     }
@@ -200,7 +196,10 @@ Deliver results in the following structured format:
         try:
             if self.llm_client is None:
                 raise RuntimeError('DataAnalyzer requires llm_client, but got None')
-            resp = self.llm_client.chat([{"role": "user", "content": prompt}])
+            resp = self.llm_client.chat([
+                {"role": "system", "content": pc.system_prompt},
+                {"role": "user", "content": prompt},
+            ])
             return resp.get('content', '')
         except Exception as e:
             error_msg = f"请求出错: {str(e)}"

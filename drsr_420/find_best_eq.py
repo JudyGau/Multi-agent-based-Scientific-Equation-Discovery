@@ -6,6 +6,7 @@ from sympy import nsimplify, dotprint
 from sympy.parsing import sym_expr
 
 import llm
+from drsr_420 import prompt_config as pc
 from drsr_420.sensitivity_prune import SensitivityPruner
 from drsr_420.tool_runner import mcp_call_tool
 
@@ -13,17 +14,27 @@ from drsr_420.tool_runner import mcp_call_tool
 def explain_re_act(client: llm.LLMClient, content: str) -> str | None:
     if client is not None:
         try:
-            # responses = []
-            # think_responses = []
-
-            messages = []
-            messages.append({"role": "user", "content": content})
-            resp = client.chat([{"role": "user", "content": content}])
+            messages = [
+                {"role": "system", "content": pc.sampling_system_prompt},
+                {"role": "user", "content": content},
+            ]
 
             while True:
                 print("========================思考过程========================\n")
-                print(resp.get('reasoning_content', ''))
-                print("====================================================\n")
+                # 流式迭代：reasoning 与 content 按到达顺序实时打印增量（网络层已是 SSE 流式）
+                resp = None
+                shown = 0  # 已实时打印的字符数（reasoning 在前、content 在后拼接）
+                for chunk in client.chat_stream(messages):
+                    if chunk.get('final'):
+                        resp = {k: v for k, v in chunk.items() if k != 'final'}
+                        break
+                    text = (chunk.get('reasoning_content') or '') + (chunk.get('content') or '')
+                    if len(text) > shown:
+                        print(text[shown:], end='', flush=True)
+                        shown = len(text)
+                if resp is None:
+                    return None
+                print("\n====================================================\n")
 
                 tool_calls = resp.get('tool_calls', [])
                 messages.append({"role": "assistant", "content": resp.get('content', ''), "tool_calls": tool_calls})
@@ -42,18 +53,11 @@ def explain_re_act(client: llm.LLMClient, content: str) -> str | None:
                             "tool_call_id": tc.get('id', ''),
                             "content": result
                         })
-
-                    resp = client.chat(messages)
                 # 如果未调用，则跳出循环
                 else:
                     return resp.get('content', '')
-                    # responses.append(resp.get('content', ''))
-                    # think_responses.append(resp.get('reasoning_content', ''))
-
-            # return (responses, think_responses) if self._batch_inference else (responses[0], think_responses[0])
         except Exception as e:
             print(f"API请求发生错误: {str(e)}")
-            # return ([""] * repeat_prompt, [""] * repeat_prompt) if self._batch_inference else ("", "")
 
 def expr_substitution(func: str, params: list) -> sp.Expr | None:
     """把 LLM 返回的函数骨架字符串替换为具体参数值，解析为 SymPy 表达式。
@@ -203,7 +207,7 @@ def find_best_eq(results_root: str, threshold: float = 0.1,
 
                         thinking_content = exp["thinking_content"]
                         thinking_content = thinking_content.rsplit('\n', 1)[0]
-                        thinking_content ="以下是另一个LLM给出的公式推导（思考过程）:\n" + thinking_content
+                        thinking_content = "以下是另一个LLM给出的公式推导（思考过程）:\n" + thinking_content
 
                         return_eq = exp["equation"]
                         eq=re.search(r'return\s+(.*)', return_eq).group(1)
@@ -212,8 +216,9 @@ def find_best_eq(results_root: str, threshold: float = 0.1,
                         dependent = re.search(r'Dependent:\s*(\w+)', func).group(1)
                         independent = re.search(r'Independents:\s+(.*)', func).group(1)
 
-                        head = (f"你是一名力学工程师/应用力学家，对给定公式做逐项力学解释，以下是一个磁流变液的含参本构公式和这个公式的推导逻辑，因变量是磁流变效应 {dependent}，" +
-                                f"自变量是 {independent}，其中lambda12＝L1/L2 和 lambda23=L2/L3，L1, L2, and L3 分别是颗粒的长轴，中轴和短轴,请你据此对这个公式从力学角度进行详细的解释")
+                        head = (f"你是一名力学工程师/应用力学家，对给定公式做逐项物理机理解释，以下是一个含参本构公式和这个公式的推导逻辑，"
+                                f"因变量是 {dependent}，自变量是 {independent}，请你据此对这个公式从力学角度进行详细的解释。"
+                                "具体的领域背景请参考下方提供的文献摘要。")
                         tail = "请你根据以上内容对这个公式从力学角度进行详细的解释"
                         # RAG 检索增强：注入相关文献背景，帮助模型从物理机理角度解释（失败/库为空时静默跳过）
                         rag_block = ""

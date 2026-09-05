@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import json
 
+from drsr_420 import prompt_config as pc
+
 
 class ToolCaller:
     """与 LLM 多轮对话：若模型返回 tool_calls 则执行工具并回传，直到模型给出最终答复。
@@ -34,9 +36,24 @@ class ToolCaller:
         think_responses = []
         for _ in range(max(1, repeat)):
             try:
-                messages = [{"role": "user", "content": content}]
-                resp = self._llm_client.chat([{"role": "user", "content": content}])
+                messages = [
+                    {"role": "system", "content": pc.sampling_system_prompt},
+                    {"role": "user", "content": content},
+                ]
                 while True:
+                    # 流式迭代：reasoning 与 content 按到达顺序实时打印增量
+                    print("========================思考过程========================\n")
+                    shown = 0
+
+                    def _on_delta(chunk):
+                        nonlocal shown
+                        text = (chunk.get('reasoning_content') or '') + (chunk.get('content') or '')
+                        if len(text) > shown:
+                            print(text[shown:], end='', flush=True)
+                            shown = len(text)
+
+                    resp = self._llm_client.chat(messages, on_delta=_on_delta)
+                    print("\n====================================================\n")
                     tool_calls = resp.get('tool_calls', []) or []
                     messages.append({
                         "role": "assistant",
@@ -61,7 +78,6 @@ class ToolCaller:
                                 "tool_call_id": tc.get('id', ''),
                                 "content": result,
                             })
-                        resp = self._llm_client.chat(messages)
                     # 如果未调用，则跳出循环
                     else:
                         responses.append(resp.get('content', ''))

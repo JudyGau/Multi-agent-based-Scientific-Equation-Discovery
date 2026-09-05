@@ -14,11 +14,12 @@ independent_name_in_prompt = 'x0 and x1'
 
 
 # 采样阶段：说明性指令（拼接在代码 prompt 前）
+# 示例由 PromptContext.render_instruction 按当前变量名动态渲染，
+# 避免模板写死 x0/x1 而实际变量为 x1/x2 时模型照抄出未定义变量（NameError）。
 instruction_prompt = (
     "You are a helpful assistant tasked with discovering mathematical function structures for scientific systems. "
     "Complete the 'equation' function below, considering the physical meaning and relationships of inputs. "
-    "Write the final formula as a single-line return statement only. "
-    "Example: return params[0] + params[1] * x0 + params[2] * x1\n\n"
+    "Write the final formula as a single-line return statement only.\n\n"
 )
 
 # 采样后经验对话整体模板（包含上下文与追问占位）
@@ -60,12 +61,26 @@ analysis_question_none = (
 
 # 经验注入区块标题与条目前缀
 ideas_block_title = "\n\n### The following are ideas summarized based on past experiences in solving such problems. ###\n\n"
-idea_item_prefix = "idea{index}：\n"
+idea_item_prefix = "idea{index} ({label}):\n"
 
 # 残差分析注入区块标题
 residual_block_title = (
     "\n\n### The following is the analysis result of the existing data, "
     "which will assist you in answering the question. ###\n\n"
+)
+
+# 系统角色提示：角色设定与任务数据分离（采样/分析/残差/解释通用）
+system_prompt = (
+    "You are a physics-informed scientific equation discovery assistant. "
+    "Analyze data and discover mathematical function structures "
+    "using physical knowledge from literature when available.\n"
+)
+
+# 带工具使用引导的系统提示（用于支持工具调用的采样/解释循环）
+sampling_system_prompt = system_prompt + (
+    "When you need literature background to judge physical relationships or mechanisms, "
+    "you may call the provided tools (search_paper, read_paper, search_kb) "
+    "to retrieve relevant references before answering.\n"
 )
 
 # RAG 文献知识库检索结果注入区块标题
@@ -248,8 +263,14 @@ class PromptContext:
 
     # 渲染方法
     def render_instruction(self):
+        feats = self.features
+        # 示例随当前变量名动态生成：return params[0]*x1 + params[1]*x2 + params[2]
+        example_terms = [f"params[{i}]*{name}" for i, name in enumerate(feats)]
+        example_terms.append(f"params[{len(feats)}]")
+        example = "return " + " + ".join(example_terms)
         return (
             instruction_prompt
+            + f"Example: {example}\n\n"
             + "Variables:\n"
             + f"{self._variables_block()}\n"
             + f"Background: {self.background_text}\n"
@@ -378,7 +399,7 @@ class PromptContext:
             ],
             "",
             f"The dependent variable is {self.dependent_text}.",
-            "The forth column contains residuals (observed - predicted).",
+            "The last column contains residuals (observed - predicted).",
         ]
         role_text = "\n".join(role_lines)
 

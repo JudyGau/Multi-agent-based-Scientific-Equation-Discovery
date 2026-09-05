@@ -4,17 +4,17 @@ tools = [
         "type": "function",
         "function": {
             "name": "search_paper",
-            "description": "根据关键词 搜索中/英文论文，返回文献的元数据(DOI、标题、期刊/会议名称、作者、年份、被引量等)，但无法直接获取文献内容",
+            "description": "Search academic papers by keywords (Chinese/English). Returns paper metadata (DOI, title, journal/conference, authors, year, citation count, etc.), but not the paper content.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "学术搜索关键词，如 'Machine Learning'",
+                        "description": "Academic search keyword, e.g. 'Machine Learning'",
                     },
                     "num": {
                         "type": "integer",
-                        "description": "返回条数，默认 10",
+                        "description": "Number of results to return, default 10",
                         "default": 10,
                     },
                 },
@@ -26,7 +26,7 @@ tools = [
         "type": "function",
         "function": {
             "name": "read_paper",
-            "description": "根据论文的doi链接来下载论文并获取论文内容",
+            "description": "Download the paper by its DOI link and extract its content.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -35,9 +35,9 @@ tools = [
                         "items": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "[标题, DOI] 二元组",
+                            "description": "[title, DOI] pair",
                         },
-                        "description": "论文 (标题, DOI) 列表，每项为 [标题, DOI] 二元组。",
+                        "description": "List of (title, DOI) pairs; each item is a [title, DOI] pair.",
                     }
                 },
                 "required": ["title_doi"],
@@ -49,24 +49,24 @@ tools = [
         "function": {
             "name": "ingest_paper",
             "description": (
-                "将本地已有的 PDF 文献文件嵌入到 RAG 文献知识库。"
-                "入参 pdf_path 为 PDF 文件路径（可相对项目根目录，如 'pdf_downloads/xxx.pdf'），"
-                "doi 与 title 可选。返回入库的片段数量。"
+                "Embed an existing local PDF literature file into the RAG knowledge base. "
+                "pdf_path is the PDF file path (relative to the project root is OK, e.g. 'pdf_downloads/xxx.pdf'). "
+                "doi and title are optional. Returns the number of chunks ingested."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "pdf_path": {
                         "type": "string",
-                        "description": "PDF 文件路径，可相对项目根目录。",
+                        "description": "PDF file path, relative to the project root is allowed.",
                     },
                     "doi": {
                         "type": "string",
-                        "description": "文献 DOI（可选，用于去重与溯源）。",
+                        "description": "Paper DOI (optional, used for deduplication and provenance).",
                     },
                     "title": {
                         "type": "string",
-                        "description": "文献标题（可选）。",
+                        "description": "Paper title (optional).",
                     },
                 },
                 "required": ["pdf_path"],
@@ -78,19 +78,20 @@ tools = [
         "function": {
             "name": "search_kb",
             "description": (
-                "在 RAG 文献知识库中检索与 query 语义相关的文献片段，返回 top-k 条命中"
-                "（标题、DOI、来源文件、正文、相似度距离）。知识库需已用 ingest_paper 或 CLI 入库。"
+                "Search the RAG knowledge base for literature chunks semantically related to query; "
+                "returns the top-k hits (title, DOI, source file, text, similarity distance). "
+                "The knowledge base must be populated first via ingest_paper or the CLI."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "检索关键词或问题描述。",
+                        "description": "Search keyword or question description.",
                     },
                     "k": {
                         "type": "integer",
-                        "description": "返回条数，默认 5。",
+                        "description": "Number of results to return, default 5.",
                         "default": 5,
                     },
                 },

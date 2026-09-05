@@ -170,7 +170,18 @@ class Sampler(LLM):
         prompt = '\n'.join([self._instruction_prompt, prompt])
         for _ in range(self._samples_per_prompt):
             try:
-                resp = self._llm_client.chat([{"role": "user", "content": prompt}])
+                print("========================思考过程========================\n")
+                shown = 0
+
+                def _on_delta(chunk):
+                    nonlocal shown
+                    text = (chunk.get('reasoning_content') or '') + (chunk.get('content') or '')
+                    if len(text) > shown:
+                        print(text[shown:], end='', flush=True)
+                        shown = len(text)
+
+                resp = self._llm_client.chat([{"role": "user", "content": prompt}], on_delta=_on_delta)
+                print("\n====================================================\n")
                 response = resp.get('content', '')
                 if self._trim:
                     response = _extract_body(response, config)
@@ -258,9 +269,12 @@ class Sampler(LLM):
                 if all_selected_experiences:
                     experience_prompt = pc.ideas_block_title
 
-                    # 为每个经验分配编号
+                    # 为每个经验分配编号，并标注类别（成功经验/待改进/失败教训），
+                    # 帮助模型区分“要复制的成功因子”与“要避免的失败”。
+                    label_map = {"Good": "successful experience", "Bad": "needs improvement", "None": "failure lesson"}
                     for i, exp in enumerate(all_selected_experiences, 1):
-                        experience_prompt += pc.idea_item_prefix.format(index=i)
+                        label = label_map.get(exp["type"], exp["type"])
+                        experience_prompt += pc.idea_item_prefix.format(index=i, label=label)
                         print("=================================sample_order: ==================================\n", exp['sample_order'])
 
                         # 限制经验分析文本最多500个字符
@@ -270,6 +284,19 @@ class Sampler(LLM):
                         experience_prompt += analysis_text
 
                         experience_prompt += "\n---\n\n"
+
+                    # 若包含失败经验，追加参数预算提示，避免模型为修复越界而要求更多参数
+                    if any(exp.get("type") == "None" for exp in all_selected_experiences):
+                        max_params = (
+                            self._prompt_ctx.max_param_count
+                            if hasattr(self, "_prompt_ctx") and self._prompt_ctx is not None else None
+                        )
+                        if max_params is not None:
+                            experience_prompt += (
+                                f"Note: the evaluator passes exactly {max_params} trainable parameters "
+                                f"(params[0]..params[{max_params - 1}]). "
+                                "Keep every equation within this budget; do not request more parameters.\n"
+                            )
 
                     # 将经验添加到原始内容中
                     content = experience_prompt + "\n\n" + content

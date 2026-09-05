@@ -41,7 +41,10 @@ class ExperienceSummarizer:
                 question=new_question,
             )
             try:
-                resp = self._llm_client.chat([{"role": "user", "content": analysis_prompt}])
+                resp = self._llm_client.chat([
+                    {"role": "system", "content": pc.system_prompt},
+                    {"role": "user", "content": analysis_prompt},
+                ])
                 analysis_result = resp.get('content', '')
                 print(f"分析结果：{analysis_result}")
                 analysis_results.append(analysis_result)

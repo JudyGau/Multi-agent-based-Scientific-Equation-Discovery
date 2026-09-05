@@ -14,8 +14,8 @@ mcp = MCPServer("drsr-tools")
 
 @mcp.tool(
     description=(
-        "根据关键词 搜索中/英文论文，返回文献的元数据(DOI、标题、期刊/会议名称、作者、年份、被引量等)，"
-        "但无法直接获取文献内容。"
+        "Search academic papers (Chinese/English) by keywords and return paper metadata "
+        "as a JSON string; the paper content itself is not returned."
     )
 )
 def search_paper(query: str, num: int = 10) -> str:
@@ -25,8 +25,9 @@ def search_paper(query: str, num: int = 10) -> str:
 
 @mcp.tool(
     description=(
-        "根据论文的 doi 链接来下载论文并获取论文内容（并可做 LLM 总结）。"
-        "入参 title_doi 为 (论文标题, doi) 键值对的列表。"
+        "Download a paper by its DOI link and return its content "
+        "(optionally summarized by an LLM). "
+        "title_doi is a list of (title, doi) pairs."
     )
 )
 def read_paper(title_doi: list[list[str]]) -> str:
@@ -38,9 +39,10 @@ def read_paper(title_doi: list[list[str]]) -> str:
 
 @mcp.tool(
     description=(
-        "将本地已有的 PDF 文献文件嵌入到 RAG 文献知识库。"
-        "入参 pdf_path 为 PDF 文件路径（可相对项目根目录，如 'pdf_downloads/xxx.pdf'），"
-        "doi 与 title 可选。返回入库的片段数量。"
+        "Embed an existing local PDF literature file into the RAG knowledge base. "
+        "pdf_path is the PDF file path (relative to the project root is OK, "
+        "e.g. 'pdf_downloads/xxx.pdf'). doi and title are optional. "
+        "Returns the number of chunks ingested."
     )
 )
 def ingest_paper(pdf_path: str, doi: str = "", title: str = "") -> str:
@@ -55,8 +57,9 @@ def ingest_paper(pdf_path: str, doi: str = "", title: str = "") -> str:
 
 @mcp.tool(
     description=(
-        "在 RAG 文献知识库中检索与 query 语义相关的文献片段，返回 top-k 条命中"
-        "（标题、DOI、来源文件、正文、相似度距离）。知识库需已用 ingest_paper 或 CLI 入库。"
+        "Search the RAG knowledge base for literature chunks semantically related to query "
+        "and return the top-k hits (title, DOI, source file, text, similarity distance). "
+        "The knowledge base must be populated first via ingest_paper or the CLI."
     )
 )
 def search_kb(query: str, k: int = 5) -> str:

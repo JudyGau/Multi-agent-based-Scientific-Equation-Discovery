@@ -50,6 +50,25 @@ def _get_reader():
     return _reader_client, _reader_config
 
 
+def _summarize_text(client, cfg, full_text):
+    """调用 LLM 对论文全文做摘要，返回摘要文本。
+
+    本地文献库与新下载两条路径共用，保证工具恒返回摘要而非原文，
+    避免长文本直接回传给 agent 撑爆上下文。
+    """
+    client.kwargs.update({
+        'temperature': 0.4,
+        'frequency_penalty': 0.1,
+        'top_p': 0.9,
+        'max_completion_tokens': cfg.get("max_completion_tokens"),
+    })
+    response = client.chat([
+        {"role": "system", "content": "You are a helpful assistant, you need to read literature and summarize."},
+        {"role": "user", "content": f"{full_text}"}
+    ])
+    return response["content"]
+
+
 _agent_client = None
 
 
@@ -241,22 +260,7 @@ def read_paper(title_doi: list[tuple[str, str]] | tuple[str, str], save_dir="pdf
                 print(f"文件读取成功: {file_path}", file=sys.stderr)
                 # 2. 发起聊天请求（使用项目自身 LLM 客户端，兼容空 api_key 的本地服务）
                 client, cfg = _get_reader()
-                client.kwargs.update({
-                    'temperature': 0.4,
-                    'frequency_penalty': 0.1,
-                    'top_p': 0.9,
-                    'max_completion_tokens': cfg.get("max_completion_tokens"),
-                })
-                response = client.chat([
-                    {"role": "system", "content": "You are a helpful assistant, you need to read literature and summarize."},
-                    {"role": "user", "content": f"{full_text}"}
-                ])
-
-                # 3. 打印回复
-                summary = response["content"]
-                # print("======总结结果======")
-                # print(summary)
-                # print("==================")
+                summary = _summarize_text(client, cfg, full_text)
                 textlist.append(summary)
 
                 #分析下一个文献
@@ -270,7 +274,7 @@ def read_paper(title_doi: list[tuple[str, str]] | tuple[str, str], save_dir="pdf
                     textlist.append(f"下载失败: {title} | 错误: {e}")
                     continue
 
-                # 读取并返回全文
+                # 读取全文并做 LLM 摘要（与本地库路径一致，恒返回摘要而非原文）
                 doc = pymupdf.open(file_path)
                 full_text = ""
                 for page_num in range(doc.page_count):
@@ -279,7 +283,9 @@ def read_paper(title_doi: list[tuple[str, str]] | tuple[str, str], save_dir="pdf
                     full_text += f"\n--- Page {page_num + 1} ---\n{text}"
                 doc.close()
                 print(f"文件读取成功: {file_path}", file=sys.stderr)
-                textlist.append(full_text)
+                client, cfg = _get_reader()
+                summary = _summarize_text(client, cfg, full_text)
+                textlist.append(summary)
 
         except requests.exceptions.RequestException as e:
             print(f"请求异常: {title} | 错误: {e}",file=sys.stderr)
@@ -317,7 +323,7 @@ def agent_run(user_query: str, model: str = "deepseek-v4-pro"):
     deepseek-reasoner = V3.2 思考模式（tool call 时要回传 reasoning_content，见下方提示）
     """
     messages = [
-        {"role": "system", "content": "你是一个学术辅助助手，擅长检索论文并下载以及做总结。"},
+        {"role": "system", "content": "You are an academic assistant skilled at searching for papers, downloading them, and summarizing them."},
         {"role": "user", "content": user_query},
     ]
 
