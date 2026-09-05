@@ -34,14 +34,10 @@ tools = [
                         "type": "array",
                         "items": {
                             "type": "array",
-                            "minItems": 2,
-                            "maxItems": 2,
-                            "items": [
-                                {"type": "string"},
-                                {"type": "string"}
-                            ]
+                            "items": {"type": "string"},
+                            "description": "[标题, DOI] 二元组",
                         },
-                        "description": "A list of (paper_title, doi) string pairs."
+                        "description": "论文 (标题, DOI) 列表，每项为 [标题, DOI] 二元组。",
                     }
                 },
                 "required": ["title_doi"],

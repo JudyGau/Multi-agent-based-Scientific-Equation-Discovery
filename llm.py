@@ -137,10 +137,8 @@ class LLMClient:
         """按提供商修正请求体，兼容非标准 OpenAI 接口。"""
         if self._provider_name() != 'glm':
             return
-        # 智谱 v4 不接受 extra_body；实测其 tools 结构会触发 1210 参数错误，故移除
+        # 智谱 v4 不接受 extra_body（openai SDK 专用字段）
         payload.pop('extra_body', None)
-        payload.pop('tools', None)
-        payload.pop('tool_choice', None)
         # 智谱输出上限字段名为 max_tokens（而非 OpenAI 的 max_completion_tokens）
         if 'max_completion_tokens' in payload:
             payload['max_tokens'] = payload.pop('max_completion_tokens')
