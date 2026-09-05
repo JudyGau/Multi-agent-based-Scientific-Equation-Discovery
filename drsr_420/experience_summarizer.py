@@ -1,0 +1,77 @@
+"""经验总结：让 LLM 分析方程及其得分/错误，输出思考过程分析与改进建议。
+
+从 sampler.py 的 analyze_equations_with_scores 拆分，可注入 mock client 单独单测。
+"""
+from __future__ import annotations
+
+from drsr_420 import prompt_config as pc
+
+
+class ExperienceSummarizer:
+    """对一批方程样本及其质量标签做 LLM 经验总结。"""
+
+    def __init__(self, llm_client, prompt_ctx=None):
+        self._llm_client = llm_client
+        self._prompt_ctx = prompt_ctx
+
+    def analyze(self, samples, quality_for_sample, error_for_sample, prompt) -> list[str]:
+        """对每个样本构造分析提示并调用 LLM，返回分析结果列表。
+
+        Args:
+            samples: 生成的方程样本列表。
+            quality_for_sample: 每个样本的质量标签（'Good'/'Bad'/'None'）。
+            error_for_sample: 每个样本的评估错误信息（None 类别才有意义）。
+            prompt: 原始提示（含 .code 属性或为字符串），用于提供上下文。
+        """
+        analysis_results = []
+        i = 0
+        for sample_each in samples:
+            if self._prompt_ctx is not None:
+                new_question = self._prompt_ctx.render_analysis_question(
+                    quality_for_sample[i],
+                    error_for_sample[i] if quality_for_sample[i] == 'None' else None,
+                )
+            else:
+                new_question = self._build_default_question(
+                    quality_for_sample[i], error_for_sample[i])
+
+            analysis_prompt = pc.analysis_conversation_template.format(
+                prompt=prompt.code if hasattr(prompt, "code") else prompt,
+                sample=sample_each,
+                question=new_question,
+            )
+            try:
+                resp = self._llm_client.chat([{"role": "user", "content": analysis_prompt}])
+                analysis_result = resp.get('content', '')
+                print(f"分析结果：{analysis_result}")
+                analysis_results.append(analysis_result)
+            except Exception as e:
+                print(f"分析请求发生错误: {str(e)}")
+                analysis_results.append(f"分析请求发生错误: {str(e)}")
+            i += 1
+        return analysis_results
+
+    def _build_default_question(self, quality, error) -> str:
+        """无 prompt_ctx 时的默认分析问题模板。"""
+        if quality == 'Good':
+            return pc.analysis_question_good.format(
+                dependent=pc.dependent_name_in_prompt,
+                problem=pc.problem_name_in_prompt,
+            )
+        elif quality == 'Bad':
+            return pc.analysis_question_bad.format(
+                dependent=pc.dependent_name_in_prompt,
+                problem=pc.problem_name_in_prompt,
+            )
+        elif quality == 'None':
+            return pc.analysis_question_none.format(
+                dependent=pc.dependent_name_in_prompt,
+                problem=pc.problem_name_in_prompt,
+                error=error,
+                budget_sentence=(
+                    "Treat this failure as a negative example rather than a requirement to satisfy. "
+                    "If the error is about parameter length or indexing, do not solve it by asking for more parameters. "
+                    "Instead, reduce parameter usage so the equation fits the evaluator's available parameter budget.\n"
+                ),
+            )
+        return ''
