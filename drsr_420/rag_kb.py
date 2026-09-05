@@ -284,7 +284,12 @@ class RagKB:
     def _get_client(self):
         if self._client is None:
             import chromadb
-            self._client = chromadb.PersistentClient(path=self.cfg.get("persist_dir", DEFAULT_CONFIG["persist_dir"]))
+            persist = self.cfg.get("persist_dir", DEFAULT_CONFIG["persist_dir"])
+            # 相对路径统一解析到项目根目录，避免在不同 cwd 下产生多个知识库；绝对路径尊重原样
+            p = Path(persist)
+            if not p.is_absolute():
+                persist = str(_REPO_ROOT / p)
+            self._client = chromadb.PersistentClient(path=persist)
         return self._client
 
     def _get_collection(self):
