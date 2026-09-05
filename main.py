@@ -149,6 +149,7 @@ if __name__ == '__main__':
                     },
                     # 强制要求带提供商前缀
                     'model': 'CSTCloud/gpt-oss-120b',
+                    'host': 'https://uni-api.cstcloud.cn/v1',
                     'max_tokens': 1024,
                     'temperature': 0.6,
                     'top_p': 0.3,

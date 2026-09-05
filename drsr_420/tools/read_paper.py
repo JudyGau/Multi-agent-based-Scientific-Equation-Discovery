@@ -25,13 +25,10 @@ def _load_llm_config():
 def _build_client(config):
     """基于 llm_summary.config 构建项目自身的 LLM 客户端（复用 llm.ClientFactory）。
 
-    llm_summary.config 使用 'host' 键作为 base_url，这里映射为 ClientFactory 需要的 'base_url'。
-    使用项目自研客户端（基于 requests），兼容 api_key 为空串的本地服务。
+    使用项目自研客户端（基于 requests），兼容 api_key 为空串的本地服务；
+    host/base_url 双键与 scheme 补齐由 ClientFactory 内部统一规范化。
     """
-    cfg = dict(config)
-    if not cfg.get('base_url') and cfg.get('host'):
-        cfg['base_url'] = cfg['host']
-    return llm.ClientFactory.from_config(cfg)
+    return llm.ClientFactory.from_config(config)
 
 
 _reader_client = None

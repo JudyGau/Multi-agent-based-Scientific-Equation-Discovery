@@ -133,7 +133,8 @@ def main(
     if llm_config and not llm_client:
         try:
             import drsr_420.data_analyse_real as _dar
-            if 'host' in llm_config: _dar.API_HOST = llm_config['host']
+            if llm_config.get('host') or llm_config.get('base_url'):
+                _dar.API_HOST = llm_config.get('host') or llm_config.get('base_url')
             if 'api_key' in llm_config: _dar.API_KEY = llm_config['api_key']
             if 'model' in llm_config: _dar.API_MODEL = llm_config['model']
             if 'max_tokens' in llm_config: _dar.MAX_TOKENS = llm_config['max_tokens']

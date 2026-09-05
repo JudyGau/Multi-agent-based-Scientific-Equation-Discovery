@@ -543,6 +543,27 @@ def parse_provider_model(model_str: str) -> Tuple[str, str]:
     provider, model = model_str.split('/', 1)
     return provider.lower(), model
 
+
+def normalize_llm_config(config: dict) -> dict:
+    """统一规范化 LLM 配置，消除 host/base_url 双键与缺 scheme 等历史混乱。
+
+    - ``base_url`` 与 ``host`` 兼容：两者都存在时 ``base_url`` 优先，输出统一为 ``base_url``；
+    - 无 scheme 的地址自动补 ``https://``，避免 requests 报 "No scheme supplied"；
+    - 校验 ``model`` 必须是 'provider/model' 格式，配置错误尽早暴露。
+
+    返回规范化后的新 dict，不改动入参。
+    """
+    cfg = dict(config)
+    if not cfg.get('base_url') and cfg.get('host'):
+        cfg['base_url'] = cfg['host']
+    base_url = cfg.get('base_url')
+    if isinstance(base_url, str) and base_url.strip() and '://' not in base_url:
+        cfg['base_url'] = 'https://' + base_url.strip()
+    if 'model' in cfg:
+        parse_provider_model(cfg['model'])  # 校验 provider 前缀，无效则抛出
+    return cfg
+
+
 class ClientFactory:
     @staticmethod
     def from_config(config: dict):
@@ -550,15 +571,16 @@ class ClientFactory:
         基于 'provider/model' 创建具体客户端。
 
         必填：config['model']（形如 'provider/model'）。
-        选填：config['api_key']、config['base_url']。
+        选填：config['api_key']、config['base_url']（或兼容别名 'host'）。
+        配置先经 normalize_llm_config 统一规范化（host/base_url 兼容、补齐 scheme）。
         """
+        config = normalize_llm_config(config)
         if 'model' not in config:
             raise ValueError("缺少必要字段: model")
 
         provider, model = parse_provider_model(config['model'])
         api_key_cfg = config.get('api_key')
-        # 兼容 'host' 键（llm_summary.config / llm.config 等历史字段名），'base_url' 优先
-        base_url = config.get('base_url') or config.get('host')
+        base_url = config.get('base_url')
 
         # api_key 支持：
         # 1) 字符串（兼容旧格式）
