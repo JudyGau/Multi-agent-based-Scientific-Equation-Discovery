@@ -204,7 +204,7 @@ STRICTLY deliver results in the following structured format:
                 llm_client.kwargs['thinking'] = {'type': 'enabled'}
                 llm_client.kwargs['reasoning_effort'] = 'medium'
                 # 数据分析仅需简短结论，限制输出长度，避免 max_tokens 过大导致服务端长时间生成
-                llm_client.kwargs['max_tokens'] = 8192
+                llm_client.kwargs['max_tokens'] = 16384
             resp = llm_client.chat([
                 {"role": "system", "content": pc.system_prompt},
                 {"role": "user", "content": prompt},
