@@ -5,7 +5,7 @@ experiments
 error.log
 
 # 配置文件（含 API 密钥，不入库）
-llm_summary.config
+llm.config
 *.config
 
 # 下载的文献 PDF
