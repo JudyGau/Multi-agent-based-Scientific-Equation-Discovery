@@ -184,7 +184,7 @@ def read_paper(title_doi: list[tuple[str, str]] | tuple[str, str], save_dir="pdf
             else:
 
                 print(f"本地文献库不存在文献: file_path {file_path}, title_url {(title, pdf_url)}", file=sys.stderr)
-                textlist.append(f"本地文献库不存在文献: title_url {(title, pdf_url)}", file=sys.stderr)
+                textlist.append(f"本地文献库不存在文献: title_url {(title, pdf_url)}")
 
 
             pdf_url = "https://sci-hub.st/" + pdf_url
