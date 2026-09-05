@@ -7,6 +7,7 @@ Profiler 现在直接接收 results_root（实验根目录），
 from __future__ import annotations
 
 import os.path
+import threading
 from typing import List, Dict
 import logging
 import json
@@ -70,6 +71,9 @@ class Profiler:
         self._global_best_nmse = None
         self._global_best_sample_order = None
 
+        # 线程锁：多 sampler 并行时保护计数器与文件写入
+        self._lock: threading.RLock = threading.RLock()
+
         # 不再创建 TensorBoard 写入器
         self._writer = None
 
@@ -127,26 +131,26 @@ class Profiler:
     def register_function(self, programs: code_manipulation.Function):
         if self._max_log_nums is not None and self._num_samples >= self._max_log_nums:
             return
-
-        sample_orders: int = programs.global_sample_nums
-        if sample_orders not in self._all_sampled_functions:
-            self._num_samples += 1
-            self._all_sampled_functions[sample_orders] = programs
-            self._record_and_verbose(sample_orders)
-            self._write_tensorboard()
-            if self._persist_all_samples:
-                self._write_json(programs)
-            else:
+        with self._lock:
+            sample_orders: int = programs.global_sample_nums
+            if sample_orders not in self._all_sampled_functions:
+                self._num_samples += 1
+                self._all_sampled_functions[sample_orders] = programs
+                self._record_and_verbose(sample_orders)
+                self._write_tensorboard()
+                if self._persist_all_samples:
+                    self._write_json(programs)
+                else:
+                    try:
+                        self._prune_samples_dir_topk()
+                    except Exception:
+                        pass
+                # 在写入 samples 之后，更新进度与历史最优记录
                 try:
-                    self._prune_samples_dir_topk()
+                    self._update_progress_and_history(programs)
                 except Exception:
+                    # 进度记录失败不影响主流程
                     pass
-            # 在写入 samples 之后，更新进度与历史最优记录
-            try:
-                self._update_progress_and_history(programs)
-            except Exception:
-                # 进度记录失败不影响主流程
-                pass
 
     def _compute_iteration(self, sample_order: int) -> int:
         """

@@ -19,6 +19,7 @@ from __future__ import annotations
 # from collections.abc import Sequence
 import json
 import os
+import threading
 from typing import Any, Tuple, Sequence
 import numpy as np
 
@@ -181,20 +182,40 @@ def main(
     print(result)
 
     # Set global max sample nums.
-    samplers = [sampler.Sampler(database, evaluators, 
-                                config.samples_per_prompt, 
-                                max_sample_nums=max_sample_nums, 
-                                llm_class=class_config.llm_class,
-                                config = config,
-                                prompt_ctx=prompt_ctx,
-                                llm_client=llm_client,
-                                llm_api=None) 
-                                for _ in range(config.num_samplers)]
+    # 每个 sampler 独享一份 Evaluator 列表：避免多线程并发调用同一 Evaluator/Sandbox，
+    # 防止 sandbox 上的 _last_params 等实例可变状态竞态。
+    samplers = []
+    for _ in range(config.num_samplers):
+        evals = [
+            evaluator.Evaluator(
+                database,
+                template,
+                function_to_evolve,
+                function_to_run,
+                inputs,     # the data instances for the problem.
+                timeout_seconds=config.evaluate_timeout_seconds,
+                sandbox_class=class_config.sandbox_class,
+            ) for _ in range(config.num_evaluators)
+        ]
+        samplers.append(sampler.Sampler(
+            database, evals,
+            config.samples_per_prompt,
+            max_sample_nums=max_sample_nums,
+            llm_class=class_config.llm_class,
+            config=config,
+            prompt_ctx=prompt_ctx,
+            llm_client=llm_client,
+            llm_api=None,
+        ))
 
-    # This loop can be executed in parallel on remote sampler machines. As each
-    # sampler enters an infinite loop, without parallelization only the first
-    # sampler will do any work.
+    # 多线程并行启动多个 sampler：共享经验缓冲（内部加锁），并行调用 LLM 提升吞吐。
+    # 每个 sampler 进入无限采样循环，直到全局采样数达到上限或实验超时。
+    threads = []
     for s in samplers:
-        s.sample(profiler=profiler)
+        t = threading.Thread(target=s.sample, kwargs={'profiler': profiler}, daemon=True)
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join()
 
     find_best_eq(results_root)

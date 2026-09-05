@@ -21,6 +21,7 @@ from collections.abc import Mapping, Sequence
 import copy
 import dataclasses
 import json
+import threading
 import time
 from typing import Any, Tuple, Mapping
 
@@ -104,20 +105,20 @@ class ExperienceBuffer:
                 [None] * config.num_islands)
 
         self._last_reset_time: float = time.time()
+        # 线程锁：多 sampler 并行时保护经验缓冲的读改写
+        self._lock: threading.RLock = threading.RLock()
 
 
     def get_prompt(self) -> Prompt:
         """Returns a prompt containing samples from one chosen island."""
-        island_id = np.random.randint(len(self._islands))
-        
-        
+        with self._lock:
+            island_id = np.random.randint(len(self._islands))
 
-        # code, version_generated, prompt_scores = self._islands[island_id].get_prompt()
-        # return Prompt(code, version_generated, island_id, prompt_scores)
+            # code, version_generated, prompt_scores = self._islands[island_id].get_prompt()
+            # return Prompt(code, version_generated, island_id, prompt_scores)
 
-        
-        code, version_generated= self._islands[island_id].get_prompt()
-        return Prompt(code, version_generated, island_id)
+            code, version_generated = self._islands[island_id].get_prompt()
+            return Prompt(code, version_generated, island_id)
 
 
     def _register_program_in_island(
@@ -156,39 +157,41 @@ class ExperienceBuffer:
             **kwargs 
     ) -> None:
         """Registers new `program` skeleton hypotheses in the experience buffer."""
-        if island_id is None:
-            for island_id in range(len(self._islands)):
+        with self._lock:
+            if island_id is None:
+                for island_id in range(len(self._islands)):
+                    self._register_program_in_island(program, island_id, scores_per_test, **kwargs)
+            else:
                 self._register_program_in_island(program, island_id, scores_per_test, **kwargs)
-        else:
-            self._register_program_in_island(program, island_id, scores_per_test, **kwargs)
 
-        # Check island reset
-        if time.time() - self._last_reset_time > self._config.reset_period:
-            self._last_reset_time = time.time()
-            self.reset_islands()
+            # Check island reset
+            if time.time() - self._last_reset_time > self._config.reset_period:
+                self._last_reset_time = time.time()
+                self.reset_islands()
 
 
     def reset_islands(self) -> None:
         """Resets the weaker half of islands."""
-        # Sort best scores after adding minor noise to break ties.
-        indices_sorted_by_score: np.ndarray = np.argsort(
-            self._best_score_per_island +
-            np.random.randn(len(self._best_score_per_island)) * 1e-6)
-        num_islands_to_reset = self._config.num_islands // 2
-        reset_islands_ids = indices_sorted_by_score[:num_islands_to_reset]
-        keep_islands_ids = indices_sorted_by_score[num_islands_to_reset:]
-        for island_id in reset_islands_ids:
-            self._islands[island_id] = Island(
-                self._template,
-                self._function_to_evolve,
-                self._config.functions_per_prompt,
-                self._config.cluster_sampling_temperature_init,
-                self._config.cluster_sampling_temperature_period)
-            self._best_score_per_island[island_id] = -float('inf')
-            founder_island_id = np.random.choice(keep_islands_ids)
-            founder = self._best_program_per_island[founder_island_id]
-            founder_scores = self._best_scores_per_test_per_island[founder_island_id]
-            self._register_program_in_island(founder, island_id, founder_scores)
+        with self._lock:
+            # Sort best scores after adding minor noise to break ties.
+            indices_sorted_by_score: np.ndarray = np.argsort(
+                self._best_score_per_island +
+                np.random.randn(len(self._best_score_per_island)) * 1e-6)
+            num_islands_to_reset = self._config.num_islands // 2
+            reset_islands_ids = indices_sorted_by_score[:num_islands_to_reset]
+            keep_islands_ids = indices_sorted_by_score[num_islands_to_reset:]
+            for island_id in reset_islands_ids:
+                self._islands[island_id] = Island(
+                    self._template,
+                    self._function_to_evolve,
+                    self._config.functions_per_prompt,
+                    self._config.cluster_sampling_temperature_init,
+                    self._config.cluster_sampling_temperature_period)
+                self._best_score_per_island[island_id] = -float('inf')
+                founder_island_id = np.random.choice(keep_islands_ids)
+                founder = self._best_program_per_island[founder_island_id]
+                founder_scores = self._best_scores_per_test_per_island[founder_island_id]
+                self._register_program_in_island(founder, island_id, founder_scores)
 
     def to_dict(self) -> dict:
         """将经验缓冲序列化为可 JSON 化的 dict（用于 checkpoint 断点续跑）。"""
@@ -236,22 +239,24 @@ class ExperienceBuffer:
 
     def save_checkpoint(self, path: str, extra: dict | None = None) -> None:
         """保存 checkpoint 到 JSON 文件（可选携带额外字段）。"""
-        data = self.to_dict()
-        if extra:
-            data.update(extra)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        with self._lock:
+            data = self.to_dict()
+            if extra:
+                data.update(extra)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
 
     def load_checkpoint(self, path: str) -> None:
         """从 checkpoint 恢复经验缓冲状态。"""
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        restored = type(self).from_dict(data, self._config, self._template, self._function_to_evolve)
-        self._islands = restored._islands
-        self._best_score_per_island = restored._best_score_per_island
-        self._best_program_per_island = restored._best_program_per_island
-        self._best_scores_per_test_per_island = restored._best_scores_per_test_per_island
-        self._last_reset_time = restored._last_reset_time
+        with self._lock:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            restored = type(self).from_dict(data, self._config, self._template, self._function_to_evolve)
+            self._islands = restored._islands
+            self._best_score_per_island = restored._best_score_per_island
+            self._best_program_per_island = restored._best_program_per_island
+            self._best_scores_per_test_per_island = restored._best_scores_per_test_per_island
+            self._last_reset_time = restored._last_reset_time
 
 
 class Island:

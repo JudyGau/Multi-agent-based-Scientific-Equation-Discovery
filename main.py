@@ -26,6 +26,7 @@ parser.add_argument('--niterations', type=int, default=10, help='搜索迭代轮
 parser.add_argument('--timeout_in_seconds', type=int, default=None, help='总超时时间（秒）。到达即停止训练（即便未达迭代数）')
 parser.add_argument('--seed', type=int, default=None, help='随机种子（影响 Python 与 NumPy 的随机性）')
 parser.add_argument('--num_islands', type=int, default=None, help='经验缓冲的岛屿数量（覆盖默认 10）')
+parser.add_argument('--num_samplers', type=int, default=None, help='并行采样器数量（多线程并行采样，默认 1）')
 
 # 算法私有参数
 parser.add_argument('--llm_config', type=str, default='llm.config', help='LLM 配置文件路径（JSON 格式）')
@@ -115,6 +116,8 @@ if __name__ == '__main__':
     eb_cfg = config.ExperienceBufferConfig(
         num_islands=int(args.num_islands) if args.num_islands and args.num_islands > 0 else config.ExperienceBufferConfig().num_islands
     )
+    # 并行采样器数量：默认 1（串行），>1 时多线程并行
+    num_samplers = int(args.num_samplers) if args.num_samplers and args.num_samplers > 0 else 1
 
     if args.samples_per_iteration is not None and args.samples_per_iteration > 0:
         config = config.Config(
@@ -122,12 +125,14 @@ if __name__ == '__main__':
             samples_per_prompt=int(args.samples_per_iteration),
             wall_time_limit_seconds=wall_limit_seconds,
             experience_buffer=eb_cfg,
+            num_samplers=num_samplers,
         )
     else:
         config = config.Config(
             results_root=results_root,
             wall_time_limit_seconds=wall_limit_seconds,
             experience_buffer=eb_cfg,
+            num_samplers=num_samplers,
         )
     # 读取 LLM 配置（仅从 llm.config 文件加载模型名，不再支持命令行覆盖）
     import json as _json
@@ -344,6 +349,7 @@ def equation({FEATURE_SIG}, params: np.ndarray) -> np.ndarray:
             "seed": args.seed,
             "niterations": args.niterations,
             "num_islands": config.experience_buffer.num_islands,
+            "num_samplers": config.num_samplers,
             "samples_per_prompt": config.samples_per_prompt,
             "max_sample_nums": global_max_sample_num,
             "wall_time_limit_seconds": wall_limit_seconds,

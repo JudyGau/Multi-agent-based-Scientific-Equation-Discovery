@@ -25,6 +25,7 @@ import numpy as np
 import time
 
 import random
+import threading
 from drsr_420 import evaluator
 from drsr_420 import buffer
 from drsr_420 import config as config_lib
@@ -39,6 +40,17 @@ from drsr_420.tool_runner import mcp_call_tool
 from llm import LLMClient
 
 Port = '5000'
+
+# 多 sampler 并行时保护共享文件读写与全局采样计数
+_SAMPLER_LOCK = threading.Lock()
+
+
+def _atomic_write_json(path: str, data) -> None:
+    """原子写 JSON：先写临时文件再替换，避免并发读方读到半成品。"""
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
 
 # API配置
 API_HOST = "api.bltcy.ai"
@@ -61,6 +73,7 @@ def _clone_llm_client(client, **kwargs_overrides):
     new_client.kwargs.update(kwargs_overrides)
     # 重置独立实例的累计统计，避免计数重复累加
     new_client._call_index = 0
+    new_client.tokens = {'prompt': 0, 'content': 0, 'reasoning': 0, 'total': 0}
     new_client._cum_tokens = {
         'prompt': 0, 'thinking': 0, 'content': 0, 'total': 0,
     }
@@ -114,7 +127,8 @@ class Sampler:
             except Exception:
                 pass
         self._prompt_ctx = prompt_ctx
-        self._llm_client = llm_client
+        # 每个 sampler 克隆一份基础客户端，多线程并行时统计计数互不干扰
+        self._llm_client = _clone_llm_client(llm_client) if llm_client else None
 
         # 采样、经验分析、残差分析各自使用独立 temperature 的客户端副本，
         # 避免原地修改同一个 llm_client 的 kwargs 互相覆盖（并覆盖 llm.config 用户设置）。
@@ -158,7 +172,7 @@ class Sampler:
                 break
 
             # stop the search process if hit global max sample nums
-            if self._max_sample_nums and self.__class__._global_samples_nums >= self._max_sample_nums:
+            if self._max_sample_nums and self._get_global_sample_nums() >= self._max_sample_nums:
                 break
             
             prompt = self._database.get_prompt()    # 从岛上拿一个可参考的方程框架 - 故可以独立反思
@@ -255,109 +269,110 @@ class Sampler:
                     if_best = False
                     residual_result = self.analyze_equations_with_residual(best_sample,residual_data)
                     print(f"样本残差分析结果: {residual_result}")
-                    # 创建目录存放残差分析结果
-                    json_residual_file = os.path.join(self.config.results_root or ".", "residual_analyze.json")
-                    
-                    # 加载现有的残差分析数据（如果文件存在）
-                    residual_data_list = []
-                    if os.path.exists(json_residual_file):
-                        try:
-                            with open(json_residual_file, "r", encoding="utf-8") as f:
-                                existing_data = json.load(f)
-                                if isinstance(existing_data, list):
-                                    residual_data_list = existing_data
-                        except json.JSONDecodeError:
-                            print(f"现有的残差分析JSON文件格式有误，将创建新文件")
-                        except Exception as e:
-                            print(f"读取现有残差分析文件时出错: {e}")
-                    
-                    # 创建新的残差分析记录
-                    current_sample_order = self._get_global_sample_nums() - len(samples) + best_id  # 获取当前样本的顺序号
-                    
-                    # 计算残差统计信息
-                    res_values = residual_data[:, -1]  # 第三列是残差值
+                    # 多线程下 residual_analyze.json 为读-改-写，需加锁防止丢失更新
+                    with _SAMPLER_LOCK:
+                        # 创建目录存放残差分析结果
+                        json_residual_file = os.path.join(self.config.results_root or ".", "residual_analyze.json")
 
-                    # 创建残差分析数据结构
-                    residual_record = {
-                        "sample_order": current_sample_order,
-                        "island_id": prompt.island_id,
-                        "equation": best_sample,
-                        "analysis": residual_result,
-                        "best_score": best_score_for_sample,
-                    }
-                    
-                    # 添加到残差分析数据列表
-                    residual_data_list.append(residual_record)
-                    
-                    # 保存更新后的残差分析数据
-                    try:
-                        with open(json_residual_file, "w", encoding="utf-8") as f:
-                            json.dump(residual_data_list, f, ensure_ascii=False, indent=2)
-                        print(f"成功更新残差分析JSON文件: {json_residual_file}")
-                    except Exception as e:
-                        print(f"保存残差分析JSON文件时出错: {e}")
+                        # 加载现有的残差分析数据（如果文件存在）
+                        residual_data_list = []
+                        if os.path.exists(json_residual_file):
+                            try:
+                                with open(json_residual_file, "r", encoding="utf-8") as f:
+                                    existing_data = json.load(f)
+                                    if isinstance(existing_data, list):
+                                        residual_data_list = existing_data
+                            except json.JSONDecodeError:
+                                print(f"现有的残差分析JSON文件格式有误，将创建新文件")
+                            except Exception as e:
+                                print(f"读取现有残差分析文件时出错: {e}")
+
+                        # 创建新的残差分析记录
+                        current_sample_order = self._get_global_sample_nums() - len(samples) + best_id  # 获取当前样本的顺序号
+
+                        # 计算残差统计信息
+                        res_values = residual_data[:, -1]  # 第三列是残差值
+
+                        # 创建残差分析数据结构
+                        residual_record = {
+                            "sample_order": current_sample_order,
+                            "island_id": prompt.island_id,
+                            "equation": best_sample,
+                            "analysis": residual_result,
+                            "best_score": best_score_for_sample,
+                        }
+
+                        # 添加到残差分析数据列表
+                        residual_data_list.append(residual_record)
+
+                        # 保存更新后的残差分析数据
+                        try:
+                            _atomic_write_json(json_residual_file, residual_data_list)
+                            print(f"成功更新残差分析JSON文件: {json_residual_file}")
+                        except Exception as e:
+                            print(f"保存残差分析JSON文件时出错: {e}")
                 
                 print("===== 残差分析结束 =====\n")
 
                 # 创建目录存放分析结果
                 # import os
-                json_experience_file = os.path.join(self.config.results_root or ".", "experiences.json")
-                
+                # 多线程下 experiences.json 为读-改-写，需加锁防止丢失更新
+                with _SAMPLER_LOCK:
+                    json_experience_file = os.path.join(self.config.results_root or ".", "experiences.json")
 
-                # 加载现有的经验（如果文件存在）
-                experiences_data = {"None": [], "Good": [], "Bad": []}
-                if os.path.exists(json_experience_file):
+                    # 加载现有的经验（如果文件存在）
+                    experiences_data = {"None": [], "Good": [], "Bad": []}
+                    if os.path.exists(json_experience_file):
+                        try:
+                            with open(json_experience_file, "r", encoding="utf-8") as f:
+                                existing_data = json.load(f)
+                                # 确保键存在
+                                for key in ["None", "Good", "Bad"]:
+                                    if key in existing_data:
+                                        experiences_data[key] = existing_data[key]
+                        except json.JSONDecodeError:
+                            print(f"现有的 JSON 文件格式有误，将创建新文件")
+                        except Exception as e:
+                            print(f"读取现有经验文件时出错: {e}")
+
+                    # 添加新经验
+                    for i, (sample_text, quality, analysis, error_msg, thinking_content) in enumerate(zip(samples, quality_for_sample, analysis_result, error_for_samlple, thinking_contents)):
+                        # 获取当前样本的信息
+                        current_sample_order = self._get_global_sample_nums() - len(samples) + i + 1  # 计算当前样本的顺序号
+
+                        # 确定分类
+                        if quality == 'Good':
+                            category = "Good"
+                        elif quality == 'Bad':
+                            category = "Bad"
+                        else:  # 'None'
+                            category = "None"
+
+                        # 创建经验数据结构
+                        experience = {
+                            "island_id": prompt.island_id,
+                            "analysis": analysis,
+                            "sample_order": current_sample_order,  # 添加样本顺序号
+                            "sample_time": sample_time,
+                            "equation": sample_text,
+                            "score": score_for_sample[i],
+
+                            "thinking_content": thinking_content
+                        }
+
+                        # 对于 None 类型，添加错误信息
+                        if category == "None" and error_msg:
+                            experience["error"] = error_msg
+
+                        # 添加到相应类别
+                        experiences_data[category].append(experience)
+
+                    # 保存更新后的经验数据
                     try:
-                        with open(json_experience_file, "r", encoding="utf-8") as f:
-                            existing_data = json.load(f)
-                            # 确保键存在
-                            for key in ["None", "Good", "Bad"]:
-                                if key in existing_data:
-                                    experiences_data[key] = existing_data[key]
-                    except json.JSONDecodeError:
-                        print(f"现有的 JSON 文件格式有误，将创建新文件")
+                        _atomic_write_json(json_experience_file, experiences_data)
+                        print(f"成功更新经验 JSON 文件: {json_experience_file}")
                     except Exception as e:
-                        print(f"读取现有经验文件时出错: {e}")
-
-                # 添加新经验
-                for i, (sample_text, quality, analysis, error_msg, thinking_content) in enumerate(zip(samples, quality_for_sample, analysis_result, error_for_samlple, thinking_contents)):
-                    # 获取当前样本的信息
-                    current_sample_order = self._get_global_sample_nums() - len(samples) + i + 1  # 计算当前样本的顺序号
-                    
-                    # 确定分类
-                    if quality == 'Good':
-                        category = "Good"
-                    elif quality == 'Bad':
-                        category = "Bad"
-                    else:  # 'None'
-                        category = "None"
-                    
-                    # 创建经验数据结构
-                    experience = {
-                        "island_id": prompt.island_id,
-                        "analysis": analysis,
-                        "sample_order": current_sample_order,  # 添加样本顺序号
-                        "sample_time": sample_time,
-                        "equation": sample_text,
-                        "score": score_for_sample[i],
-
-                        "thinking_content": thinking_content
-                    }
-                    
-                    # 对于 None 类型，添加错误信息
-                    if category == "None" and error_msg:
-                        experience["error"] = error_msg
-                    
-                    # 添加到相应类别
-                    experiences_data[category].append(experience)
-
-                # 保存更新后的经验数据
-                try:
-                    with open(json_experience_file, "w", encoding="utf-8") as f:
-                        json.dump(experiences_data, f, ensure_ascii=False, indent=2)
-                    print(f"成功更新经验 JSON 文件: {json_experience_file}")
-                except Exception as e:
-                    print(f"保存 JSON 经验文件时出错: {e}")
+                        print(f"保存 JSON 经验文件时出错: {e}")
             except Exception as e:
                 print(f"执行分析时出错: {str(e)}")
 
@@ -369,13 +384,16 @@ class Sampler:
                 print(f"[WARN] 记录进度/checkpoint 失败: {e}")
 
     def _get_global_sample_nums(self) -> int:
-        return self.__class__._global_samples_nums
+        with _SAMPLER_LOCK:
+            return self.__class__._global_samples_nums
 
     def set_global_sample_nums(self, num):
-        self.__class__._global_samples_nums = num
+        with _SAMPLER_LOCK:
+            self.__class__._global_samples_nums = num
 
     def _global_sample_nums_plus_one(self):
-        self.__class__._global_samples_nums += 1
+        with _SAMPLER_LOCK:
+            self.__class__._global_samples_nums += 1
 
     def _checkpoint_path(self) -> str:
         return os.path.join(self.config.results_root or ".", "checkpoint.json")
@@ -383,31 +401,33 @@ class Sampler:
     def _save_checkpoint(self):
         """保存当前经验缓冲 + 全局采样数到 checkpoint（断点续跑用）。"""
         try:
-            self._database.save_checkpoint(self._checkpoint_path(), extra={
-                "global_sample_nums": self._get_global_sample_nums(),
-                "saved_at": time.time(),
-            })
+            with _SAMPLER_LOCK:
+                self._database.save_checkpoint(self._checkpoint_path(), extra={
+                    "global_sample_nums": self._get_global_sample_nums(),
+                    "saved_at": time.time(),
+                })
         except Exception as e:
             print(f"[WARN] 保存 checkpoint 失败: {e}")
 
     def _append_progress(self, island_id: int, start_time: float):
         """每轮采样结束后追加一行进度到 round_progress.csv（可观测性）。"""
         try:
-            path = os.path.join(self.config.results_root or ".", "round_progress.csv")
-            best = self._database._best_score_per_island[island_id]
-            write_header = not os.path.exists(path)
-            with open(path, "a", encoding="utf-8", newline="") as f:
-                writer = csv.writer(f)
-                if write_header:
-                    writer.writerow(["timestamp", "wall_elapsed_s", "island_id",
-                                     "best_score", "global_sample_nums"])
-                writer.writerow([
-                    time.strftime("%Y-%m-%d %H:%M:%S"),
-                    f"{(time.time() - start_time):.1f}",
-                    island_id,
-                    f"{best:.6f}" if best is not None and best != float('-inf') else "",
-                    self._get_global_sample_nums(),
-                ])
+            with _SAMPLER_LOCK:
+                path = os.path.join(self.config.results_root or ".", "round_progress.csv")
+                best = self._database._best_score_per_island[island_id]
+                write_header = not os.path.exists(path)
+                with open(path, "a", encoding="utf-8", newline="") as f:
+                    writer = csv.writer(f)
+                    if write_header:
+                        writer.writerow(["timestamp", "wall_elapsed_s", "island_id",
+                                         "best_score", "global_sample_nums"])
+                    writer.writerow([
+                        time.strftime("%Y-%m-%d %H:%M:%S"),
+                        f"{(time.time() - start_time):.1f}",
+                        island_id,
+                        f"{best:.6f}" if best is not None and best != float('-inf') else "",
+                        self._get_global_sample_nums(),
+                    ])
         except Exception as e:
             print(f"[WARN] 写入 progress.csv 失败: {e}")
 
