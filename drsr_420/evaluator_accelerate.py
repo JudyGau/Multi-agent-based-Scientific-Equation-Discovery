@@ -44,7 +44,7 @@ def add_numba_decorator(
                     ctx=ast.Load()
                 ),
                 args=[],  
-                keywords=[ast.keyword(arg='nopython', value=ast.NameConstant(value=True))]  
+                keywords=[ast.keyword(arg='nopython', value=ast.Constant(value=True))]  
             )
             # add the decorator to the decorator_list of the node
             node.decorator_list.append(decorator)
@@ -52,6 +52,34 @@ def add_numba_decorator(
     # turn the tree to string and return
     modified_program = ast.unparse(tree)
     return modified_program
+
+
+def try_add_numba_decorator(
+        program: str,
+        function_to_evolve: str,
+        sample_args: tuple,
+) -> str:
+    """尝试为 `function_to_evolve` 添加 @numba.jit(nopython=True) 装饰。
+
+    numba 对 LLM 生成的任意方程并不总是兼容（不支持的 numpy 操作、复杂控制流等）。
+    这里用一组与真实调用 `equation(*X.T, params)` 同构的样例参数触发一次 JIT 编译，
+    编译失败或首次调用抛异常时自动降级返回原始程序，避免整条样本因加速而失败。
+
+    Args:
+        program: 待执行的完整程序。
+        function_to_evolve: 需要加速的方程函数名。
+        sample_args: 触发编译的样例参数（含全量输入行与一组占位参数）。
+    """
+    try:
+        accelerated = add_numba_decorator(program, function_to_evolve)
+        namespace = {}
+        exec(accelerated, namespace)
+        fn = namespace[function_to_evolve]
+        fn(*sample_args)  # 触发 JIT 编译，验证 numba 兼容性
+        return accelerated
+    except Exception as e:
+        print(f"[WARN] numba 加速不可用，降级为非加速评估（{e}）")
+        return program
 
 
 if __name__ == '__main__':

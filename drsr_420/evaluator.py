@@ -16,19 +16,22 @@
 """ Class for evaluating programs proposed by the Sampler."""
 from __future__ import annotations
 
-from abc import abstractmethod, ABC
 import ast
-import time
-from collections.abc import Sequence
 import copy
-from typing import Any, Type
-import profile
 import multiprocessing
+import profile
+import threading
+import time
+from abc import ABC, abstractmethod
+from collections.abc import Sequence
+from typing import Any, Type
 
-from drsr_420 import code_manipulation
+import numpy as np
+
 from drsr_420 import buffer
-from drsr_420 import evaluator_accelerate
+from drsr_420 import code_manipulation
 from drsr_420 import evaluate_on_problems
+from drsr_420 import evaluator_accelerate
 
 class _FunctionLineVisitor(ast.NodeVisitor):
     """ Visitor that finds the last line number of a function with a given name."""
@@ -118,36 +121,109 @@ class Sandbox(ABC):
             timeout_seconds: int,
             **kwargs
 
-    # ) -> tuple[Any, bool]:
-
-    # 02 版本 输出报错信息
-    ) -> tuple[Any, bool, str]:
+    ) -> tuple[tuple[Any, bool, str], Any]:
         
         """ Return `function_to_run(test_input)` and whether execution succeeded. """
         raise NotImplementedError(
             'Must provide a sandbox for executing untrusted code.')
 
 
+def _eval_worker(task_queue: multiprocessing.Queue, worker_id: int) -> None:
+    """常驻评估 worker：循环从任务队列取任务，结果经任务自带的管道送回主进程。"""
+    while True:
+        task = task_queue.get()
+        if task is None:
+            return
+        (program, function_to_run, function_to_evolve, dataset,
+         numba_accelerate, eval_config, warm_start, conn) = task
+        try:
+            out = _run_evaluation_task(
+                program, function_to_run, function_to_evolve, dataset,
+                numba_accelerate, eval_config, warm_start)
+        except Exception as e:  # 兜底：_run_evaluation_task 内部已捕获，这里防御 worker 意外崩溃
+            out = (None, None, False, f'Execution Error: {e}', None)
+        try:
+            conn.send(out)
+        except (BrokenPipeError, EOFError):
+            # 主进程可能已因超时关闭管道并重建 worker，丢弃该结果即可
+            pass
+        finally:
+            conn.close()
+
+
+def _sample_residuals(full_res, sample_size: int):
+    """从完整残差矩阵中随机采样至多 sample_size 行；full_res 为空时返回 None。"""
+    if full_res is None or not hasattr(full_res, 'shape') or len(full_res) == 0:
+        return None
+    n = min(sample_size, len(full_res))
+    indices = np.random.choice(len(full_res), n, replace=False)
+    return full_res[indices]
+
+
+def _run_evaluation_task(program, function_to_run, function_to_evolve, dataset,
+                         numba_accelerate, eval_config, warm_start):
+    """在 worker 进程中执行一条样本，返回统一 5 元组：
+    (grade, res, runs_ok, remark, optimized_params)。"""
+    res = None
+    opt_params = None
+    try:
+        program = code_manipulation.sanitize_code_text(program)
+        # numba 加速（可选）：编译失败或方程不受支持时自动降级为原始程序
+        if numba_accelerate:
+            X = dataset['inputs']
+            n_params = eval_config.get('n_params', evaluate_on_problems.MAX_NPARAMS)
+            sample_args = tuple(X.T) + (np.ones(n_params),)
+            program = evaluator_accelerate.try_add_numba_decorator(
+                program, function_to_evolve, sample_args)
+
+        # 执行程序，把方程函数放入全局命名空间
+        all_globals_namespace = {}
+        exec(program, all_globals_namespace)
+        evolved_function = all_globals_namespace[function_to_evolve]
+
+        results, full_res, opt_params = evaluate_on_problems.evaluate(
+            dataset,
+            evolved_function,
+            n_params=eval_config.get('n_params', evaluate_on_problems.MAX_NPARAMS),
+            decimal_places=eval_config.get('decimal_places', evaluate_on_problems.DECIMAL_PLACES),
+            n_starts=eval_config.get('n_starts', evaluate_on_problems.N_STARTS),
+            max_iter=eval_config.get('max_iter', evaluate_on_problems.MAX_ITER),
+            bounds=eval_config.get('bounds', evaluate_on_problems.PARAMS_BOUNDS),
+            x0=warm_start,
+            seed=eval_config.get('seed', None),
+            verbose=eval_config.get('verbose', False),
+        )
+        if not isinstance(results, (int, float)):
+            return None, None, False, 'no output', None
+        res = _sample_residuals(
+            full_res, eval_config.get('sample_size', evaluate_on_problems.SAMPLE_SIZE))
+        return results, res, True, 'yes', opt_params
+    except Exception as e:
+        return None, None, False, f'Execution Error: {e}', None
+
+
 class LocalSandbox(Sandbox):
-    """
-    Secure environment for executing and evaluating LLM generated programs.
-    Prevents harmful operations, limits resource usage, and enforces timeouts.
-    Returns a 'score' for the executed program.
+    """在常驻子进程中执行并评估 LLM 生成的程序（支持超时与 numba 可选加速）。
+
+    相比每条样本都 spawn 新进程，常驻 worker 避免重复导入 numpy/scipy（Windows
+    下 spawn 启动代价极高）；某条样本超时卡死时销毁并重建 worker，不影响后续评估。
     """
 
-    def __init__(self, verbose=False, numba_accelerate=True):
+    def __init__(self, verbose=False, numba_accelerate=True, eval_config=None, pool_size=1):
         """
-        Initialize Sandbox.
-        
         Args:
-        verbose (bool): Enable detailed output.
-        numba_accelerate (bool): Use Numba for acceleration of evaluation (limited compatibility). 
+            verbose (bool): Enable detailed output.
+            numba_accelerate (bool): Use Numba for acceleration of evaluation (limited compatibility).
+            eval_config (dict | None): 覆盖 evaluate_on_problems 的默认评估配置
+                （n_params/decimal_places/n_starts/max_iter/bounds/seed/sample_size）。
+            pool_size (int): 常驻 worker 进程数（当前评估串行调度，默认 1）。
         """
         self._verbose = verbose
         self._numba_accelerate = numba_accelerate
+        self._eval_config = dict(eval_config or {})
         self._last_params = None
 
-        # numba 是可选加速依赖：未安装时自动降级为非加速评估，避免所有样本评估失败
+        # numba 是可选加速依赖：未安装时自动降级，避免所有样本评估失败
         if self._numba_accelerate:
             try:
                 import numba  # noqa: F401
@@ -155,69 +231,67 @@ class LocalSandbox(Sandbox):
                 print(f"[WARN] numba 未安装，已关闭 numba 加速评估（{e}）")
                 self._numba_accelerate = False
 
-#################################### 02版本
-    def run(self, program: str, function_to_run: str, function_to_evolve: str, 
-        # 02 版本
-        inputs: Any, test_input: str, timeout_seconds: int, **kwargs) -> tuple[Any, bool, str]:
-        # 原版
-        # inputs: Any, test_input: str, timeout_seconds: int, **kwargs) -> tuple[Any, bool]:
+        self._pool_size = max(1, pool_size)
+        self._task_queue = multiprocessing.Queue()
+        self._task_lock = threading.Lock()
+        self._workers = self._spawn_workers()
+
+    def _spawn_workers(self):
+        workers = []
+        for i in range(self._pool_size):
+            p = multiprocessing.Process(
+                target=_eval_worker, args=(self._task_queue, i), daemon=True)
+            p.start()
+            workers.append(p)
+        return workers
+
+    def _respawn_workers(self):
+        """销毁并重建 worker 池：某条样本超时卡死后恢复调度能力。"""
+        for p in self._workers:
+            if p.is_alive():
+                p.terminate()
+                p.join()
+        self._workers = self._spawn_workers()
+
+
+    def run(self, program: str, function_to_run: str, function_to_evolve: str,
+            inputs: Any, test_input: str, timeout_seconds: int, **kwargs
+            ) -> tuple[tuple[Any, bool, str], Any]:
         """
-        Execute the given program sample and return its score and success status.
-        
+        执行给定样本，返回 (结果三元组, 残差采样)。
+        结果三元组为 (grade, runs_ok, remark)；超时/失败时 grade 为 None。
+
         Note: This sandbox is specific to the equation program skeleton discovery problem.
         """
-
         dataset = inputs[test_input]
-        result_queue = multiprocessing.Queue() 
-        process = multiprocessing.Process(
-            target=self._compile_and_run_function,
-            args=(program, function_to_run, function_to_evolve, dataset, self._numba_accelerate, result_queue)
-        )
-        process.start()
-        process.join(timeout=timeout_seconds)
+        parent_conn, child_conn = multiprocessing.Pipe(duplex=False)
+        task = (program, function_to_run, function_to_evolve, dataset,
+                self._numba_accelerate, self._eval_config, self._last_params, child_conn)
 
-        # if the process is not finished in time, terminate
-        if process.is_alive():
-            process.terminate()
-            process.join()
-            # results = None, False
-            # 02 版本
-            results = None, None,False, 'timeout01'
-        else:
-            results = self._get_results(result_queue)
-        
+        # 串行调度：一次只投递一个任务（每个 sampler 独享自己的 Evaluator/Sandbox）
+        with self._task_lock:
+            self._task_queue.put(task)
+            if parent_conn.poll(timeout_seconds):
+                try:
+                    grade, res, runs_ok, remark, params = parent_conn.recv()
+                except (EOFError, OSError):
+                    # worker 进程意外崩溃（如被 LLM 生成的代码拖垮），重建后返回失败结果
+                    self._respawn_workers()
+                    grade, res, runs_ok, remark, params = None, None, False, 'worker crashed', None
+            else:
+                # 超时：worker 可能被卡死样本占用，销毁并重建后返回超时结果
+                self._respawn_workers()
+                grade, res, runs_ok, remark, params = None, None, False, 'timeout01', None
+            parent_conn.close()
+
+        # 保留最优参数，供下一轮评估热启动（params 为 None 时自动忽略）
+        self._last_params = params
+        results = (grade, runs_ok, remark)
         if self._verbose:
             self._print_evaluation_details(program, results, **kwargs)
-        # print(len(results)) #4
-        # 这里对results进行处理,先拆开成四份，再把grade和runs_ok放到一起
-        if results and len(results) in (4,5):
-            if len(results) == 5:
-                grade, res, runs_ok, remark, params = results
-                self._last_params = params
-            else:
-                grade, res, runs_ok, remark = results
-                self._last_params = None
-            results = (grade, runs_ok,remark)
-            # print(f"拆分后的grade: {grade}, res: {res}, runs_ok: {runs_ok}, remark: {remark}")
-        else:
-            res = None
-            # print('*********************')
-            # print(self._print_evaluation_details(program, results, **kwargs))
-        # print("result:------------")
-        # print(results)
-
-        return results,res
+        return results, res
 
 
-    def _get_results(self, queue):
-        #临时修改为1方便查看输出
-        for _ in range(1):
-            if not queue.empty():
-                return queue.get_nowait()
-            time.sleep(0.1)
-        # return None, False
-        # 02 版本
-        return None, False, 'timeout02'
 
 
     def _print_evaluation_details(self, program, results, **kwargs):
@@ -227,58 +301,6 @@ class LocalSandbox(Sandbox):
         print(f'{str(function).strip()}\n-----------------------------------------------------')
         print(f'Score: {results}\n=====================================================\n\n')
 
-
-
-    def _compile_and_run_function(self, program, function_to_run, function_to_evolve, 
-                                  dataset, numba_accelerate, result_queue):
-        try:
-            program = code_manipulation.sanitize_code_text(program)
-            # optimize the code (decorate function_to_run with @numba.jit())
-            if numba_accelerate:
-                program = evaluator_accelerate.add_numba_decorator(
-                    program=program,
-                    function_to_evolve=function_to_evolve
-                )
-            
-            # execute the program, map func/var/class to global namespace
-            all_globals_namespace = {}
-            exec(program, all_globals_namespace)
-            function_to_run = all_globals_namespace[function_to_run]
-            evolved_function = all_globals_namespace[function_to_evolve]
-            eval_out = evaluate_on_problems.evaluate(dataset, evolved_function)
-
-            # 兼容两种返回格式：旧(分数, 矩阵) / 新(分数, 矩阵, 参数)
-            if isinstance(eval_out, tuple) and len(eval_out) == 3:
-                results, full_res, opt_params = eval_out
-            else:
-                results, full_res = eval_out
-                opt_params = None
-            if full_res is not None and hasattr(full_res, "shape") and len(full_res) > 0:
-                import numpy as np
-                # 确定采样数量，最多取20个点或全部（如果数据量小于20）
-                sample_size = min(100, len(full_res))
-                # 随机选择索引，不排序，保持随机性
-                indices = np.random.choice(len(full_res), sample_size, replace=False)
-                # 对残差进行采样
-                res = full_res[indices]
-                # print(f"残差随机采样（{sample_size}个点）:", res)
-            if not isinstance(results, (int, float)):
-                result_queue.put((None, False, 'no output'))
-                return
-            
-            ########################### 是不是这里加一段‘yes’就可以了？
-            result_queue.put((results, res, True, 'yes', opt_params))
-            
-        # if raise any exception, execution is failed
-        except Exception as e:
-            # print(f"Execution Error: {e}")
-            # result_queue.put((None, False))
-
-            # 把报错信息输出
-            error_msg = f"Execution Error: {e}"
-            print('eeeeeeerrrrrrrrrroooooorrrrrrrr')
-            print(error_msg)
-            result_queue.put((None, None, False, error_msg, None))
 
 
 
@@ -317,13 +339,8 @@ class Evaluator:
             sample: str,
             island_id: int | None,
             version_generated: int | None,
-            **kwargs 
-    # ) -> None:
-    
-    # ) -> float:
-    ) -> tuple[float, str]:
-        
-        # tuple[Any, bool, str]
+            **kwargs
+    ) -> tuple[float | None, str, Any]:
         """ Compile the hypothesis sample into a program and executes it on test inputs. """
         new_function, program = _sample_to_program(
             sample, version_generated, self._template, self._function_to_evolve)
@@ -348,12 +365,7 @@ class Evaluator:
         # print(bbbbb)
         for current_input in self._inputs:
             
-            # test_output, runs_ok = self._sandbox.run(
-
-
-            # 02 版本 收集错误信息
-            # test_output, runs_ok, error_msg = self._sandbox.run(
-            results, res= self._sandbox.run(
+            results, res = self._sandbox.run(
                 program, self._function_to_run, self._function_to_evolve, self._inputs, current_input,
                 self._timeout_seconds
             )
