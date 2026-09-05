@@ -1,12 +1,14 @@
 import json
 import http.client
+import os
+import random
 import re
 import sys
 from typing import List
+from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 import requests
-import os
 from tqdm import tqdm
 from drsr_420.tools.tools_description import tools
 
@@ -59,6 +61,146 @@ def _get_agent_client():
         _agent_client = _build_client(_load_llm_config())
     return _agent_client
 
+# ── Sci-Hub 反爬规避 ────────────────────────────────
+# 镜像会不定期失效或被封，多镜像依次尝试，命中反爬/失效自动切换
+SCI_HUB_MIRRORS = [
+    "https://sci-hub.st",
+    "https://sci-hub.se",
+    "https://sci-hub.ru",
+    "https://sci-hub.wf",
+    "https://sci-hub.ee",
+    "https://sci-hub.ren",
+]
+
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
+    'Mozilla/5.0 (X11; Linux x86_64; rv:126.0) Gecko/20100101 Firefox/126.0',
+]
+
+
+def _is_blocked_page(text: str) -> bool:
+    """检测是否命中反爬/挑战/拦截页（Cloudflare / DataDome / Altcha / PoW 等）。"""
+    low = (text or "")[:3000].lower()
+    markers = (
+        "just a moment", "cloudflare", "cf-challenge", "cf_chl",
+        "datadome", "__ddg", "captcha", "attention required",
+        "access denied", "challenge-platform", "403 forbidden",
+        # JS 挑战页（requests 无法通过，识别后跳过该镜像）
+        "checking your browser", "altcha", "проверка на робота",
+        "proof-of-work", "proof of work", "verify you are human",
+    )
+    return any(m in low for m in markers)
+
+
+def _extract_pdf_url(html: str, base_url: str) -> str | None:
+    """从 sci-hub 结果页提取真实 PDF 直链（meta / iframe / embed / link 兜底）。"""
+    soup = BeautifulSoup(html, "html.parser")
+    meta = soup.find("meta", attrs={"name": "citation_pdf_url"})
+    if meta and meta.get("content"):
+        return urljoin(base_url, meta["content"].strip())
+    for tag in soup.find_all(["iframe", "embed", "object"]):
+        src = tag.get("src") or tag.get("data")
+        if src and ".pdf" in src.lower():
+            return urljoin(base_url, src.strip())
+    a = soup.find("a", attrs={"translate": "zh:here"})
+    if a and a.get("href"):
+        return urljoin(base_url, a["href"].strip())
+    for a in soup.find_all("a", href=True):
+        if a["href"].strip().lower().endswith(".pdf"):
+            return urljoin(base_url, a["href"].strip())
+    return None
+
+
+def _download_to(file_path: str, url: str, session=None, timeout: int = 30) -> bool:
+    """下载 url 到 file_path，用 %PDF 魔数校验内容，成功返回 True。
+
+    用独立 session 时（sci-hub）可复用其中的 cookie/header；默认用 requests 直接下载。
+    """
+    try:
+        fetcher = session if session is not None else requests
+        resp = fetcher.get(url, stream=True, timeout=timeout)
+        resp.raise_for_status()
+        first = next(resp.iter_content(1024), b"")
+        if not first.startswith(b"%PDF"):
+            return False
+        with open(file_path, "wb") as f:
+            f.write(first)
+            for chunk in resp.iter_content(1024):
+                f.write(chunk)
+        return True
+    except Exception:
+        return False
+
+
+def _try_unpaywall(doi: str, file_path: str, timeout: int = 30) -> bool:
+    """通过 Unpaywall 查询开放获取（OA）PDF 直链并下载（合法、无 JS 挑战）。"""
+    email = os.environ.get("UNPAYWALL_EMAIL", "drsr.rag.download@outlook.com")
+    try:
+        resp = requests.get(
+            f"https://api.unpaywall.org/v2/{doi}?email={email}",
+            timeout=timeout,
+            headers={'user-agent': random.choice(USER_AGENTS)},
+        )
+        if resp.status_code != 200:
+            return False
+        best = (resp.json().get("best_oa_location") or {})
+        pdf_url = best.get("url_for_pdf") or best.get("url")
+        if not pdf_url:
+            return False
+        return _download_to(file_path, pdf_url, timeout=timeout)
+    except Exception:
+        return False
+
+
+def _download_pdf_by_doi(doi: str, save_dir: str, timeout: int = 30) -> str:
+    """按 DOI 下载 PDF 到 save_dir，返回本地文件路径。
+
+    下载渠道按优先级依次尝试：
+      1) Unpaywall 开放获取直链（合法，无 JS 反爬）；
+      2) Sci-Hub 多镜像 failover（命中反爬/失效/无直链自动切换，跳过 JS 挑战页）。
+    下载前用 %PDF 魔数校验，避免把挑战页 HTML 当 PDF 保存；全部失败则抛异常。
+    """
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    safe_doi = "".join('' if c == '/' else c for c in doi)
+    file_path = os.path.join(save_dir, f"{safe_doi}.pdf")
+
+    # 渠道 1：Open Access（合法渠道，优先）
+    if _try_unpaywall(doi, file_path, timeout):
+        print(f"下载成功 (Unpaywall OA): {file_path}", file=sys.stderr)
+        return file_path
+
+    # 渠道 2：Sci-Hub 多镜像 failover
+    last_err = None
+    for mirror in SCI_HUB_MIRRORS:
+        try:
+            with requests.Session() as session:
+                session.headers.update({
+                    'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                    'accept-language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+                    'user-agent': random.choice(USER_AGENTS),
+                })
+                # 1) 打开 sci-hub 结果页
+                page_resp = session.get(f"{mirror}/{doi}", timeout=timeout)
+                if page_resp.status_code != 200 or _is_blocked_page(page_resp.text):
+                    continue
+                # 2) 提取真实 PDF 直链
+                pdf_url = _extract_pdf_url(page_resp.text, mirror)
+                if not pdf_url:
+                    continue
+                # 3) 下载 PDF 并校验魔数
+                if _download_to(file_path, pdf_url, session=session, timeout=timeout):
+                    print(f"下载成功 (Sci-Hub {mirror}): {file_path}", file=sys.stderr)
+                    return file_path
+                raise RuntimeError(f"下载内容不是 PDF（可能被拦截）: {pdf_url}")
+        except Exception as e:
+            last_err = e
+            continue
+
+    raise RuntimeError(f"所有下载渠道失败（Unpaywall 无 OA + Sci-Hub 全部不可达/被反爬）: {last_err}")
+
 # SERPER_KEY = "ac28c1aac4d446f3de5c8e79ea6d406727509455"
 
 
@@ -69,67 +211,6 @@ def read_paper(title_doi: list[tuple[str, str]] | tuple[str, str], save_dir="pdf
     返回『已摘选结构化』的 JSON 字符串，方便模型消费。
     """
     """下载PDF文件并保存到本地"""
-    # # 代理配置
-    # proxyHost = "www.16yun.cn"
-    # proxyPort = "5445"
-    # proxyUser = "16QMSOML"
-    # proxyPass = "280651"
-
-    # # 构造代理字典
-    # proxies = {
-    #     "http": f"http://{proxyUser}:{proxyPass}@{proxyHost}:{proxyPort}",
-    #     "https": f"http://{proxyUser}:{proxyPass}@{proxyHost}:{proxyPort}"
-    # }
-
-    # 请求头设置
-    headers = {
-        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-        'accept-language': 'zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7,es-ES;q=0.6,es;q=0.5',
-        'cache-control': 'max-age=0',
-        'pragma': 'no-cache',
-        'priority': 'u=0, i',
-        'sec-ch-ua': '"Not=A?Brand";v="99", "Microsoft Edge";v="151", "Chromium";v="151"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"',
-        'sec-fetch-dest': 'document',
-        'sec-fetch-mode': 'navigate',
-        'sec-fetch-site': 'none',
-        'sec-fetch-user': '?1',
-        'upgrade-insecure-requests': '1',
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36 Edg/151.0.0.0',
-    }
-
-    cookies = {
-        # '__ddgid_': 'ifJHThZoCclQh7Xb',
-        # '__ddg2_': 'E0OKMRIZMDuyo1DA',
-        # '__ddg1_': 'XrbNjpRf24gdh6Zngg9x',
-        # '__ddgmark_': 'QQUozRDUpKWhbW1a',
-        # 'session': '76a2e63503e1e0609c1b32dca810b4f5',
-        # 'refresh': '1784796304.9299',
-        # 'session': '76a2e63503e1e0609c1b32dca810b4f5',
-        # 'refresh': '1784796304.9305',
-        # '__ddg9_': '210.45.118.7',
-        # '__ddg5_': 'Nleqmf5URrhPyOLL',
-        # 'PHPSESSID': '217c33eecb13851160634129ab7d9396',
-        # '__ddg8_': 'n5BALTtkm8YR3KBo',
-        # '__ddg10_': '1784879941',
-
-        '__ddg1_' : 'CeSMSD6vG9cbBUhNgEZC',
-        '__ddgid_' : 'bWJgM74dLEQqdIsH',
-        '__ddg9_' : '112.32.136.114',
-        '__ddgmark_' : 'Py3toAtBOyjZhvUH',
-        '__ddg5_' : 'ZYmdRTIB54WpAp5z',
-        '__ddg2_' : '3713k9Eb5ZCXTZbp',
-        'ddg_last_challenge' : '1786093482052',
-        'PHPSESSID' : '1cb151d12013f5a9d94ad21d84e21f3e',
-        'session' : 'd8181b66b46f21c48320fd96d257e873',
-        'refresh' : '1786093506.7948',
-        '__ddg10_' : '1786500725',
-        '__ddg8_' : 'FT9PAhB6baveZXHD',
-
-    }
-
-
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
 
@@ -182,86 +263,15 @@ def read_paper(title_doi: list[tuple[str, str]] | tuple[str, str], save_dir="pdf
                 #分析下一个文献
                 continue
             else:
+                print(f"本地文献库不存在文献: {file_path}，尝试 Sci-Hub 下载 ...", file=sys.stderr)
+                try:
+                    file_path = _download_pdf_by_doi(doi, save_dir)
+                except Exception as e:
+                    print(f"下载失败: {title} | 错误: {e}", file=sys.stderr)
+                    textlist.append(f"下载失败: {title} | 错误: {e}")
+                    continue
 
-                print(f"本地文献库不存在文献: file_path {file_path}, title_url {(title, pdf_url)}", file=sys.stderr)
-                textlist.append(f"本地文献库不存在文献: title_url {(title, pdf_url)}")
-
-
-            pdf_url = "https://sci-hub.st/" + pdf_url
-            headers['referer'] = "https://sci-hub.st"
-            # 发送请求
-            response = requests.get(
-                pdf_url,
-                stream=True,
-                # impersonate="chrome120",
-                # proxies=proxies,
-                headers=headers,
-                cookies=cookies,
-                timeout=30  # 设置超时时间
-            )
-
-            if response.status_code == 200:
-                # 验证确实是 HTML
-                if "<html" not in response.text[:500].lower():
-                    print("[!] 返回的不是 HTML 页面，可能镜像失效或 DOI 未收录",file=sys.stderr)
-                    print(f"    响应前 300 字符: {response.text[:300]}",file=sys.stderr)
-                    # exit(1)
-
-                # 解析 HTML，提取真实 PDF 地址 ──────────
-                soup = BeautifulSoup(response.text, "html.parser")
-                pdf_url = None
-
-                # 找到 <meta name="citation_pdf_url" content="...">
-                meta = soup.find("meta", attrs={"name": "citation_pdf_url"})
-                if meta and meta.get("content"):
-                    pdf_url = meta["content"]
-                    pdf_url = "https://sci-hub.st" + pdf_url
-                    print(f"找到 meta name = citation_pdf_url, content = {pdf_url}",file=sys.stderr)
-
-
-                # sci-hub 未收录，尝试找到官网的pdf_url
-                # 找到 <a translate="zh:here" href="...">
-                if not pdf_url:
-                    a = soup.find("a", attrs={"translate": "zh:here"})
-                    if a and a.get("href"):
-                        pdf_url = a.get("href")
-                        print(f"找到 a translate = zh:here, href = {pdf_url}",file=sys.stderr)
-
-                if not pdf_url:
-                    print("[!] 未找到 PDF 链接，页面结构可能已变化")
-                    print(f"    HTML 字符:\n{response.text}")
-                    # exit(1)
-            else:
-                print(f"下载失败: title_url {(title, pdf_url)} | 状态码: {response.status_code}",file=sys.stderr)
-                textlist.append(f"下载失败: title_url {(title, pdf_url)} | 状态码: {response.status_code}",file=sys.stderr)
-                continue
-
-
-            response = requests.get(
-                pdf_url,
-                stream=True,
-                # impersonate="chrome120",
-                headers=headers,
-                cookies=cookies,
-                timeout=30  # 设置超时时间
-            )
-
-            if response.status_code == 200:
-
-                print(f"下载成功: title_url {(title, pdf_url)} | 状态码: {response.status_code}",file=sys.stderr)
-                # 替换文件名中的非法字符
-                # safe_title = "".join(c if c.isalnum() else "_" for c in title)
-                # file_path = os.path.join(save_dir, f"{safe_title}.pdf")
-                safe_doi = "".join('' if c == '/' else c for c in doi)
-                file_path = os.path.join(save_dir, f"{safe_doi}.pdf")
-
-                # 分块写入文件
-                with open(file_path, "wb") as f:
-                    for chunk in response.iter_content(1024):
-                        f.write(chunk)
-
-                print(f"文件保存成功: {file_path}",file=sys.stderr)
-
+                # 读取并返回全文
                 doc = pymupdf.open(file_path)
                 full_text = ""
                 for page_num in range(doc.page_count):
@@ -271,9 +281,6 @@ def read_paper(title_doi: list[tuple[str, str]] | tuple[str, str], save_dir="pdf
                 doc.close()
                 print(f"文件读取成功: {file_path}", file=sys.stderr)
                 textlist.append(full_text)
-            else:
-                print(f"下载失败: title_url {(title, pdf_url)} | 状态码: {response.status_code}",file=sys.stderr)
-                textlist.append(f"下载失败: title_url {(title, pdf_url)} | 状态码: {response.status_code}",file=sys.stderr)
 
         except requests.exceptions.RequestException as e:
             print(f"请求异常: {title} | 错误: {e}",file=sys.stderr)
