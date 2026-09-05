@@ -1001,4 +1001,3 @@ class LocalLLM(LLM):
         except Exception as e:
             print(f"API请求发生错误: {str(e)}")
             return ([""] * repeat_prompt, [""] * repeat_prompt) if self._batch_inference else ("", "")
-            return ([""] * repeat_prompt, [""] * repeat_prompt) if self._batch_inference else ("", "")

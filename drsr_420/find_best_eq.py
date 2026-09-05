@@ -212,49 +212,11 @@ def find_best_eq(results_root: str):
 
                         with open("./llm_explain.config", 'r', encoding='utf-8') as f:
                             llm_config = json.load(f)
-                        # 构造一次性的 LLM 客户端实例（按任务传递，避免并行任务相互干扰）
-                        # 模型名格式：provider/model，例如 CSTCloud/gpt-oss-120b
-                        model_name = llm_config.get('model')
-                        if not model_name or '/' not in model_name:
-                            raise ValueError(
-                                "缺少模型提供商：请在 llm.config 的 model 字段使用 'provider/model' 格式，例如 'CSTCloud/gpt-oss-120b'")
-                        provider, pure_model = llm.parse_provider_model(model_name)
-
-                        # 解析 api_key：支持字符串与字典（按 provider 或完整 model）
-                        api_key = llm_config.get('api_key', '')
-                        # api_key = ''
-
-                        provider = (provider or 'bltcy').lower()
+                        # 由 ClientFactory 统一完成 provider 解析、api_key 解析、base_url 与生成参数注入
                         client = None
                         try:
-                            if provider in ('bltcy', 'blt'):
-                                client = llm.BltClient(api_key=api_key, model=pure_model)
-                            elif provider in ('deepseek',):
-                                client = llm.DeepSeekClient(api_key=api_key, model=pure_model)
-                            elif provider in ('siliconflow', 'sliconflow'):
-                                client = llm.SiliconflowClient(api_key=api_key, model=pure_model)
-                            elif provider in ('deepinfra', 'deep-infra'):
-                                client = llm.DeepInfraClient(
-                                    api_key=api_key,
-                                    model=pure_model,
-                                    base_url=llm_config.get('base_url') or 'https://api.deepinfra.com/v1/openai',
-                                )
-                            elif provider in ('ollama', 'local'):
-                                client = llm.OllamaClient(api_key=api_key, model=pure_model)
-                            elif provider in ('cstcloud', 'cst', 'cst-cloud', 'keji', 'keji-yun'):
-                                client = llm.CSTCloudClient(api_key=api_key, model=pure_model)
-                            else:
-                                # 默认走 BLT 网关（OpenAI 兼容）
-                                client = llm.BltClient(api_key=api_key, model=pure_model)
-                            # 将部分生成参数写入 client.kwargs
-                            client.kwargs.update({
-                                'max_completion_tokens': int(llm_config.get('max_tokens', 1024) or 1024),
-                                'temperature': float(llm_config.get('temperature', 0.6) or 0.6),
-                                'top_p': float(llm_config.get('top_p', 0.3) or 0.3),
-                                # 'top_k': int(llm_config.get('top_k', 30) or 30),
-                                'frequency_penalty': float(llm_config.get('frequency_penalty', 0.1)),
-                            })
-                            print(f"[INFO] LLM client initialized: provider={provider}, model={pure_model}, kwargs={client.kwargs}")
+                            client = llm.ClientFactory.from_config(llm_config)
+                            print(f"[INFO] LLM client initialized: provider={client._provider_name()}, model={client.model}, kwargs={client.kwargs}")
                         except Exception as e:
                             print(f"[WARN] Failed to init LLM client: {e}")
 

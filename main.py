@@ -156,68 +156,11 @@ if __name__ == '__main__':
         llm_config = _json.load(f)
     # 构造一次性的 LLM 客户端实例（按任务传递，避免并行任务相互干扰）
     # 模型名格式：provider/model，例如 CSTCloud/gpt-oss-120b
-    model_name = llm_config.get('model')
-    if not model_name or '/' not in model_name:
-        raise ValueError("缺少模型提供商：请在 llm.config 的 model 字段使用 'provider/model' 格式，例如 'CSTCloud/gpt-oss-120b'")
-    provider, pure_model = llm_mod.parse_provider_model(model_name)
-
-    # 解析 api_key：支持字符串与字典（按 provider 或完整 model）
-    api_key_cfg = llm_config.get('api_key', '')
-    api_key = ''
-    # 解析 host
-    host = llm_config.get('host','')
-
-    if isinstance(api_key_cfg, dict):
-        def _get_case_insensitive(d: dict, k: str):
-            for kk, vv in d.items():
-                try:
-                    if str(kk).lower() == str(k).lower():
-                        return vv
-                except Exception:
-                    pass
-            return None
-        api_key = _get_case_insensitive(api_key_cfg, model_name) or _get_case_insensitive(api_key_cfg, provider) or ''
-    elif isinstance(api_key_cfg, str):
-        api_key = api_key_cfg
-    provider = (provider or 'bltcy').lower()
+    # 由 ClientFactory 统一完成 provider 解析、api_key 解析、base_url 与生成参数注入
     client = None
     try:
-        if provider in ('bltcy', 'blt'):
-            client = llm_mod.BltClient(api_key=api_key, model=pure_model)
-        elif provider in ('deepseek',):
-            client = llm_mod.DeepSeekClient(api_key=api_key, model=pure_model)
-        elif provider in ('siliconflow', 'sliconflow'):
-            client = llm_mod.SiliconflowClient(api_key=api_key, model=pure_model)
-        elif provider in ('deepinfra', 'deep-infra'):
-            client = llm_mod.DeepInfraClient(
-                api_key=api_key,
-                model=pure_model,
-                base_url=llm_config.get('base_url') or 'https://api.deepinfra.com/v1/openai',
-            )
-        elif provider in ('ollama', 'local'):
-            client = llm_mod.OllamaClient(api_key=api_key, model=pure_model, base_url=host)
-        elif provider in ('cstcloud', 'cst', 'cst-cloud', 'keji', 'keji-yun'):
-            client = llm_mod.CSTCloudClient(api_key=api_key, model=pure_model)
-        elif provider in ('glm', 'glm4', 'zhipu', 'bigmodel', 'big-model'):
-            client = llm_mod.ZhipuClient(
-                api_key=api_key,
-                model=pure_model,
-                base_url=llm_config.get('base_url') or 'https://open.bigmodel.cn/api/paas/v4',
-            )
-        else:
-            # 默认走 BLT 网关（OpenAI 兼容）
-            client = llm_mod.BltClient(api_key=api_key, model=pure_model)
-        # 将部分生成参数写入 client.kwargs
-        client.kwargs.update({
-            'max_completion_tokens': int(llm_config.get('max_completion_tokens', 1024) or 1024),
-            'temperature': float(llm_config.get('temperature', 0.6) or 0.6),
-            'top_p': float(llm_config.get('top_p', 0.3) or 0.3),
-            'frequency_penalty': float(llm_config.get('frequency_penalty', 0.1)),
-            # 'options': llm_config.get('options', {}),
-            # 'top_k': int(llm_config.get('top_k', 30) or 30),
-        })
-        print(f"[INFO] LLM client initialized: provider={provider}, model={pure_model}, kwargs={client.kwargs}")
-
+        client = llm_mod.ClientFactory.from_config(llm_config)
+        print(f"[INFO] LLM client initialized: provider={client._provider_name()}, model={client.model}, kwargs={client.kwargs}")
     except Exception as e:
         print(f"[WARN] Failed to init LLM client: {e}")
     # 计算最大采样数量：优先由 --niterations 推导；否则使用默认 1000

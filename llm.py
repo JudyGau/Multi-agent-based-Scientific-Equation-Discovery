@@ -1,19 +1,16 @@
-import json
-import os
-import time
-
-
-
-# from drsr_420.tools.search_literature import search_literature
-from drsr_420.tools.tools_description import tools
-
 """统一的 LLM 客户端封装。
 
 提供商/模型命名规则：'provider/model'，provider 大小写不敏感，model 保留大小写与路径。
 当前支持：deepseek、siliconflow、deepinfra、ollama、blt、cstcloud（科技云）、glm（智谱）。
 """
-import requests
+import json
+import os
+import time
 from typing import List, Dict, Tuple
+
+import requests
+
+from drsr_420.tools.tools_description import tools
 
 # 单次实验级别的全局 token 统计（需由调用方在实验开始前手动 reset）
 GLOBAL_TOKENS = {
@@ -48,25 +45,43 @@ def get_global_time() -> float:
 
 
 class LLMClient:
-    tokens = {
-        'prompt': 0,
-        'content': 0,
-        'reasoning': 0,
-        'total': 0,
+    """OpenAI Chat Completions 兼容的通用 LLM 客户端。
+
+    - ``kwargs``：生成参数（temperature/top_p/max_tokens 等），
+      由构造方（ClientFactory）从配置统一注入；调用方按用途浅拷贝后覆盖。
+    - 每次 ``chat`` 只透传白名单内的生成参数，并按提供商做差异适配（见 _adapt_payload）。
+    """
+
+    # 构建 payload 时允许透传的 OpenAI 兼容生成参数（其余字段一律忽略，避免提供商拒绝未知参数）
+    ALLOWED_GEN_KEYS = {
+        'max_tokens', 'max_completion_tokens', 'temperature', 'top_p', 'top_k', 'n',
+        'stream', 'presence_penalty', 'frequency_penalty', 'stop', 'logprobs',
+        'options', 'extra_body',
     }
 
-    def __init__(self, api_key: str, model: str, base_url: str):
+    def __init__(self, api_key: str, model: str, base_url: str, provider: str | None = None):
         """
         初始化 LLM 客户端。
 
         :param api_key: API 密钥
         :param model: 模型名称
         :param base_url: API 的基础 URL
+        :param provider: 提供商标识（如 'glm'）；缺省时由 base_url 推断
         """
         self.api_key = api_key
         self.model = model
         self.base_url = base_url
-        # 实例级别的累计统计（无需显式 reset；通常每个实验构造一个 client）
+        self.provider = (provider or '').lower()
+        # 生成参数（temperature/top_p/max_tokens 等）
+        self.kwargs = {
+            'temperature': 0.5,
+            'top_p': 0.5,
+            'n': 1,
+            'stream': False,
+        }
+        # token 统计：实例级独立字典（原为类变量，会被多实例共享污染，故改为实例属性）
+        self.tokens = {'prompt': 0, 'content': 0, 'reasoning': 0, 'total': 0}
+        # 实例级别的累计统计与耗时（无需显式 reset；通常每个实验构造一个 client）
         self._call_index = 0
         self._cum_tokens = {
             'prompt': 0,
@@ -75,20 +90,10 @@ class LLMClient:
             'total': 0,
         }
         self._cum_time_seconds: float = 0.0
-        self.kwargs = {
-            'max_completion_tokens': 1024,  # 更安全的默认值，避免超过部分模型上限
-            'temperature': 0.5,
-            'top_p': 0.5,
-            # 'top_k': 30,
-            'frequency_penalty': 0.2,
-            'n': 1,
-            'stream': False,
-            # 'options':{},
-            # 'enable_thinking': True
-
-        }
 
     def _provider_name(self) -> str:
+        if self.provider:
+            return self.provider
         try:
             url = (self.base_url or '').lower()
             if 'deepseek' in url:
@@ -109,6 +114,37 @@ class LLMClient:
             pass
         return 'llm'
 
+    def _build_payload(self, messages: List[Dict[str, str]]) -> dict:
+        """构造请求体：固定字段 + 白名单生成参数 + 提供商差异适配。"""
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": "auto",
+        }
+        # 仅透传白名单内的生成参数，避免提供商拒绝未知字段
+        for k, v in self.kwargs.items():
+            if k in self.ALLOWED_GEN_KEYS:
+                payload[k] = v
+        # 输出 token 上限保护（部分模型上限较低，统一 clamp 到 65536）
+        for key in ('max_tokens', 'max_completion_tokens'):
+            if isinstance(payload.get(key), int) and payload[key] > 65536:
+                payload[key] = 65536
+        self._adapt_payload(payload)
+        return payload
+
+    def _adapt_payload(self, payload: dict) -> None:
+        """按提供商修正请求体，兼容非标准 OpenAI 接口。"""
+        if self._provider_name() != 'glm':
+            return
+        # 智谱 v4 不接受 extra_body；实测其 tools 结构会触发 1210 参数错误，故移除
+        payload.pop('extra_body', None)
+        payload.pop('tools', None)
+        payload.pop('tool_choice', None)
+        # 智谱输出上限字段名为 max_tokens（而非 OpenAI 的 max_completion_tokens）
+        if 'max_completion_tokens' in payload:
+            payload['max_tokens'] = payload.pop('max_completion_tokens')
+
     def chat(self, messages: List[Dict[str, str]]) -> dict:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -116,67 +152,7 @@ class LLMClient:
         }
         request_url = f"{self.base_url.rstrip('/')}/chat/completions"
 
-        model_name = self.model
-
-        # if 'qwen3' in model_name.lower():
-        #     if '/think' in model_name:
-        #         self.kwargs['enable_thinking'] = True
-        #         model_name = model_name.replace('/think', '')
-        #     else:
-        #         self.kwargs['enable_thinking'] = False
-        #         model_name = model_name.replace('/think', '')
-
-        # tools = [{
-        #     "type": "function",
-        #     "function": {
-        #         "name": "search_literature",
-        #         "description": "在中英文学术库（Google Scholar）按关键词检索题录与摘要，返回带出处的文献片段。用户问到学术/论文/研究类问题时调用。",
-        #         "parameters": {
-        #             "type": "object",
-        #             "properties": {
-        #                 "query": {"type": "string", "description": "检索关键词，如'CRISPR 作物育种 脱靶效应'"},
-        #                 "source": {"type": "string", "enum": ["both", "en", "zh"],
-        #                            "description": "both=中英都查, en=谷歌学术, zh=谷歌学术"}
-        #             },
-        #             "required": ["query"]
-        #         }
-        #     }
-        # }]
-        payload = {
-            "model": model_name,
-            "messages": messages,
-            "tools" : tools,
-            "tool_choice" : "auto",
-            # "options":{},
-            "extra_body":{"enable_thinking": True, "reasoning_effort": "high"},
-            # "think": "false",
-        }
-        # 仅透传 OpenAI Chat Completions 兼容字段，避免提供商拒绝未知参数
-        allowed_keys = {
-            'max_completion_tokens', 'temperature', 'top_p', 'top_k', 'n', 'stream',
-            'presence_penalty', 'frequency_penalty', 'stop', 'logprobs','options'
-        }
-        if isinstance(self.kwargs, dict):
-            for k, v in self.kwargs.items():
-                if k in allowed_keys:
-                    payload[k] = v
-        # 对输出 token 上限做保护（部分模型 4k 上限，统一取不超过 4096）
-        try:
-            if isinstance(payload.get('max_completion_tokens'), int) and payload['max_completion_tokens'] > 65536:
-                payload['max_completion_tokens'] = 65536
-        except Exception:
-            pass
-
-        # 智谱 GLM 兼容性适配：其 v4 接口不接受 extra_body 这一非法字段，
-        # 输出上限参数名为 max_tokens（而非 OpenAI 的 max_completion_tokens），
-        # 且 claims 该接口可带 tools，但实测发送当前 tools 会导致 1210 参数错误，
-        # 因此对 GLM 去掉 tools / tool_choice（工具调用如需走 MCP 独立执行）。
-        if self._provider_name() == 'glm':
-            payload.pop('extra_body', None)
-            payload.pop('tools', None)
-            payload.pop('tool_choice', None)
-            if 'max_completion_tokens' in payload:
-                payload['max_tokens'] = payload.pop('max_completion_tokens')
+        payload = self._build_payload(messages)
 
         start_time = time.time()
         try:
@@ -211,84 +187,6 @@ class LLMClient:
             reasoning_content = message.get('reasoning_content', '') or ''
 
             tool_calls = message.get('tool_calls', [])
-
-            # if tool_calls:
-
-
-            #
-            # # 如果调了 tool，执行后回传
-            # if tool_calls:
-            #     print("调用了工具：", tool_calls)
-            #     messages.append(message)
-            #     for tc in tool_calls:
-            #         fn_name = tc.get('function', {}).get('name', '')
-            #         # args = json.loads(tc.function.arguments)
-            #         args = json.loads(tc.get('function', {}).get('arguments', []))
-            #         # result = search_literature(**args)
-            #         # result = search_google_scholar(**args)
-            #
-            #         if fn_name == "'search_google_scholar'":
-            #             result = search_google_scholar(**args)
-            #         else:
-            #             result = json.dumps({"error": "unknown tool"})
-            #
-            #         messages.append({
-            #             "role": "tool",
-            #             "tool_call_id": tc.get('id',''),
-            #             "content": result
-            #         })
-            #
-            #     # 第二轮：基于文献答
-            #     payload = {
-            #         "model": model_name,
-            #         "messages": messages,
-            #     }
-            #     # 仅透传 OpenAI Chat Completions 兼容字段，避免提供商拒绝未知参数
-            #     if isinstance(self.kwargs, dict):
-            #         for k, v in self.kwargs.items():
-            #             if k in allowed_keys:
-            #                 payload[k] = v
-            #     # 对输出 token 上限做保护（部分模型 4k 上限，统一取不超过 4096）
-            #     try:
-            #         if isinstance(payload.get('max_tokens'), int) and payload['max_tokens'] > 65536:
-            #             payload['max_tokens'] = 65536
-            #     except Exception:
-            #         pass
-            #
-            #     final = requests.post(request_url, headers=headers, json=payload, timeout=120)
-            #     # 状态码错误先抛出异常（下方 except 会打印详情）
-            #     final.raise_for_status()
-            #     # 尝试解析 JSON；失败时打印前 500 字符文本
-            #     try:
-            #         response_data = final.json()
-            #     except ValueError:
-            #         print("API 响应无法解析为 JSON，原始文本预览:", final.text[:500])
-            #         raise
-            #
-            #     # OpenAI 兼容接口错误格式：{"error": {...}}
-            #     if isinstance(response_data, dict) and 'error' in response_data:
-            #         err = response_data.get('error') or {}
-            #         print("API 返回错误:", {
-            #             'type': err.get('type'),
-            #             'code': err.get('code'),
-            #             'message': err.get('message') or err,
-            #         })
-            #         raise requests.exceptions.HTTPError(f"API error: {err}")
-            #     # end_time = time.time()
-            #
-            #     # 保护性判断：缺少 choices 时打印提示
-            #     if 'choices' not in response_data or not response_data['choices']:
-            #         print("API 响应不包含 choices 字段或为空：", str(response_data)[:500])
-            #         raise requests.exceptions.HTTPError("API response missing choices")
-            #
-            #     message = response_data['choices'][0].get('message', {})
-            #     content = message.get('content', '') or ''
-            #     reasoning_content = message.get('reasoning_content', '') or ''
-
-                # final = client.chat.completions.create(
-                #     model="deepseek-chat", messages=messages
-                # )
-                # return final.choices[0].message.content
 
             # token统计
             usage = response_data.get('usage', {})
@@ -490,30 +388,39 @@ class ClientFactory:
                 )
             return resolved
 
-        # 设置默认 base_url
+        # 设置默认 base_url 并构造对应客户端
         if provider == 'deepseek':
             base_url = base_url or "https://api.deepseek.com"
-            return DeepSeekClient(api_key=_require_api_key(api_key, 'DEEPSEEK_API_KEY'), model=model, base_url=base_url)
+            client = DeepSeekClient(api_key=_require_api_key(api_key, 'DEEPSEEK_API_KEY'), model=model, base_url=base_url)
         elif provider in ('siliconflow', 'silicon-flow', 'sflow'):
             base_url = base_url or "https://api.siliconflow.cn/v1"
-            return SiliconflowClient(api_key=_require_api_key(api_key, 'SILICONFLOW_API_KEY'), model=model, base_url=base_url)
+            client = SiliconflowClient(api_key=_require_api_key(api_key, 'SILICONFLOW_API_KEY'), model=model, base_url=base_url)
         elif provider in ('deepinfra', 'deep-infra'):
             base_url = base_url or "https://api.deepinfra.com/v1/openai"
-            return DeepInfraClient(api_key=_require_api_key(api_key, 'DEEPINFRA_API_KEY'), model=model, base_url=base_url)
+            client = DeepInfraClient(api_key=_require_api_key(api_key, 'DEEPINFRA_API_KEY'), model=model, base_url=base_url)
         elif provider == 'ollama':
             base_url = base_url or "http://localhost:11111/v1"
-            return OllamaClient(api_key=api_key or '', model=model, base_url=base_url)
+            client = OllamaClient(api_key=api_key or '', model=model, base_url=base_url)
         elif provider in ('blt', 'bltcy', 'plato'):
             # 优先使用传入 api_key，否则读环境变量 BLT_API_KEY
-            return BltClient(api_key=_require_api_key(api_key, 'BLT_API_KEY'), model=model, base_url=base_url or os.getenv('BLT_API_BASE', 'https://api.bltcy.ai/v1'))
+            client = BltClient(api_key=_require_api_key(api_key, 'BLT_API_KEY'), model=model, base_url=base_url or os.getenv('BLT_API_BASE', 'https://api.bltcy.ai/v1'))
         elif provider in ('cstcloud', 'cst', 'cst-cloud', 'keji', 'keji-yun'):
             # 科技云：默认基址 https://uni-api.cstcloud.cn/v1
-            return CSTCloudClient(api_key=_require_api_key(api_key, 'CSTCLOUD_API_KEY'), model=model, base_url=base_url or 'https://uni-api.cstcloud.cn/v1')
+            client = CSTCloudClient(api_key=_require_api_key(api_key, 'CSTCLOUD_API_KEY'), model=model, base_url=base_url or 'https://uni-api.cstcloud.cn/v1')
         elif provider in ('glm', 'glm4', 'zhipu', 'bigmodel', 'big-model'):
             # GLM（智谱）：默认基址 https://open.bigmodel.cn/api/paas/v4
-            return ZhipuClient(api_key=_require_api_key(api_key, 'ZHIPU_API_KEY'), model=model, base_url=base_url or 'https://open.bigmodel.cn/api/paas/v4')
+            client = ZhipuClient(api_key=_require_api_key(api_key, 'ZHIPU_API_KEY'), model=model, base_url=base_url or 'https://open.bigmodel.cn/api/paas/v4')
         else:
             raise ValueError(f"不支持的提供商: {provider}，请使用 'deepseek'、'siliconflow'、'deepinfra'、'blt'、'cstcloud'、'glm' 或 'ollama'")
+
+        client.provider = provider
+        # 统一从配置注入生成参数（temperature/top_p/max_tokens 等），
+        # 调用方无需再手动 client.kwargs.update，避免各入口重复拼装同一套字段。
+        for k in ('max_tokens', 'max_completion_tokens', 'temperature', 'top_p', 'top_k',
+                  'frequency_penalty', 'presence_penalty', 'stream', 'n', 'stop'):
+            if k in config and config[k] is not None:
+                client.kwargs[k] = config[k]
+        return client
         
 
 
