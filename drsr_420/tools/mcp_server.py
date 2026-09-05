@@ -77,6 +77,6 @@ if __name__ == "__main__":
 
     if "--http" in sys.argv:
         # 暴露为单 Streamable HTTP 端点
-        mcp.run(transport="http")
+        mcp.run(transport="streamable-http")
     else:
         mcp.run()

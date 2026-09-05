@@ -557,7 +557,8 @@ class ClientFactory:
 
         provider, model = parse_provider_model(config['model'])
         api_key_cfg = config.get('api_key')
-        base_url = config.get('base_url')
+        # 兼容 'host' 键（llm_summary.config / llm.config 等历史字段名），'base_url' 优先
+        base_url = config.get('base_url') or config.get('host')
 
         # api_key 支持：
         # 1) 字符串（兼容旧格式）
