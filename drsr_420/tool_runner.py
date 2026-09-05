@@ -7,7 +7,7 @@
 #   - 底层用 mcp 官方 SDK 的 stdio client 拉起并复用单个服务器子进程（懒连接），
 #     避免每次都新建 python 进程。
 #   - 服务器端对应脚本 drsr_420/tools/mcp_server.py，cwd 固定为项目根目录，
-#     确保 read_paper 内的 './llm.config' 等相对路径可用。
+#     确保 read_paper 内的 './llm_summary.config' 等相对路径可用。
 #   - 依赖：mcp>=1.0（见 requirements.txt）。
 import json
 import threading

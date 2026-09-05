@@ -46,7 +46,7 @@ python main.py --problem_name oscillator1 --data_csv ./data/oscillator1/train.cs
 
 ## LLM 配置（llm.config）
 
-根目录提供 `llm.config`（JSON），用于配置大模型访问与采样参数：
+根目录提供 `llm_summary.config`（JSON），用于配置大模型访问与采样参数：
 
 ```json
 {
@@ -62,7 +62,7 @@ python main.py --problem_name oscillator1 --data_csv ./data/oscillator1/train.cs
 
 - `api_key` 请替换为真实密钥，否则会报"未提供令牌"。
 - `model` 使用 `provider/model` 形式。支持提供商：`deepseek`、`siliconflow`、`deepinfra`、`ollama`、`blt`（柏拉图）、`cstcloud`（科技云）、`glm`（智谱）。
-- 切换模型直接修改 `llm.config` 相应字段即可；`api_key` 留空时回退读取对应环境变量（如 `DEEPSEEK_API_KEY`、`ZHIPU_API_KEY`、`SILICONFLOW_API_KEY`）。
+- 切换模型直接修改 `llm_summary.config` 相应字段即可；`api_key` 留空时回退读取对应环境变量（如 `DEEPSEEK_API_KEY`、`ZHIPU_API_KEY`、`SILICONFLOW_API_KEY`）。
 - 运行时每个任务实例化一个 LLM Client 并全程复用，并行任务互不影响。
 
 ## RAG 文献知识库

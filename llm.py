@@ -86,7 +86,7 @@ def _post_with_retry(url, headers, payload,
             time.sleep(wait)
 
 
-def load_llm_config(path: str = "llm.config") -> dict:
+def load_llm_config(path: str = "llm_summary.config") -> dict:
     """读取 LLM 配置文件（JSON）。
 
     - 相对路径找不到时自动回退到项目根目录，避免依赖当前工作目录；
@@ -439,7 +439,7 @@ class ClientFactory:
             if not isinstance(resolved, str) or not resolved.strip():
                 raise ValueError(
                     f"LLM provider '{provider}' 缺少 API key："
-                    f"请在 llm.config 的 api_key 字段或环境变量 {env_name} 中配置。"
+                    f"请在 llm_summary.config 的 api_key 字段或环境变量 {env_name} 中配置。"
                 )
             return resolved
 

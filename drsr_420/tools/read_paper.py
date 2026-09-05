@@ -23,9 +23,9 @@ def _load_llm_config():
 
 
 def _build_client(config):
-    """基于 llm.config 构建项目自身的 LLM 客户端（复用 llm.ClientFactory）。
+    """基于 llm_summary.config 构建项目自身的 LLM 客户端（复用 llm.ClientFactory）。
 
-    llm.config 使用 'host' 键作为 base_url，这里映射为 ClientFactory 需要的 'base_url'。
+    llm_summary.config 使用 'host' 键作为 base_url，这里映射为 ClientFactory 需要的 'base_url'。
     使用项目自研客户端（基于 requests），兼容 api_key 为空串的本地服务。
     """
     cfg = dict(config)
@@ -45,7 +45,7 @@ def _get_reader():
         _reader_config = _load_llm_config()
         model_name = _reader_config.get('model')
         if not model_name or '/' not in model_name:
-            raise ValueError("缺少模型提供商：请在 llm.config 的 model 字段使用 'provider/model' 格式，例如 'CSTCloud/gpt-oss-120b'")
+            raise ValueError("缺少模型提供商：请在 llm_summary.config 的 model 字段使用 'provider/model' 格式，例如 'CSTCloud/gpt-oss-120b'")
         _reader_client = _build_client(_reader_config)
     return _reader_client, _reader_config
 
@@ -54,7 +54,7 @@ _agent_client = None
 
 
 def _get_agent_client():
-    """懒加载 agent_run 使用的客户端（基于 llm.config 配置的模型）。"""
+    """懒加载 agent_run 使用的客户端（基于 llm_summary.config 配置的模型）。"""
     global _agent_client
     if _agent_client is None:
         _agent_client = _build_client(_load_llm_config())
