@@ -336,6 +336,34 @@ def equation({FEATURE_SIG}, params: np.ndarray) -> np.ndarray:
         max_params=MAX_NPARAMS,
     )
 
+    # 工程加固：将本次实验超参与 LLM 配置快照到实验目录，便于复现（api_key 打码）
+    try:
+        snapshot = {
+            "problem_name": args.problem_name,
+            "data_csv": args.data_csv,
+            "seed": args.seed,
+            "niterations": args.niterations,
+            "num_islands": config.experience_buffer.num_islands,
+            "samples_per_prompt": config.samples_per_prompt,
+            "max_sample_nums": global_max_sample_num,
+            "wall_time_limit_seconds": wall_limit_seconds,
+            "background": background,
+            "llm": {
+                "provider": client._provider_name() if client else None,
+                "model": client.model if client else llm_config.get('model', ''),
+                "host": (client.base_url if client else '') or llm_config.get('base_url', ''),
+                "api_key": ("***" if (client and client.api_key) else ""),
+                "kwargs": getattr(client, 'kwargs', None) if client else None,
+            },
+            "results_root": results_root,
+        }
+        _snapshot_path = os.path.join(results_root, "config_snapshot.json")
+        with open(_snapshot_path, "w", encoding="utf-8") as f:
+            _json.dump(snapshot, f, ensure_ascii=False, indent=2)
+        print(f"[INFO] Saved config snapshot: {_snapshot_path}")
+    except Exception as e:
+        print(f"[WARN] Failed to save config snapshot: {e}")
+
     pipeline.main(
         specification=specification,
         inputs=dataset,

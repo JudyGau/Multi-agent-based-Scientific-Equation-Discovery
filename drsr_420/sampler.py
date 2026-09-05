@@ -33,6 +33,7 @@ import json
 import http.client
 import os
 import traceback
+import csv
 from drsr_420 import prompt_config as pc
 from drsr_420.tool_runner import mcp_call_tool
 from llm import LLMClient
@@ -360,6 +361,13 @@ class Sampler:
             except Exception as e:
                 print(f"执行分析时出错: {str(e)}")
 
+            # 工程加固：每轮结束记录进度 + 保存 checkpoint（断点续跑）
+            try:
+                self._append_progress(prompt.island_id, start_time)
+                self._save_checkpoint()
+            except Exception as e:
+                print(f"[WARN] 记录进度/checkpoint 失败: {e}")
+
     def _get_global_sample_nums(self) -> int:
         return self.__class__._global_samples_nums
 
@@ -368,6 +376,40 @@ class Sampler:
 
     def _global_sample_nums_plus_one(self):
         self.__class__._global_samples_nums += 1
+
+    def _checkpoint_path(self) -> str:
+        return os.path.join(self.config.results_root or ".", "checkpoint.json")
+
+    def _save_checkpoint(self):
+        """保存当前经验缓冲 + 全局采样数到 checkpoint（断点续跑用）。"""
+        try:
+            self._database.save_checkpoint(self._checkpoint_path(), extra={
+                "global_sample_nums": self._get_global_sample_nums(),
+                "saved_at": time.time(),
+            })
+        except Exception as e:
+            print(f"[WARN] 保存 checkpoint 失败: {e}")
+
+    def _append_progress(self, island_id: int, start_time: float):
+        """每轮采样结束后追加一行进度到 round_progress.csv（可观测性）。"""
+        try:
+            path = os.path.join(self.config.results_root or ".", "round_progress.csv")
+            best = self._database._best_score_per_island[island_id]
+            write_header = not os.path.exists(path)
+            with open(path, "a", encoding="utf-8", newline="") as f:
+                writer = csv.writer(f)
+                if write_header:
+                    writer.writerow(["timestamp", "wall_elapsed_s", "island_id",
+                                     "best_score", "global_sample_nums"])
+                writer.writerow([
+                    time.strftime("%Y-%m-%d %H:%M:%S"),
+                    f"{(time.time() - start_time):.1f}",
+                    island_id,
+                    f"{best:.6f}" if best is not None and best != float('-inf') else "",
+                    self._get_global_sample_nums(),
+                ])
+        except Exception as e:
+            print(f"[WARN] 写入 progress.csv 失败: {e}")
 
 
 

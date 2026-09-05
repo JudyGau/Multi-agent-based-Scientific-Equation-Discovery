@@ -48,6 +48,44 @@ def get_global_time() -> float:
     return float(GLOBAL_TIME_SECONDS)
 
 
+# 大模型请求重试：网络异常与 429/5xx 指数退避重试
+LLM_REQUEST_MAX_RETRIES = 4
+LLM_REQUEST_BACKOFF_BASE = 2.0
+
+
+def _post_with_retry(url, headers, payload,
+                     max_retries=LLM_REQUEST_MAX_RETRIES,
+                     backoff_base=LLM_REQUEST_BACKOFF_BASE,
+                     timeout=(10, 3600)):
+    """带指数退避的 POST 请求：网络异常与 429/5xx 自动重试。"""
+    attempt = 0
+    while True:
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
+            if resp.status_code == 429 or resp.status_code >= 500:
+                retry_after = None
+                try:
+                    retry_after = float(resp.headers.get('Retry-After', ''))
+                except (TypeError, ValueError):
+                    retry_after = None
+                wait = retry_after if (retry_after and retry_after > 0) else backoff_base * (2 ** attempt)
+                attempt += 1
+                if attempt > max_retries:
+                    resp.raise_for_status()
+                    return resp
+                print(f"[LLM] HTTP {resp.status_code}，{wait:.1f}s 后重试（{attempt}/{max_retries}）")
+                time.sleep(wait)
+                continue
+            return resp
+        except requests.exceptions.RequestException as e:
+            attempt += 1
+            if attempt > max_retries:
+                raise
+            wait = backoff_base * (2 ** (attempt - 1))
+            print(f"[LLM] 请求异常: {e}，{wait:.1f}s 后重试（{attempt}/{max_retries}）")
+            time.sleep(wait)
+
+
 def load_llm_config(path: str = "llm.config") -> dict:
     """读取 LLM 配置文件（JSON）。
 
@@ -173,7 +211,7 @@ class LLMClient:
 
         start_time = time.time()
         try:
-            response = requests.post(request_url, headers=headers, json=payload, timeout=(10,3600))
+            response = _post_with_retry(request_url, headers, payload)
             # 状态码错误先抛出异常（下方 except 会打印详情）
             response.raise_for_status()
             # 尝试解析 JSON；失败时打印前 500 字符文本

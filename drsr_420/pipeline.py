@@ -17,6 +17,8 @@
 from __future__ import annotations
 
 # from collections.abc import Sequence
+import json
+import os
 from typing import Any, Tuple, Sequence
 import numpy as np
 
@@ -76,6 +78,19 @@ def main(
     results_root = kwargs.get('results_root', None) or config.results_root
     llm_config = kwargs.get('llm_config', None)
     llm_client = kwargs.get('llm_client', None)
+
+    # 工程加固：断点续跑——若存在 checkpoint，恢复经验缓冲与全局采样数
+    if results_root:
+        checkpoint_path = os.path.join(results_root, "checkpoint.json")
+        if os.path.exists(checkpoint_path):
+            try:
+                database.load_checkpoint(checkpoint_path)
+                with open(checkpoint_path, "r", encoding="utf-8") as f:
+                    ckpt = json.load(f)
+                sampler.Sampler.set_global_sample_nums(int(ckpt.get("global_sample_nums", 1)))
+                print(f"[INFO] 已从 checkpoint 恢复：全局采样数={ckpt.get('global_sample_nums')}")
+            except Exception as e:
+                print(f"[WARN] 恢复 checkpoint 失败（从头开始）: {e}")
     target_variance = None
     try:
         if hasattr(inputs, 'values'):

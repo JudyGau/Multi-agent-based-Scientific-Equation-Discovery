@@ -20,6 +20,7 @@ import profile
 from collections.abc import Mapping, Sequence
 import copy
 import dataclasses
+import json
 import time
 from typing import Any, Tuple, Mapping
 
@@ -189,6 +190,69 @@ class ExperienceBuffer:
             founder_scores = self._best_scores_per_test_per_island[founder_island_id]
             self._register_program_in_island(founder, island_id, founder_scores)
 
+    def to_dict(self) -> dict:
+        """将经验缓冲序列化为可 JSON 化的 dict（用于 checkpoint 断点续跑）。"""
+        return {
+            "best_score_per_island": list(self._best_score_per_island),
+            "best_program_per_island": [
+                str(p) if p else None for p in self._best_program_per_island
+            ],
+            "best_scores_per_test_per_island": [
+                None if d is None else [[str(k), v] for k, v in d.items()]
+                for d in self._best_scores_per_test_per_island
+            ],
+            "islands": [island.to_dict() for island in self._islands],
+            "last_reset_time": self._last_reset_time,
+        }
+
+    @classmethod
+    def from_dict(
+            cls,
+            data: dict,
+            config: config_lib.ExperienceBufferConfig,
+            template: code_manipulation.Program,
+            function_to_evolve: str,
+    ) -> "ExperienceBuffer":
+        eb = cls(config, template, function_to_evolve)
+        eb._best_score_per_island = list(data["best_score_per_island"])
+        eb._best_program_per_island = [
+            code_manipulation.text_to_function(p) if p else None
+            for p in data["best_program_per_island"]
+        ]
+        eb._best_scores_per_test_per_island = [
+            None if d is None else dict(d) for d in data["best_scores_per_test_per_island"]
+        ]
+        islands_data = data.get("islands", [])
+        eb._islands = [
+            Island.from_dict(
+                idata, eb._template, eb._function_to_evolve,
+                config.functions_per_prompt,
+                config.cluster_sampling_temperature_init,
+                config.cluster_sampling_temperature_period)
+            for idata in islands_data
+        ]
+        eb._last_reset_time = float(data.get("last_reset_time", time.time()))
+        return eb
+
+    def save_checkpoint(self, path: str, extra: dict | None = None) -> None:
+        """保存 checkpoint 到 JSON 文件（可选携带额外字段）。"""
+        data = self.to_dict()
+        if extra:
+            data.update(extra)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def load_checkpoint(self, path: str) -> None:
+        """从 checkpoint 恢复经验缓冲状态。"""
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        restored = type(self).from_dict(data, self._config, self._template, self._function_to_evolve)
+        self._islands = restored._islands
+        self._best_score_per_island = restored._best_score_per_island
+        self._best_program_per_island = restored._best_program_per_island
+        self._best_scores_per_test_per_island = restored._best_scores_per_test_per_island
+        self._last_reset_time = restored._last_reset_time
+
 
 class Island:
     """A sub-population of the program skeleton experience buffer."""
@@ -301,6 +365,33 @@ class Island:
         
         return str(prompt)
 
+    def to_dict(self) -> dict:
+        return {
+            "clusters": [
+                {"signature": list(sig), "cluster": cluster.to_dict()}
+                for sig, cluster in self._clusters.items()
+            ],
+            "num_programs": self._num_programs,
+        }
+
+    @classmethod
+    def from_dict(
+            cls,
+            data: dict,
+            template: code_manipulation.Program,
+            function_to_evolve: str,
+            functions_per_prompt: int,
+            cluster_sampling_temperature_init: float,
+            cluster_sampling_temperature_period: int,
+    ) -> "Island":
+        island = cls(
+            template, function_to_evolve, functions_per_prompt,
+            cluster_sampling_temperature_init, cluster_sampling_temperature_period)
+        for item in data.get("clusters", []):
+            island._clusters[tuple(item["signature"])] = Cluster.from_dict(item["cluster"])
+        island._num_programs = int(data.get("num_programs", 0))
+        return island
+
 
 class Cluster:
     """ A cluster of programs on the same island and with the same Signature. """
@@ -325,3 +416,18 @@ class Cluster:
                 max(self._lengths) + 1e-6)
         probabilities = _softmax(-normalized_lengths, temperature=1.0)
         return np.random.choice(self._programs, p=probabilities)
+
+    def to_dict(self) -> dict:
+        return {
+            "score": self._score,
+            "programs": [str(p) for p in self._programs],
+            "lengths": list(self._lengths),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Cluster":
+        programs = [code_manipulation.text_to_function(p) for p in data["programs"]]
+        cluster = cls(data["score"], programs[0])
+        for p in programs[1:]:
+            cluster.register_program(p)
+        return cluster
