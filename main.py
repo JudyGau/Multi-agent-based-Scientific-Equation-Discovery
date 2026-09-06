@@ -29,7 +29,7 @@ parser.add_argument('--num_islands', type=int, default=None, help='经验缓冲�
 parser.add_argument('--num_samplers', type=int, default=None, help='并行采样器数量（多线程并行采样，默认 1）')
 
 # 算法私有参数
-parser.add_argument('--llm_config', type=str, default='llm_summary.config', help='LLM 配置文件路径（JSON 格式）')
+parser.add_argument('--llm_config', type=str, default='glm_glm-5.3-flash.config', help='LLM 配置文件路径（JSON 格式，默认按 提供商_模型.config 命名）')
 parser.add_argument('--background', type=str, default=None, help='背景知识（可选）')
 parser.add_argument('--samples_per_iteration', type=int, default=None, help='每轮生成的候选数量（覆盖 config 默认值）')
 
@@ -134,7 +134,7 @@ if __name__ == '__main__':
             experience_buffer=eb_cfg,
             num_samplers=num_samplers,
         )
-    # 读取 LLM 配置（仅从 llm_summary.config 文件加载模型名，不再支持命令行覆盖）
+    # 读取 LLM 配置（配置文件按 提供商_模型.config 命名，如 glm_glm-5.3-flash.config）
     import json as _json
     if not os.path.exists(args.llm_config):
         try:
@@ -157,7 +157,7 @@ if __name__ == '__main__':
                 }, f, ensure_ascii=False, indent=2)
             print(f"[INFO] Generated default LLM config at {args.llm_config}")
         except Exception as e:
-            print(f"[WARN] Failed to create default llm_summary.config: {e}")
+            print(f"[WARN] Failed to create default LLM config {args.llm_config}: {e}")
     with open(args.llm_config, 'r', encoding='utf-8') as f:
         llm_config = _json.load(f)
     # 构造一次性的 LLM 客户端实例（按任务传递，避免并行任务相互干扰）

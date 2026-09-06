@@ -44,25 +44,33 @@ python main.py --problem_name oscillator1 --data_csv ./data/oscillator1/train.cs
 
 批量示例见根目录 `example.sh`。
 
-## LLM 配置（llm.config）
+## LLM 配置（按 提供商_模型.config 命名）
 
-根目录提供 `llm_summary.config`（JSON），用于配置大模型访问与采样参数：
+根目录提供按 `提供商_模型.config` 命名的 JSON 配置文件（如 `glm_glm-5.3-flash.config`、`deepseek_deepseek-v4-flash.config`），用于配置大模型访问与采样参数：
 
 ```json
 {
   "host": "api.deepseek.com",
   "api_key": "xxx",
-  "model": "deepseek/deepseek-v4-pro",
+  "model": "deepseek/deepseek-v4-flash",
   "max_tokens": 65536,
-  "temperature": 0.1,
-  "top_p": 1.0,
-  "frequency_penalty": 0.0
+  "temperature": 0.7,
+  "top_p": 0.95,
+  "tasks": {
+    "sampling": {"reasoning_effort": "low"},
+    "analysis": {"reasoning_effort": "high"},
+    "summary": {"reasoning_effort": "high"},
+    "experience": {"reasoning_effort": "high"},
+    "residual": {"reasoning_effort": "high"},
+    "explain": {"reasoning_effort": "high"}
+  }
 }
 ```
 
 - `api_key` 请替换为真实密钥，否则会报"未提供令牌"。
 - `model` 使用 `provider/model` 形式。支持提供商：`deepseek`、`siliconflow`、`deepinfra`、`ollama`、`blt`（柏拉图）、`cstcloud`（科技云）、`glm`（智谱）。
-- 切换模型直接修改 `llm_summary.config` 相应字段即可；`api_key` 留空时回退读取对应环境变量（如 `DEEPSEEK_API_KEY`、`ZHIPU_API_KEY`、`SILICONFLOW_API_KEY`）。
+- 配置文件按提供商与模型命名（`提供商_模型.config`），与具体任务解耦：任务级私有参数（如思考强度）统一放在 `tasks` 字段中按任务声明。
+- 切换模型直接修改对应配置文件名即可（如 `deepseek_deepseek-v4-flash.config`）；`api_key` 留空时回退读取对应环境变量（如 `DEEPSEEK_API_KEY`、`ZHIPU_API_KEY`、`SILICONFLOW_API_KEY`）。
 - 运行时每个任务实例化一个 LLM Client 并全程复用，并行任务互不影响。
 
 ## RAG 文献知识库
@@ -93,7 +101,7 @@ python -m drsr_420.rag_build --query "磁流变 屈服应力 压缩" [--k 5]
 - `drsr_420/tools/mcp_server.py`：将上述工具封装为 MCP 服务器（stdio / HTTP）
 - `drsr_420/tool_runner.py`：agent 通过 MCP 调用工具的统一入口（替代直接调用）
 
-程序运行时会经 MCP 拉起工具服务器并复用；`read_paper` 的总结模型由 `llm_summary.config` 配置。
+程序运行时会经 MCP 拉起工具服务器并复用；`read_paper` 的总结模型由对应模型配置文件（如 `glm_glm-5.3-flash.config`）配置。
 
 ## 结果产物与目录结构
 
@@ -111,7 +119,7 @@ python -m drsr_420.rag_build --query "磁流变 屈服应力 压缩" [--k 5]
 ```
 main.py                       # 入口（CSV 动态模式）
 llm.py                        # LLM 客户端与 ClientFactory（多提供商 + 参数统一注入）
-llm.config / llm_summary.config / llm_explain.config / rag.config   # 配置文件（不入库）
+glm_glm-5.3-flash.config / deepseek_deepseek-v4-flash.config / rag.config   # 配置文件（不入库）
 example.sh                    # 批量运行示例
 drsr_420/
   pipeline.py                 # 调度 Evaluator/Sampler，注入 LLM Client

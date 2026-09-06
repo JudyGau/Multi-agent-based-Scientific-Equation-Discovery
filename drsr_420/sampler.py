@@ -60,8 +60,8 @@ def _clone_llm_client(client, task=None, **kwargs_overrides):
     """基于现有 LLMClient 复制一份独立实例，使各实例 kwargs 互不影响。
 
     原先对同一个 llm_client 连续执行 kwargs.update，导致采样/经验/残差三个用途
-    的生成参数互相覆盖（最终全部变成 temperature=0.4），并覆盖了 llm_summary.config 中
-    用户配置的温度。这里通过浅拷贝 + 独立 kwargs 字典修复。
+    的生成参数互相覆盖（最终全部变成 temperature=0.4），并覆盖了配置文件（如
+    glm_glm-5.3-flash.config）中用户配置的温度。这里通过浅拷贝 + 独立 kwargs 字典修复。
     ``task`` 不为 None 时，先按任务注入配置声明的私有参数（如思考强度），
     再叠加 ``kwargs_overrides`` 覆盖（temperature 等）。
     """
@@ -481,12 +481,13 @@ class SamplingOrchestrator:
                 pass
         self._prompt_ctx = prompt_ctx
         # 每个 sampler 克隆一份基础客户端，多线程并行时统计计数互不干扰。
-        # 采样（骨架生成）+ 工具调用仅需轻量思考，思考强度在 llm_summary.config 的
-        # tasks.sampling 中声明（默认为 low），避免 max 强度下长时间推理阻塞并行采样。
+        # 采样（骨架生成）+ 工具调用仅需轻量思考，思考强度在配置文件（如
+        # glm_glm-5.3-flash.config）的 tasks.sampling 中声明（默认为 low），
+        # 避免 max 强度下长时间推理阻塞并行采样。
         self._llm_client = _clone_llm_client(llm_client, task='sampling') if llm_client else None
 
         # 采样、经验分析、残差分析各自使用独立 temperature 的客户端副本，
-        # 避免原地修改同一个 llm_client 的 kwargs 互相覆盖（并覆盖 llm_summary.config 用户设置）。
+        # 避免原地修改同一个 llm_client 的 kwargs 互相覆盖（并覆盖配置文件用户设置）。
         # 思考强度分别从 tasks.experience / tasks.residual 声明（默认为 high）
         self._llm_client_experience = _clone_llm_client(
             llm_client,

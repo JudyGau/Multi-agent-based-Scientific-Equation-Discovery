@@ -178,7 +178,7 @@ class ClientFactoryTaskParamsTest(unittest.TestCase):
     """ClientFactory：从配置 tasks 字段解析 task_params。"""
 
     def test_from_config_injects_task_params(self):
-        cfg = llm.load_llm_config('llm.config')
+        cfg = llm.load_llm_config('glm_glm-5.3-flash.config')
         client = llm.ClientFactory.from_config(cfg)
         self.assertIn('sampling', client.task_params)
         self.assertEqual(client.task_params['sampling'], {'reasoning_effort': 'low'})
