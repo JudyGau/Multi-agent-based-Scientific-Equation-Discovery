@@ -204,7 +204,7 @@ STRICTLY deliver results in the following structured format:
             llm_client.kwargs = dict(llm_client.kwargs)
             if llm_client._provider_name() == 'glm':
                 llm_client.kwargs['thinking'] = {'type': 'enabled'}
-                llm_client.kwargs['reasoning_effort'] = 'low'
+                llm_client.kwargs['reasoning_effort'] = 'high'
                 # 数据分析仅需简短结论，限制输出长度，避免 max_tokens 过大导致服务端长时间生成
                 llm_client.kwargs['max_tokens'] = 32768
             # 流式输出：通过 on_delta 回调实时打印思考内容与正文（[思考]/[正文] 视觉分隔）
@@ -223,7 +223,7 @@ STRICTLY deliver results in the following structured format:
                         stream.write("[思考]\n")
                         think_label_printed = True
                     elif not content_label_printed:
-                        stream.write("[正文]\n")
+                        stream.write_line("[正文]")
                         content_label_printed = True
                     stream.write(text[shown:])
                     shown = len(text)
