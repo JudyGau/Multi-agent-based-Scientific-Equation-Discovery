@@ -168,7 +168,11 @@ if __name__ == '__main__':
         client = llm_mod.ClientFactory.from_config(llm_config)
         print(f"[INFO] LLM client initialized: provider={client._provider_name()}, model={client.model}, kwargs={client.kwargs}")
     except Exception as e:
-        print(f"[WARN] Failed to init LLM client: {e}")
+        print(f"[FATAL] Failed to init LLM client: {e}")
+        print("[FATAL] 请检查 --llm_config 指定的配置文件是否存在、api_key 是否配置正确")
+        print("[FATAL] （可用配置示例：glm_glm-5.3-flash.config / deepseek_deepseek-v4-flash.config）")
+        print("[FATAL] 程序退出，避免在无 LLM 客户端的情况下空转。")
+        sys.exit(1)
     # 计算最大采样数量：优先由 --niterations 推导；否则使用默认 1000
     if args.niterations is not None and args.niterations > 0:
         try:
