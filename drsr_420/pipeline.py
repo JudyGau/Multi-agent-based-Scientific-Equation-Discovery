@@ -211,9 +211,11 @@ def main(
 
     # 多线程并行启动多个 sampler：共享经验缓冲（内部加锁），并行调用 LLM 提升吞吐。
     # 每个 sampler 进入无限采样循环，直到全局采样数达到上限或实验超时。
+    # 线程命名 Sampler-<i>，日志带前缀以体现并行执行。
     threads = []
-    for s in samplers:
-        t = threading.Thread(target=s.sample, kwargs={'profiler': profiler}, daemon=True)
+    for i, s in enumerate(samplers):
+        t = threading.Thread(target=s.sample, kwargs={'profiler': profiler}, daemon=True, name=f"Sampler-{i}")
+        print(f"[Sampler-{i}] 采样线程启动，开始并行采样", flush=True)
         t.start()
         threads.append(t)
     for t in threads:

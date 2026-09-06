@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import threading
 
 from drsr_420 import prompt_config as pc
 
@@ -41,18 +42,29 @@ class ToolCaller:
                     {"role": "user", "content": content},
                 ]
                 while True:
-                    # 流式迭代：reasoning 与 content 按到达顺序实时打印增量
-                    print("========================思考过程========================\n")
+                    # 流式迭代：reasoning 与 content 按到达顺序实时打印增量，[思考]/[正文] 视觉分隔
+                    stream = LineStreamPrinter()
                     shown = 0
+                    think_label_printed = False
+                    content_label_printed = False
 
                     def _on_delta(chunk):
-                        nonlocal shown
-                        text = (chunk.get('reasoning_content') or '') + (chunk.get('content') or '')
+                        nonlocal shown, think_label_printed, content_label_printed
+                        reasoning = chunk.get('reasoning_content') or ''
+                        content = chunk.get('content') or ''
+                        text = reasoning + content
                         if len(text) > shown:
-                            print(text[shown:], end='', flush=True)
+                            if shown < len(reasoning) and not think_label_printed:
+                                stream.write("[思考]\n")
+                                think_label_printed = True
+                            elif not content_label_printed:
+                                stream.write("[正文]\n")
+                                content_label_printed = True
+                            stream.write(text[shown:])
                             shown = len(text)
 
                     resp = self._llm_client.chat(messages, on_delta=_on_delta)
+                    stream.flush()
                     print("\n====================================================\n")
                     tool_calls = resp.get('tool_calls', []) or []
                     messages.append({

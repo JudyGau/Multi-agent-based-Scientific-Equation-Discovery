@@ -1,5 +1,6 @@
 import time
 import copy
+import threading
 import numpy as np
 import pandas as pd
 import io
@@ -205,20 +206,32 @@ STRICTLY deliver results in the following structured format:
                 llm_client.kwargs['reasoning_effort'] = 'low'
                 # 数据分析仅需简短结论，限制输出长度，避免 max_tokens 过大导致服务端长时间生成
                 llm_client.kwargs['max_tokens'] = 32768
-            # 流式输出：通过 on_delta 回调实时打印思考内容与正文，避免长时间无反馈
+            # 流式输出：通过 on_delta 回调实时打印思考内容与正文（[思考]/[正文] 视觉分隔）
+            stream = LineStreamPrinter()
             shown = 0
+            think_label_printed = False
+            content_label_printed = False
 
             def _on_delta(chunk):
-                nonlocal shown
-                text = (chunk.get('reasoning_content') or '') + (chunk.get('content') or '')
+                nonlocal shown, think_label_printed, content_label_printed
+                reasoning = chunk.get('reasoning_content') or ''
+                content = chunk.get('content') or ''
+                text = reasoning + content
                 if len(text) > shown:
-                    print(text[shown:], end='', flush=True)
+                    if shown < len(reasoning) and not think_label_printed:
+                        stream.write("[思考]\n")
+                        think_label_printed = True
+                    elif not content_label_printed:
+                        stream.write("[正文]\n")
+                        content_label_printed = True
+                    stream.write(text[shown:])
                     shown = len(text)
 
             resp = llm_client.chat([
                 {"role": "system", "content": pc.system_prompt},
                 {"role": "user", "content": prompt},
             ], on_delta=_on_delta)
+            stream.flush()
             print()  # 流式结束后换行
             return resp.get('content', '')
         except Exception as e:

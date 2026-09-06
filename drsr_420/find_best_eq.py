@@ -1,9 +1,11 @@
 import json, glob, os
 import re
+import threading
 import sympy as sp
 from graphviz import Source
 from sympy import nsimplify, dotprint
 from sympy.parsing import sym_expr
+from drsr_420.console import LineStreamPrinter
 
 import llm
 from drsr_420 import prompt_config as pc
@@ -20,18 +22,29 @@ def explain_re_act(client: llm.LLMClient, content: str) -> str | None:
             ]
 
             while True:
-                print("========================思考过程========================\n")
                 # 流式迭代：reasoning 与 content 按到达顺序实时打印增量（网络层已是 SSE 流式）
                 resp = None
+                stream = LineStreamPrinter()
                 shown = 0  # 已实时打印的字符数（reasoning 在前、content 在后拼接）
+                think_label_printed = False
+                content_label_printed = False
                 for chunk in client.chat_stream(messages):
                     if chunk.get('final'):
                         resp = {k: v for k, v in chunk.items() if k != 'final'}
                         break
-                    text = (chunk.get('reasoning_content') or '') + (chunk.get('content') or '')
+                    reasoning = chunk.get('reasoning_content') or ''
+                    content = chunk.get('content') or ''
+                    text = reasoning + content
                     if len(text) > shown:
-                        print(text[shown:], end='', flush=True)
+                        if shown < len(reasoning) and not think_label_printed:
+                            stream.write("[思考]\n")
+                            think_label_printed = True
+                        elif not content_label_printed:
+                            stream.write("[正文]\n")
+                            content_label_printed = True
+                        stream.write(text[shown:])
                         shown = len(text)
+                stream.flush()
                 if resp is None:
                     return None
                 print("\n====================================================\n")

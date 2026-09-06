@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+import threading
+
 from drsr_420 import prompt_config as pc
 
 
@@ -41,21 +43,32 @@ class ExperienceSummarizer:
                 question=new_question,
             )
             try:
-                # 流式输出：通过 on_delta 回调实时打印思考内容与正文，避免长时间无反馈
+                # 流式输出：通过 on_delta 回调实时打印思考内容与正文（[思考]/[正文] 视觉分隔）
+                stream = LineStreamPrinter()
                 shown = 0
+                think_label_printed = False
+                content_label_printed = False
 
                 def _on_delta(chunk):
-                    nonlocal shown
-                    text = (chunk.get('reasoning_content') or '') + (chunk.get('content') or '')
+                    nonlocal shown, think_label_printed, content_label_printed
+                    reasoning = chunk.get('reasoning_content') or ''
+                    content = chunk.get('content') or ''
+                    text = reasoning + content
                     if len(text) > shown:
-                        print(text[shown:], end='', flush=True)
+                        if shown < len(reasoning) and not think_label_printed:
+                            stream.write("[思考]\n")
+                            think_label_printed = True
+                        elif not content_label_printed:
+                            stream.write("[正文]\n")
+                            content_label_printed = True
+                        stream.write(text[shown:])
                         shown = len(text)
 
                 resp = self._llm_client.chat([
                     {"role": "system", "content": pc.system_prompt},
                     {"role": "user", "content": analysis_prompt},
                 ], on_delta=_on_delta)
-                print()  # 流式结束后换行
+                stream.flush()
                 analysis_result = resp.get('content', '')
                 analysis_results.append(analysis_result)
             except Exception as e:
