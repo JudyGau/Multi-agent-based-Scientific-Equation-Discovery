@@ -42,8 +42,10 @@ API_KEY = "sk-1zejrP7CKGPUXASwGpow3vOQ1Pjl5QzeU8xCjMrOEMSbqFQd"
 API_MODEL = "gpt-3.5-turbo"
 MAX_TOKENS = 1024
 
-# 多 sampler 并行时保护共享文件读写与全局采样计数
-_SAMPLER_LOCK = threading.Lock()
+# 多 sampler 并行时保护共享文件读写与全局采样计数。
+# 使用 RLock：内部方法 _get_global_sample_nums 会在 with _SAMPLER_LOCK 块内被再次调用，
+# 普通 Lock 不可重入会导致同线程自锁死锁（Sampler 全部挂起）。
+_SAMPLER_LOCK = threading.RLock()
 
 
 def _atomic_write_json(path: str, data) -> None:
