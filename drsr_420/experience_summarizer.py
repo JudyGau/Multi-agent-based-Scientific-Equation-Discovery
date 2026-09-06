@@ -41,12 +41,22 @@ class ExperienceSummarizer:
                 question=new_question,
             )
             try:
+                # 流式输出：通过 on_delta 回调实时打印思考内容与正文，避免长时间无反馈
+                shown = 0
+
+                def _on_delta(chunk):
+                    nonlocal shown
+                    text = (chunk.get('reasoning_content') or '') + (chunk.get('content') or '')
+                    if len(text) > shown:
+                        print(text[shown:], end='', flush=True)
+                        shown = len(text)
+
                 resp = self._llm_client.chat([
                     {"role": "system", "content": pc.system_prompt},
                     {"role": "user", "content": analysis_prompt},
-                ])
+                ], on_delta=_on_delta)
+                print()  # 流式结束后换行
                 analysis_result = resp.get('content', '')
-                print(f"分析结果：{analysis_result}")
                 analysis_results.append(analysis_result)
             except Exception as e:
                 print(f"分析请求发生错误: {str(e)}")
