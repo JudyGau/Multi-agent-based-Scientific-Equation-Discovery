@@ -19,11 +19,14 @@ from __future__ import annotations
 
 
 import dataclasses
-from typing import Type
+from typing import TYPE_CHECKING, Type
 import os
 
-from drsr_420 import sampler
-from drsr_420 import evaluator
+if TYPE_CHECKING:
+    # 仅用于类型注解（ClassConfig）。运行时延迟解析，避免
+    # config -> sampler(shim) -> agents.sampler_agent -> config 循环导入。
+    from drsr_420 import sampler
+    from drsr_420 import evaluator
 
 
 @dataclasses.dataclass(frozen=True)

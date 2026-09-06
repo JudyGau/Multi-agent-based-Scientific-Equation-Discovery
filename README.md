@@ -114,6 +114,52 @@ python -m drsr_420.rag_build --query "磁流变 屈服应力 压缩" [--k 5]
 - `explain.txt`：最终公式的力学解释（若启用）
 - `samples/`：每次评分的样本 JSON（`samples_N.json`），含 `score`、`function`、`params`
 
+## 多 Agent 系统架构
+
+本项目按角色将工作流拆分为独立 Agent，由 `CoordinatorAgent` 并行协调，体现"感知 → 决策 → 行动 → 反思"的多智能体闭环：
+
+```
+                 ┌────────────────────────────────────────────┐
+                 │            CoordinatorAgent                 │
+                 │  (每个 Sampler-i 线程一个实例，共享记忆)        │
+                 │  驱动主循环：采样→评估→反思→持久化              │
+                 └──────┬──────────┬──────────┬─────────┬──────┘
+                        │          │          │         │
+        ┌───────────────▼──┐  ┌────▼─────┐ ┌──▼─────┐ ┌▼──────────────┐
+        │   SamplerAgent   │  │Evaluator │ │Experience│ │ Residual      │
+        │  生成方程骨架      │  │  Agent   │ │Summarizer│ │ Analyzer      │
+        │  空骨架重采样      │  │运行+拟合  │ │Agent     │ │ Agent         │
+        └───────┬──────────┘  │+打分      │ │经验总结   │ │残差结构修正建议 │
+                │             └──────────┘ └─────────┘ └───────────────┘
+        ┌───────▼──────────┐
+        │  ToolCallerAgent │──▶ MCP 工具（文献搜索/阅读）
+        └───────┬──────────┘
+        ┌───────▼──────────┐
+        │     LLMClient    │── 采样/总结/残差分析各自独立实例（独立温度）
+        └──────────────────┘
+```
+
+- **DataAnalyzerAgent**：实验启动时做初次数据分析（含 RAG 文献注入），产出 `residual_analyze.json` 基线
+- **CoordinatorAgent**：多线程（`Sampler-i`）并行协调者，共享 `ExperienceBuffer` 与全局采样计数，循环执行采样→评估→经验总结→残差分析→持久化
+- **SamplerAgent**：基于提示词 + 经验注入生成方程骨架，空骨架自动重采样
+- **EvaluatorAgent**：在 `LocalSandbox`（常驻 worker 池）中运行候选方程，多起点 `least_squares` 拟合打分
+- **ExperienceSummarizerAgent / ResidualAnalyzerAgent**：对评估结果反思，产出经验条目与残差修正建议并写回经验缓冲
+- **find_best_eq**：收尾工具函数（非 Agent），对最优方程做参数拟合与物理解释
+
+### 模块映射
+
+| 新模块（agents 子包）                 | 旧模块（兼容层，仅 re-export）     |
+|--------------------------------------|-----------------------------------|
+| `agents/data_analyzer_agent.py`      | `data_analyse_real.py`            |
+| `agents/tool_caller_agent.py`        | `tool_caller.py`                  |
+| `agents/sampler_agent.py`            | `sampler.py`（Sampler/LLM）       |
+| `agents/evaluator_agent.py`          | `evaluator.py`                    |
+| `agents/experience_summarizer_agent.py` | `experience_summarizer.py`      |
+| `agents/residual_analyzer_agent.py`  | `residual_analyzer.py`            |
+| `agents/coordinator_agent.py`        | `sampler.py`（SamplingOrchestrator）|
+
+旧模块名全部保留，外部代码与测试无需改动。
+
 ## 仓库结构
 
 ```
@@ -122,9 +168,16 @@ llm.py                        # LLM 客户端与 ClientFactory（多提供商 + 
 glm_glm-5.3-flash.config / deepseek_deepseek-v4-flash.config / rag.config   # 配置文件（不入库）
 example.sh                    # 批量运行示例
 drsr_420/
-  pipeline.py                 # 调度 Evaluator/Sampler，注入 LLM Client
-  sampler.py                  # 采样器（LLM 请求 + 工具调用循环）
-  evaluator.py                # 运行候选方程、BFGS 拟合与打分
+  pipeline.py                 # 主流程编排：初始化记忆/Profiler/Evaluator，启动多 Agent 并行采样
+  agents/                     # 多 Agent 系统子包（角色化实现）
+    coordinator_agent.py      # 协调 Agent：采样→评估→反思→持久化主循环（多线程）
+    sampler_agent.py          # 采样 Agent：LLM 骨架生成 + 工具调用 + 空骨架重采样
+    evaluator_agent.py        # 评估 Agent：运行候选方程、BFGS 拟合与打分
+    tool_caller_agent.py      # 工具调用 Agent：多轮 MCP 工具调用循环
+    experience_summarizer_agent.py  # 经验总结 Agent：样本质量分析
+    residual_analyzer_agent.py      # 残差分析 Agent：残差统计与结构修正建议
+    data_analyzer_agent.py    # 数据分析 Agent：初次数据分析 + RAG 文献注入
+  sampler.py / evaluator.py / tool_caller.py / experience_summarizer.py / residual_analyzer.py / data_analyse_real.py   # 兼容层（re-export）
   evaluate_on_problems.py     # BFGS 与评分逻辑（返回拟合参数）
   evaluator_accelerate.py     # numba 加速装饰（可选）
   buffer.py                   # 经验缓冲（多岛与聚类抽样）
