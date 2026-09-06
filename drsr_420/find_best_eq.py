@@ -5,7 +5,7 @@ import sympy as sp
 from graphviz import Source
 from sympy import nsimplify, dotprint
 from sympy.parsing import sym_expr
-from drsr_420.console import LineStreamPrinter
+from drsr_420.console import LineStreamPrinter, print_block
 
 import llm
 from drsr_420 import prompt_config as pc
@@ -259,7 +259,7 @@ def find_best_eq(results_root: str, threshold: float = 0.1,
                         # explain = resp.get("content","")
 
                         explain = explain_re_act(client, content)
-                        print(explain)
+                        print_block(explain)
 
                         # 将动态渲染的 explain 保存到本次实验目录，便于调试
                         try:

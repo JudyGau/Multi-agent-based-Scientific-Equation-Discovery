@@ -19,7 +19,7 @@ import time
 
 import random
 import threading
-from drsr_420.console import LineStreamPrinter
+from drsr_420.console import LineStreamPrinter, print_block
 from drsr_420 import evaluator
 from drsr_420 import buffer
 from drsr_420 import config as config_lib
@@ -150,7 +150,7 @@ class Sampler(LLM):
                     first_responses, thinking_contents = self._tool_caller.complete(
                         content, self._samples_per_prompt)
                     print("成功运行first_responses = ToolCaller.complete")
-                    print(first_responses)
+                    print_block(first_responses)
                     all_samples = list(first_responses)
                     all_thinking_contents = list(thinking_contents)
                 else:
@@ -377,8 +377,8 @@ class Sampler(LLM):
                 independent=pc.independent_name_in_prompt,
             )
         content = head + '\n' + content
-        print("========================最终输入给大模型的content========================\n")
-        print(content)
+        print_block("========================最终输入给大模型的content========================\n")
+        print_block(content)
         return content
 
 
@@ -543,7 +543,7 @@ class SamplingOrchestrator:
             sample_time = (time.time() - reset_time) / self._samples_per_prompt
 
             print("获得了samples，在95行")
-            print(samples)
+            print_block(samples)
             # This loop can be executed in parallel on remote evaluator machines.
             score_for_sample = []
             error_for_samlple = []
@@ -571,7 +571,7 @@ class SamplingOrchestrator:
                 print(best_score)
                 print(score)
                 print('===================从chosen_evaluator.analyse中获得残差=====================\n')
-                print(residual)
+                print_block(residual)
                 if score is not None and score > best_score:
                     temp_best_score.append(score)
                     # 如果score比temp_best_score中的最大值大，就更新best
@@ -584,11 +584,11 @@ class SamplingOrchestrator:
                         best_score_for_sample = score
 
             print("score_for_sample: ")
-            print(score_for_sample)
+            print_block(score_for_sample)
             print("===========error_for_samlple:============================\n ")
-            print(error_for_samlple)
+            print_block(error_for_samlple)
             print("=========================residual_data: ================\n")
-            print(residual_data)
+            print_block(residual_data)
             for each_score in score_for_sample:
                 if each_score == None:
                     quality_for_sample.append('None')
@@ -603,22 +603,22 @@ class SamplingOrchestrator:
             # 调用分析函数进行分析
             try:
                 # 先直接进入第三次
-                print("\n===== 方程和分数分析开始 =====")
+                print_block("\n===== 方程和分数分析开始 =====")
                 analysis_result = self._summarizer.analyze(
                     samples, quality_for_sample, error_for_samlple, prompt)
-                print("总的分析结果：---------")
-                print(analysis_result)
-                print("===== 方程和分数分析结束 =====\n")
+                print_block("总的分析结果：---------")
+                print_block(analysis_result)
+                print_block("===== 方程和分数分析结束 =====\n")
 
                 # 添加第三次对话：残差分析
-                print("\n===== 残差分析开始 =====")
-                print(residual_data)
+                print_block("\n===== 残差分析开始 =====")
+                print_block(residual_data)
                 print(if_best)
                 if residual_data is not None and if_best:
                     # 只对有效样本进行残差分析
                     if_best = False
                     residual_result = self._analyzer.analyze(best_sample, residual_data)
-                    print(f"样本残差分析结果: {residual_result}")
+                    print_block(f"样本残差分析结果: {residual_result}")
                     # 多线程下 residual_analyze.json 为读-改-写，需加锁防止丢失更新
                     with _SAMPLER_LOCK:
                         # 创建目录存放残差分析结果

@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import os
 import threading
-from drsr_420.console import LineStreamPrinter
+from drsr_420.console import LineStreamPrinter, print_block
 import traceback
 
 import numpy as np
@@ -57,8 +57,8 @@ class ResidualAnalyzer:
                 sample=sample,
             )
 
-        print("========这是输入的残差提示词==========\n")
-        print(res_analyze)
+        print_block("========这是输入的残差提示词==========\n")
+        print_block(res_analyze)
         # 调用远程API分析结果（仅使用注入的 llm_client）
         try:
             # 流式输出：通过 on_delta 回调实时打印思考内容与正文（[思考]/[正文] 视觉分隔）

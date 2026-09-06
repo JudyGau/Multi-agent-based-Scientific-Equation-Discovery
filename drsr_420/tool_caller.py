@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import threading
 
-from drsr_420.console import LineStreamPrinter
+from drsr_420.console import LineStreamPrinter, print_block
 from drsr_420 import prompt_config as pc
 
 
@@ -87,9 +87,9 @@ class ToolCaller:
                             except (json.JSONDecodeError, TypeError):
                                 args = {}
                             result = self._tool_executor(fn_name, args)
-                            print("======工具调用结果======")
-                            print(result)
-                            print("======================")
+                            print_block("======工具调用结果======")
+                            print_block(result)
+                            print_block("======================")
                             messages.append({
                                 "role": "tool",
                                 "tool_call_id": tc.get('id', ''),

@@ -46,3 +46,16 @@ class LineStreamPrinter:
                 print(f"{self._prefix}{line}", flush=True)
             else:
                 print(flush=True)
+
+
+def print_block(text) -> None:
+    """带线程前缀完整输出多行文本块。
+
+    Args:
+        text: 待输出的文本（多行字符串或可转字符串对象）。
+    """
+    prefix = f"[{threading.current_thread().name}] "
+    lines = str(text).splitlines()
+    with _PRINT_LOCK:
+        for line in lines:
+            print(f"{prefix}{line}", flush=True)

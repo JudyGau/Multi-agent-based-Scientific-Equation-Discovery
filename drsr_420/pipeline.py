@@ -30,6 +30,7 @@ from drsr_420 import buffer
 from drsr_420 import sampler
 from drsr_420 import profile
 from drsr_420 import data_analyse_real
+from drsr_420.console import print_block
 from drsr_420.find_best_eq import find_best_eq
 
 
@@ -178,9 +179,9 @@ def main(
         verbose=True    # 可选：显示详细信息
     )
 
-    # 打印分析结果
-    print("\n===== 分析结果 =====")
-    print(result)
+    # 打印分析结果（截断 + 带线程前缀，避免无前缀长文本刷屏）
+    print_block("\n===== 分析结果 =====")
+    print_block(result)
 
     # Set global max sample nums.
     # 每个 sampler 独享一份 Evaluator 列表：避免多线程并发调用同一 Evaluator/Sandbox，

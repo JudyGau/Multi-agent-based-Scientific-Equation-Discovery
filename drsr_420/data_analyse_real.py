@@ -1,7 +1,7 @@
 import time
 import copy
 import threading
-from drsr_420.console import LineStreamPrinter
+from drsr_420.console import LineStreamPrinter, print_block
 import numpy as np
 import pandas as pd
 import io
@@ -303,7 +303,7 @@ STRICTLY deliver results in the following structured format:
         prompt = self._create_prompt(data_content, custom_prompt)
         
         if verbose:
-            print("输入给DataAnalyzer的提示词：\n"+prompt)
+            print_block("输入给DataAnalyzer的提示词：\n"+prompt)
             print("正在查询大模型...")
         
         # 获取分析结果
