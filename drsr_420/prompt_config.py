@@ -81,6 +81,10 @@ sampling_system_prompt = system_prompt + (
     "When you need literature background to judge physical relationships or mechanisms, "
     "you may call the provided tools (search_paper, read_paper, search_kb) "
     "to retrieve relevant references before answering.\n"
+    "However, prefer writing the equation skeleton directly: only search literature when the "
+    "physical relationship is genuinely uncertain, and make at most 2-3 tool calls in total. "
+    "The final answer must be returned in the 'content' part as a single-line return statement, "
+    "e.g. 'return params[0]*x + params[1]'.\n"
 )
 
 # RAG 文献知识库检索结果注入区块标题
@@ -274,6 +278,16 @@ class PromptContext:
             + "Variables:\n"
             + f"{self._variables_block()}\n"
             + f"Background: {self.background_text}\n"
+            + self._data_availability_line()
+        )
+
+    def _data_availability_line(self):
+        """提示模型训练数据仅包含下列自变量，避免幻觉使用背景描述里未提供数据的变量。"""
+        feats = self.features
+        return (
+            f"Data availability: the training data only provides the following independent "
+            f"variable(s): {_ind_phrase(feats)}. Do not use or mention any other variable "
+            "that is not listed above.\n"
         )
 
     def render_head(self):
@@ -379,6 +393,7 @@ class PromptContext:
             "",
             f"The dependent variable is {self.dependent_text}.",
             "Each row represents a set of independent variables and the corresponding dependent variable value.",
+            self._data_availability_line().strip(),
         ]
         role_text = "\n".join(role_lines)
 
@@ -400,6 +415,7 @@ class PromptContext:
             "",
             f"The dependent variable is {self.dependent_text}.",
             "The last column contains residuals (observed - predicted).",
+            self._data_availability_line().strip(),
         ]
         role_text = "\n".join(role_lines)
 

@@ -88,7 +88,8 @@ class ResidualAnalyzer:
             ], on_delta=_on_delta)
             stream.flush()
             print()  # 流式结束后换行
-            analysis_result = resp.get('content', '')
+            # 兜底：推理模型可能把完整分析输出在 reasoning_content 而 content 为空
+            analysis_result = resp.get('content', '') or resp.get('reasoning_content', '')
             return analysis_result
         except Exception as e:
             print(f"残差分析请求发生错误: {str(e)}")

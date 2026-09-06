@@ -234,7 +234,9 @@ STRICTLY deliver results in the following structured format:
             ], on_delta=_on_delta)
             stream.flush()
             print()  # 流式结束后换行
-            return resp.get('content', '')
+            # 兜底：推理模型可能把完整分析输出在 reasoning_content 而 content 为空，
+            # 此时回退到思考内容，避免初次/残差分析结果丢失导致经验注入链路断裂。
+            return resp.get('content', '') or resp.get('reasoning_content', '')
         except Exception as e:
             error_msg = f"请求出错: {str(e)}"
             print(error_msg)

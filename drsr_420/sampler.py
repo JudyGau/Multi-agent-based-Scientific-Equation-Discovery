@@ -196,7 +196,8 @@ class Sampler(LLM):
                 resp = self._llm_client.chat([{"role": "user", "content": prompt}], on_delta=_on_delta)
                 stream.flush()
                 print("\n====================================================\n")
-                response = resp.get('content', '')
+                # 兜底：content 为空时回退到 reasoning，避免模型只思考不输出正文时骨架丢失
+                response = resp.get('content', '') or resp.get('reasoning_content', '')
                 if self._trim:
                     response = _extract_body(response, config)
                 all_samples.append(response)

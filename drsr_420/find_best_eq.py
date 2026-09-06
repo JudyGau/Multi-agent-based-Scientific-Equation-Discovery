@@ -58,7 +58,7 @@ def explain_re_act(client: llm.LLMClient, content: str) -> str | None:
 
                     for tc in tool_calls:
                         fn_name = tc.get('function', {}).get('name', '')
-                        args = json.loads(tc.get('function', {}).get('arguments', []))
+                        args = json.loads(tc.get('function', {}).get('arguments', '{}'))
                         result = mcp_call_tool(fn_name, args)
 
                         messages.append({
