@@ -23,6 +23,17 @@ class LineStreamPrinter:
             line, self._buf = self._buf.split("\n", 1)
             self._emit(line)
 
+    def write_line(self, text: str) -> None:
+        """从新行开始输出完整一行（带线程前缀），避免与未完成的流式行拼接。"""
+        self.newline()
+        self._emit(text)
+
+    def newline(self) -> None:
+        """强制结束当前未完成的缓冲行：若缓冲非空先原子输出，保证后续内容从新行开始。"""
+        if self._buf:
+            self._emit(self._buf)
+            self._buf = ""
+
     def flush(self) -> None:
         """输出剩余未换行的缓冲内容。"""
         if self._buf:

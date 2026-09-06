@@ -186,7 +186,7 @@ class Sampler(LLM):
                             stream.write("[思考]\n")
                             think_label_printed = True
                         elif not content_label_printed:
-                            stream.write("[正文]\n")
+                            stream.write_line("[正文]")
                             content_label_printed = True
                         stream.write(text[shown:])
                         shown = len(text)
