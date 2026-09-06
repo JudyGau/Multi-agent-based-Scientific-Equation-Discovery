@@ -1,6 +1,7 @@
 import time
 import copy
 import threading
+from drsr_420.console import LineStreamPrinter
 import numpy as np
 import pandas as pd
 import io

@@ -19,6 +19,7 @@ import time
 
 import random
 import threading
+from drsr_420.console import LineStreamPrinter
 from drsr_420 import evaluator
 from drsr_420 import buffer
 from drsr_420 import config as config_lib

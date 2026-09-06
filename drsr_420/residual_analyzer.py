@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+from drsr_420.console import LineStreamPrinter
 import traceback
 
 import numpy as np

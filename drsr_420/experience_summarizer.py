@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import threading
 
+from drsr_420.console import LineStreamPrinter
 from drsr_420 import prompt_config as pc
 
 
