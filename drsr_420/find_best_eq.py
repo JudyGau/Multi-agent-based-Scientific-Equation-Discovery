@@ -251,6 +251,10 @@ def find_best_eq(results_root: str, threshold: float = 0.1,
                         client = None
                         try:
                             client = llm.ClientFactory.from_config(llm_config)
+                            # 按任务注入公式解释的思考强度等私有参数（tasks.explain），
+                            # provider 差异在 llm.py 适配层处理
+                            if client is not None:
+                                client = client.clone_for_task('explain')
                             print(f"[INFO] LLM client initialized: provider={client._provider_name()}, model={client.model}, kwargs={client.kwargs}")
                         except Exception as e:
                             print(f"[WARN] Failed to init LLM client: {e}")

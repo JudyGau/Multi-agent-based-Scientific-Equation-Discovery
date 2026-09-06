@@ -1,5 +1,4 @@
 import time
-import copy
 import threading
 from drsr_420.console import LineStreamPrinter, print_block
 import numpy as np
@@ -199,14 +198,11 @@ STRICTLY deliver results in the following structured format:
         try:
             if self.llm_client is None:
                 raise RuntimeError('DataAnalyzer requires llm_client, but got None')
-            # 克隆客户端，设置本次调用的思考强度（智谱推理模型：thinking 开启时 reasoning_effort 生效，low 为低档）
-            llm_client = copy.copy(self.llm_client)
-            llm_client.kwargs = dict(llm_client.kwargs)
-            if llm_client._provider_name() == 'glm':
-                llm_client.kwargs['thinking'] = {'type': 'enabled'}
-                llm_client.kwargs['reasoning_effort'] = 'high'
-                # 数据分析仅需简短结论，限制输出长度，避免 max_tokens 过大导致服务端长时间生成
-                llm_client.kwargs['max_tokens'] = 32768
+            # 按任务克隆客户端：思考强度等私有参数从配置 tasks.analysis 声明，
+            # 由 ClientFactory 注入 task_params，provider 差异在 llm.py 适配层处理
+            llm_client = self.llm_client.clone_for_task('analysis')
+            # 数据分析仅需简短结论，限制输出长度，避免 max_tokens 过大导致服务端长时间生成
+            llm_client.kwargs['max_tokens'] = 32768
             # 流式输出：通过 on_delta 回调实时打印思考内容与正文（[思考]/[正文] 视觉分隔）
             stream = LineStreamPrinter()
             shown = 0

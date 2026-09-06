@@ -3,6 +3,7 @@
 提供商/模型命名规则：'provider/model'，provider 大小写不敏感，model 保留大小写与路径。
 当前支持：deepseek、siliconflow、deepinfra、ollama、blt、cstcloud（科技云）、glm（智谱）。
 """
+import copy
 import json
 import os
 import time
@@ -114,7 +115,7 @@ class LLMClient:
     ALLOWED_GEN_KEYS = {
         'max_tokens', 'max_completion_tokens', 'temperature', 'top_p', 'top_k', 'n',
         'stream', 'presence_penalty', 'frequency_penalty', 'stop', 'logprobs',
-        'options', 'extra_body',
+        'options', 'extra_body', 'thinking', 'reasoning_effort',
     }
 
     def __init__(self, api_key: str, model: str, base_url: str, provider: str | None = None):
@@ -148,6 +149,30 @@ class LLMClient:
             'total': 0,
         }
         self._cum_time_seconds: float = 0.0
+        # 任务级私有参数（如思考强度），由 ClientFactory 从配置的 'tasks' 字段注入；
+        # clone_for_task() 按任务克隆客户端时据此注入对应参数
+        self.task_params: Dict[str, dict] = {}
+
+    def clone_for_task(self, task_name: str):
+        """按任务克隆客户端并注入该任务声明的私有参数（如思考强度）。
+
+        任务参数来自配置文件的 ``tasks`` 字段（如 ``tasks: {"sampling": {"reasoning_effort": "low"}}``），
+        由 ClientFactory 解析后存入 ``task_params``。克隆后的实例 kwargs 相互独立，
+        避免不同任务（采样/经验/残差/分析/解释）互相覆盖生成参数。
+        """
+        new_client = copy.copy(self)
+        new_client.kwargs = dict(self.kwargs)
+        for k, v in (self.task_params.get(task_name) or {}).items():
+            if v is not None:
+                new_client.kwargs[k] = v
+        # 重置独立实例的累计统计，避免计数重复累加
+        new_client._call_index = 0
+        new_client.tokens = {'prompt': 0, 'content': 0, 'reasoning': 0, 'total': 0}
+        new_client._cum_tokens = {
+            'prompt': 0, 'thinking': 0, 'content': 0, 'total': 0,
+        }
+        new_client._cum_time_seconds = 0.0
+        return new_client
 
     def _provider_name(self) -> str:
         if self.provider:
@@ -192,17 +217,39 @@ class LLMClient:
         return payload
 
     def _adapt_payload(self, payload: dict) -> None:
-        """按提供商修正请求体，兼容非标准 OpenAI 接口。"""
-        if self._provider_name() != 'glm':
-            # 非智谱提供商不支持 'thinking'/'reasoning_effort'（仅智谱推理模型支持），避免被拒绝
-            payload.pop('thinking', None)
-            payload.pop('reasoning_effort', None)
-            return
-        # 智谱 v4 不接受 extra_body（openai SDK 专用字段）
+        """按提供商修正请求体，兼容非标准 OpenAI 接口。
+
+        思考强度（reasoning_effort/thinking）为跨提供商的语义参数，由调用点按任务
+        注入 kwargs，此处按提供商翻译成各自合法的请求字段；不支持的提供商静默忽略，
+        保证 OpenAI 兼容模型均可切换。
+        """
+        provider = self._provider_name()
+        effort = payload.get('reasoning_effort')
+        # 通用：extra_body 为 openai SDK 专用字段，一律移除
         payload.pop('extra_body', None)
-        # 智谱输出上限字段名为 max_tokens（而非 OpenAI 的 max_completion_tokens）
-        if 'max_completion_tokens' in payload:
-            payload['max_tokens'] = payload.pop('max_completion_tokens')
+
+        if provider == 'glm':
+            # 智谱 v4：输出上限字段名为 max_tokens；thinking 开启时 reasoning_effort 生效
+            if 'max_completion_tokens' in payload:
+                payload['max_tokens'] = payload.pop('max_completion_tokens')
+            if effort:
+                payload['thinking'] = {'type': 'enabled'}
+            return
+        # 非智谱提供商不支持 'thinking' 字段，一律移除
+        payload.pop('thinking', None)
+        if provider == 'deepseek':
+            # DeepSeek 官方支持 reasoning_effort（low/medium/high）
+            if not effort:
+                payload.pop('reasoning_effort', None)
+            return
+        if provider == 'ollama':
+            # Ollama 用 think 布尔控制思考（reasoning_effort 不支持）
+            payload.pop('reasoning_effort', None)
+            if effort:
+                payload['think'] = True
+            return
+        # 其余提供商（siliconflow/deepinfra/blt/cstcloud）：不支持思考强度参数，静默忽略
+        payload.pop('reasoning_effort', None)
 
     def chat(self, messages: List[Dict[str, str]], on_delta=None) -> dict:
         """与 LLM 对话（默认流式）。
@@ -646,6 +693,11 @@ class ClientFactory:
                   'frequency_penalty', 'presence_penalty', 'stream', 'n', 'stop'):
             if k in config and config[k] is not None:
                 client.kwargs[k] = config[k]
+        # 任务级私有参数（如思考强度），供 clone_for_task 按任务注入：
+        # tasks: {"sampling": {"reasoning_effort": "low"}, "analysis": {"reasoning_effort": "high"}}
+        task_params = config.get('tasks')
+        if isinstance(task_params, dict):
+            client.task_params = task_params
         return client
         
 
