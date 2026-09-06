@@ -18,8 +18,16 @@ independent_name_in_prompt = 'x0 and x1'
 # 避免模板写死 x0/x1 而实际变量为 x1/x2 时模型照抄出未定义变量（NameError）。
 instruction_prompt = (
     "You are a helpful assistant tasked with discovering mathematical function structures for scientific systems. "
-    "Complete the 'equation' function below, considering the physical meaning and relationships of inputs. "
-    "Write the final formula as a single-line return statement only.\n\n"
+    "Complete the 'equation' function below, considering the physical meaning and relationships of inputs.\n"
+    "STRICT output requirements:\n"
+    "1. Wrap your final answer in a ```python code block containing a complete function, e.g.:\n"
+    "   ```python\n"
+    "   def equation_v1(x, y, params):\n"
+    "       return params[0]*x + params[1]*y + params[2]\n"
+    "   ```\n"
+    "2. Use ONLY the independent variable names listed under 'Variables' — never introduce, rename, or abbreviate them.\n"
+    "3. Use only params[0], params[1], ... within the available parameter budget; never index params beyond the last one.\n"
+    "4. Output nothing but the code block.\n\n"
 )
 
 # 采样后经验对话整体模板（包含上下文与追问占位）
@@ -83,8 +91,9 @@ sampling_system_prompt = system_prompt + (
     "to retrieve relevant references before answering.\n"
     "However, prefer writing the equation skeleton directly: only search literature when the "
     "physical relationship is genuinely uncertain, and make at most 2-3 tool calls in total. "
-    "The final answer must be returned in the 'content' part as a single-line return statement, "
-    "e.g. 'return params[0]*x + params[1]'.\n"
+    "The final answer must be a complete Python function wrapped in a ```python code block, "
+    "e.g. '```python\\ndef equation_v1(x, y, params):\\n    return params[0]*x + params[1]\\n```', "
+    "using only the independent variable names given in the prompt.\n"
 )
 
 # RAG 文献知识库检索结果注入区块标题
@@ -272,6 +281,7 @@ class PromptContext:
         example_terms = [f"params[{i}]*{name}" for i, name in enumerate(feats)]
         example_terms.append(f"params[{len(feats)}]")
         example = "return " + " + ".join(example_terms)
+        feats_phrase = _ind_phrase(feats)
         return (
             instruction_prompt
             + f"Example: {example}\n\n"
@@ -279,6 +289,11 @@ class PromptContext:
             + f"{self._variables_block()}\n"
             + f"Background: {self.background_text}\n"
             + self._data_availability_line()
+            + (
+                f"Your function must reference the independent variables EXACTLY as {feats_phrase} "
+                f"(no renaming, no shorthand such as 'l12' or 'x'), and its signature must be "
+                f"def equation_vN({', '.join(feats)}, params).\n"
+            )
         )
 
     def _data_availability_line(self):

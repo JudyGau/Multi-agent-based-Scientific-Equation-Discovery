@@ -47,6 +47,9 @@ MAX_TOKENS = 1024
 # 普通 Lock 不可重入会导致同线程自锁死锁（Sampler 全部挂起）。
 _SAMPLER_LOCK = threading.RLock()
 
+# 骨架提取不到可执行代码时的最大重采样次数（避免无效骨架占用评估与经验配额）
+_MAX_BODY_RETRIES = 3
+
 
 def _atomic_write_json(path: str, data) -> None:
     """原子写 JSON：先写临时文件再替换，避免并发读方读到半成品。"""
@@ -151,7 +154,7 @@ class Sampler(LLM):
                 # response from llm server
                 if self._batch_inference:
                     print("运行了_draw_samples_local的_batch_inference分支")
-                    content = self._build_request_content(prompt)
+                    content = self._build_request_content(prompt, config)
                     first_responses, thinking_contents = self._tool_caller.complete(
                         content, self._samples_per_prompt)
                     print("成功运行first_responses = ToolCaller.complete")
@@ -160,13 +163,39 @@ class Sampler(LLM):
                     all_thinking_contents = list(thinking_contents)
                 else:
                     for _ in range(self._samples_per_prompt):
-                        content = self._build_request_content(prompt)
+                        content = self._build_request_content(prompt, config)
                         first_responses, _second_responses = self._tool_caller.complete(content, 1)
                         all_samples.append(first_responses)
 
                 # trim equation program skeleton body from samples
                 if self._trim:
-                    all_samples = [_extract_body(sample, config) for sample in all_samples]
+                    trimmed_samples = []
+                    trimmed_thinking = []
+                    dropped = 0
+                    for idx, sample in enumerate(all_samples):
+                        think = all_thinking_contents[idx] if idx < len(all_thinking_contents) else ''
+                        body = _extract_body(sample, config)
+                        # 抽不到可执行代码（空骨架）时重采样，避免无效样本占用评估与经验配额
+                        for retry in range(1, _MAX_BODY_RETRIES + 1):
+                            if body:
+                                break
+                            print(f"[Sampler] 第 {idx + 1} 个样本骨架为空，重采样（第 {retry}/{_MAX_BODY_RETRIES} 次）")
+                            content = self._build_request_content(prompt, config)
+                            resp, resp_think = self._tool_caller.complete(content, 1)
+                            print_block(f"[Sampler] 重采样原始响应: {resp}")
+                            body = _extract_body(resp, config)
+                            think = resp_think
+                        if not body:
+                            # 重采样后仍无有效代码：直接丢弃该样本，不进入评估队列
+                            dropped += 1
+                            print(f"[Sampler] 第 {idx + 1} 个样本重采样后骨架仍为空，丢弃（不进入评估）")
+                            continue
+                        trimmed_samples.append(body)
+                        trimmed_thinking.append(think)
+                    if dropped:
+                        print(f"[Sampler] 本轮共丢弃 {dropped} 个无效骨架样本")
+                    all_samples = trimmed_samples
+                    all_thinking_contents = trimmed_thinking
 
                 return all_samples, all_thinking_contents
             except Exception:
@@ -210,13 +239,31 @@ class Sampler(LLM):
                 all_samples.append("")
         return all_samples
 
-    def _build_request_content(self, content: str) -> str:
-        """构造最终发送给 LLM 的内容：任务头 + 历史经验/残差注入。"""
+    def _build_request_content(self, content: str, config: config_lib.Config | None = None) -> str:
+        """构造最终发送给 LLM 的内容：任务头 + 历史经验/残差注入。
+
+        经验注入规则（超参数可由 Config.experience_injection 覆盖，缺省用默认值）：
+        - None（失败教训）：始终注入，最多 max_per_category['None'] 条（默认 3）；
+        - Good / Bad：各自以 optional_category_probability 概率参与，最多 max_per_category 条（默认 2）；
+        - 样本进度超过 freshness_threshold 后，只注入 sample_order 在
+          [current*freshness_window_ratio, current] 范围内的经验（新鲜度窗口）；
+        - Good 按 score 降序（最成功优先），Bad 按 score 升序（最差教训优先），None 按时间序。
+        """
         content = content.strip('\n').strip()
+
+        # 经验注入超参数（Config.experience_injection 可覆盖，缺省用默认值）
+        exp_cfg = getattr(config, "experience_injection", None)
+        optional_category_probability = exp_cfg.optional_category_probability if exp_cfg else 0.5
+        category_max_samples = exp_cfg.max_per_category if exp_cfg else {"None": 3, "Good": 2, "Bad": 2}
+        freshness_threshold = exp_cfg.freshness_threshold if exp_cfg else 50
+        freshness_ratio = exp_cfg.freshness_window_ratio if exp_cfg else 0.7
+        max_analysis_chars = exp_cfg.max_analysis_chars if exp_cfg else 500
+        inject_residual_probability = exp_cfg.inject_residual_probability if exp_cfg else 0.5
 
         # 尝试加载经验数据
         try:
-            # 计算经验文件中所有类别经验的总数
+            # 当前样本进度 = 各类别中最大的 sample_order（而不是各类别条数之和；
+            # 多轮累计后条数总和会远大于真实样本序号，导致新鲜度窗口把所有经验过滤掉）。
             current_sample_order = 0
 
             experience_file = os.path.join(getattr(self, "_base_dir", "."), "experiences.json")
@@ -225,43 +272,49 @@ class Sampler(LLM):
                 with open(experience_file, "r", encoding="utf-8") as f:
                     experiences = json.load(f)
 
-                # 统计所有类别的经验总数
-                for category in ["None", "Good", "Bad"]:
-                    if category in experiences:
-                        current_sample_order += len(experiences[category])
+                for category in ("None", "Good", "Bad"):
+                    for exp in experiences.get(category, []):
+                        order = exp.get("sample_order", 0)
+                        if isinstance(order, (int, float)):
+                            current_sample_order = max(current_sample_order, int(order))
 
-                # 准备存储筛选后的各类经验。
-                # 规则：
-                # - None：始终参与注入，最多 3 条；
-                # - Good / Bad：各自独立以 0.5 概率参与注入，最多 2 条；
-                # - 经验筛选范围与原逻辑保持一致。
+                # 按类别筛选 + 排序 + 截断。
                 filtered_experiences = {"None": [], "Good": [], "Bad": []}
-                optional_category_probability = 0.5
-                category_max_samples = {"None": 3, "Good": 2, "Bad": 2}
-
-                # 根据当前 sample_order 选择合适的经验
-                for category in ["None", "Good", "Bad"]:
-                    if category not in experiences or not experiences[category]:
+                for category in ("None", "Good", "Bad"):
+                    category_exps = experiences.get(category) or []
+                    if not category_exps:
                         continue
 
                     # None 类经验始终注入；Good / Bad 先按概率决定是否注入。
                     if category != "None" and random.random() >= optional_category_probability:
                         continue
 
-                    # 筛选符合条件的经验
-                    if current_sample_order <= 50:
-                        # sample_order < 50 时，不限制经验的 sample_order
-                        filtered_category = experiences[category]
-                    else:
-                        # sample_order > 50 时，只选择 sample_order 在当前值的 0.7~1 倍范围内的经验
-                        min_order = current_sample_order * 0.7
-                        max_order = current_sample_order
-                        filtered_category = [
-                            exp for exp in experiences[category]
-                            if "sample_order" in exp and min_order <= exp["sample_order"] <= max_order
+                    # 新鲜度窗口：样本进度超过阈值后，只保留近期经验。
+                    if current_sample_order > freshness_threshold:
+                        min_order = current_sample_order * freshness_ratio
+                        category_exps = [
+                            exp for exp in category_exps
+                            if isinstance(exp.get("sample_order"), (int, float))
+                            and min_order <= exp["sample_order"] <= current_sample_order
                         ]
+                    if not category_exps:
+                        continue
 
-                    filtered_experiences[category] = filtered_category
+                    # 排序：Good 取最成功（score 降序），Bad 取最值得借鉴（score 升序），None 保持时间序。
+                    if category == "Good":
+                        category_exps = sorted(
+                            category_exps,
+                            key=lambda e: e.get("score") if isinstance(e.get("score"), (int, float)) else float('-inf'),
+                            reverse=True,
+                        )
+                    elif category == "Bad":
+                        category_exps = sorted(
+                            category_exps,
+                            key=lambda e: e.get("score") if isinstance(e.get("score"), (int, float)) else float('inf'),
+                        )
+
+                    # 截断到每类条数上限（原先 category_max_samples 定义了却未使用，导致 None 类被全部注入）。
+                    filtered_experiences[category] = category_exps[:category_max_samples.get(category, 2)]
 
                 # 合并所有类别的经验
                 all_selected_experiences = []
@@ -297,10 +350,10 @@ class Sampler(LLM):
                         experience_prompt += pc.idea_item_prefix.format(index=i, label=label)
                         print("=================================sample_order: ==================================\n", exp['sample_order'])
 
-                        # 限制经验分析文本最多500个字符
+                        # 限制经验分析文本的最大字符数
                         analysis_text = exp["analysis"] if exp.get("analysis") else ""
-                        if len(analysis_text) > 500:
-                            analysis_text = analysis_text[:500] + "..."
+                        if len(analysis_text) > max_analysis_chars:
+                            analysis_text = analysis_text[:max_analysis_chars] + "..."
                         experience_prompt += analysis_text
 
                         experience_prompt += "\n---\n\n"
@@ -321,8 +374,8 @@ class Sampler(LLM):
                     # 将经验添加到原始内容中
                     content = experience_prompt + "\n\n" + content
 
-            # 有p的几率进入以下代码：
-            p = 0.5  # 设置执行概率为50%，你可以根据需要调整这个值
+            # 有 p 的几率进入以下代码（注入最新残差分析）：
+            p = inject_residual_probability  # 残差分析注入概率（Config.experience_injection.inject_residual_probability 可覆盖）
 
             if random.random() < p and os.path.exists(experience_file):
                 print("use residual_analyze: True")
@@ -387,6 +440,50 @@ class Sampler(LLM):
         return content
 
 
+def _extract_code_fragment(text: str) -> str | None:
+    """从混合文本中抽取可执行代码片段；抽不到时返回 None。
+
+    抽取策略（按优先级）：
+    1. ``def`` 开头的行：取其后的连续缩进代码行（函数体，保留缩进）；
+    2. ``return`` 开头的行：从该行起收拢后续缩进行/return 行；
+    3. 含 ``params[`` 的独立表达式行：补上 ``return`` 前缀（LLM 可能漏写）。
+    """
+    lines = text.splitlines()
+
+    # 策略 1：def 函数体
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith('def '):
+            kept = []
+            for ln in lines[i + 1:]:
+                if ln.startswith((' ', '\t')):
+                    if ln.strip():
+                        kept.append(ln)
+                elif not ln.strip():
+                    continue  # 空行跳过
+                else:
+                    break  # 遇到顶层语句（如后续说明文字）停止
+            return '\n'.join(kept) if kept else None
+
+    # 策略 2：return 表达式（从第一个 return 行开始）
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith('return'):
+            code_lines = [line]
+            for ln in lines[i + 1:]:
+                if ln.startswith((' ', '\t')) or not ln.strip():
+                    code_lines.append(ln)
+                else:
+                    break
+            return '\n'.join(code_lines)
+
+    # 策略 3：含 params[ 的独立表达式行（LLM 可能漏写 return）
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped and 'params[' in stripped:
+            return stripped if stripped.startswith('return') else f'return {stripped}'
+
+    return None
+
+
 def _extract_body(sample: str, config: config_lib.Config) -> str:
     """
     Extract the function body from a response sample, removing any preceding descriptions
@@ -406,14 +503,23 @@ def _extract_body(sample: str, config: config_lib.Config) -> str:
     Additional comments...
     ```
     ------------------------------------------------------------------------------------------------------------------
-    If no function definition is found, returns the original sample.
+    增强逻辑：
+    - 优先提取 ``` 代码块；
+    - 无代码块时，从混合文本中抽取可执行代码片段（def 函数体 / return 表达式 / 含 params 的表达式），
+      不再整段丢弃“文字+代码”混合输出；
+    - 完全抽不到可执行代码时返回空字符串，由上游决定重采样。
     """
     # 提取 python 代码
     match = re.search(r'```([\s\S]*?)```', sample)
     if match:
         sample = match.group(1).strip()
     else:
-        print("No python code found, returning original sample.")
+        # 无代码块：尝试从混合文本中抽取代码片段
+        extracted = _extract_code_fragment(sample)
+        if extracted is None:
+            print("No executable code found in response, returning empty skeleton for resampling.")
+            return ''
+        sample = extracted
 
     # 去除LLM回复中的python
     sample = sample.replace('python', '')

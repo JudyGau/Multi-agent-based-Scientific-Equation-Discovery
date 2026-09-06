@@ -18,12 +18,12 @@ from drsr_420.tools.search_paper import search_paper
 
 # ── 客户端（懒加载，避免模块导入时创建客户端而崩溃）────
 def _load_llm_config():
-    """读取 LLM 总结配置（llm_summary.config）。"""
-    return llm.load_llm_config("llm_summary.config")
+    """读取 LLM 配置文件（如 glm_glm-5.3-flash.config）。"""
+    return llm.load_llm_config("glm_glm-5.3-flash.config")
 
 
 def _build_client(config):
-    """基于 llm_summary.config 构建项目自身的 LLM 客户端（复用 llm.ClientFactory）。
+    """基于模型配置文件（如 glm_glm-5.3-flash.config）构建项目自身的 LLM 客户端（复用 llm.ClientFactory）。
 
     使用项目自研客户端（基于 requests），兼容 api_key 为空串的本地服务；
     host/base_url 双键与 scheme 补齐由 ClientFactory 内部统一规范化。
@@ -42,7 +42,7 @@ def _get_reader():
         _reader_config = _load_llm_config()
         model_name = _reader_config.get('model')
         if not model_name or '/' not in model_name:
-            raise ValueError("缺少模型提供商：请在 llm_summary.config 的 model 字段使用 'provider/model' 格式，例如 'CSTCloud/gpt-oss-120b'")
+            raise ValueError("缺少模型提供商：请在配置文件的 model 字段使用 'provider/model' 格式，例如 'CSTCloud/gpt-oss-120b'")
         _reader_client = _build_client(_reader_config)
     return _reader_client, _reader_config
 
@@ -70,7 +70,7 @@ _agent_client = None
 
 
 def _get_agent_client():
-    """懒加载 agent_run 使用的客户端（基于 llm_summary.config 配置的模型）。"""
+    """懒加载 agent_run 使用的客户端（基于模型配置文件配置的模型）。"""
     global _agent_client
     if _agent_client is None:
         _agent_client = _build_client(_load_llm_config())

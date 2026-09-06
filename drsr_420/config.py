@@ -45,6 +45,30 @@ class ExperienceBufferConfig:
 
 
 @dataclasses.dataclass(frozen=True)
+class ExperienceInjectionConfig:
+    """Configures experience injection into sampling prompts.
+
+    Args:
+        optional_category_probability (float): Probability that a Good/Bad category participates.
+            None (failure lessons) is always injected.
+        max_per_category (dict): Max entries injected per category ('None'/'Good'/'Bad').
+        freshness_threshold (int): Sample order above which the freshness window applies.
+        freshness_window_ratio (float): When sample_order > freshness_threshold, only keep
+            experiences with sample_order in [current*ratio, current].
+        inject_residual_probability (float): Probability of injecting the latest residual analysis.
+        max_analysis_chars (int): Max characters of each injected analysis text.
+    """
+    optional_category_probability: float = 0.5
+    max_per_category: dict = dataclasses.field(
+        default_factory=lambda: {"None": 3, "Good": 2, "Bad": 2}
+    )
+    freshness_threshold: int = 50
+    freshness_window_ratio: float = 0.7
+    inject_residual_probability: float = 0.5
+    max_analysis_chars: int = 500
+
+
+@dataclasses.dataclass(frozen=True)
 class Config:
     """Configuration for LLMSR experiments.
    
@@ -56,6 +80,7 @@ class Config:
        evaluate_timeout_seconds (int): Hypothesis evaluation timeout
    """
     experience_buffer: ExperienceBufferConfig = dataclasses.field(default_factory=ExperienceBufferConfig)
+    experience_injection: ExperienceInjectionConfig = dataclasses.field(default_factory=ExperienceInjectionConfig)
     num_samplers: int = 1 
     num_evaluators: int = 1
     samples_per_prompt: int = 4
