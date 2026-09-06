@@ -118,6 +118,8 @@ python -m drsr_420.rag_build --query "磁流变 屈服应力 压缩" [--k 5]
 
 本项目按角色将工作流拆分为独立 Agent，由 `CoordinatorAgent` 并行协调，体现"感知 → 决策 → 行动 → 反思"的多智能体闭环：
 
+> 每个 Agent 的详细职责、关键接口与调用示例见 [`drsr_420/agents/README.md`](drsr_420/agents/README.md)。
+
 ```
                  ┌────────────────────────────────────────────┐
                  │            CoordinatorAgent                 │

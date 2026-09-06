@@ -394,9 +394,10 @@ class CoordinatorAgent:
         with _SAMPLER_LOCK:
             return self.__class__._global_samples_nums
 
-    def set_global_sample_nums(self, num):
+    @classmethod
+    def set_global_sample_nums(cls, num):
         with _SAMPLER_LOCK:
-            self.__class__._global_samples_nums = num
+            cls._global_samples_nums = num
 
     def _global_sample_nums_plus_one(self):
         with _SAMPLER_LOCK:
