@@ -45,8 +45,9 @@ _ALLOWED_LAYER_DEPS = {
     "cli": {"core", "llm", "evaluation", "agents", "runtime"},
 }
 
-#: 顶层仍属"实现"而非兼容层的文件（阶段 5 计划删除 parallel_bfgs.py）。
-_TOP_LEVEL_IMPLEMENTATIONS: set[str] = {"parallel_bfgs.py"}
+#: 顶层仍属"实现"而非兼容层的文件。阶段 5 已清空（原例外的死模块
+#: parallel_bfgs.py 已删除）——新代码一律进分层子包，不要再往这里加名字。
+_TOP_LEVEL_IMPLEMENTATIONS: set[str] = set()
 
 # 规范模块 → 该模块内的公开类
 _CANONICAL_AGENTS = {
@@ -405,11 +406,11 @@ class LayerLayoutTest(unittest.TestCase):
             "实现文件不应留在 drsr_420/ 顶层（应放进分层子包；确需保留请加入 "
             f"_TOP_LEVEL_IMPLEMENTATIONS 并说明原因）: {offenders}")
 
-    def test_top_level_implementation_whitelist_is_documented(self):
-        """白名单必须保持"有据可查"：每个例外都要有理由（阶段 5 清空）。"""
-        self.assertLessEqual(
-            _TOP_LEVEL_IMPLEMENTATIONS, {"parallel_bfgs.py"},
-            "顶层实现例外只允许在阶段 5 删除前存在（parallel_bfgs.py 已确认零引用）")
+    def test_top_level_implementation_whitelist_is_empty(self):
+        """阶段 5 之后不应再有顶层实现例外（死模块 parallel_bfgs.py 已删除）。"""
+        self.assertEqual(
+            _TOP_LEVEL_IMPLEMENTATIONS, set(),
+            "新增顶层实现例外需要理由：请优先把实现放进分层子包")
 
 
 class LayerDependencyTest(unittest.TestCase):

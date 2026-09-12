@@ -1,0 +1,41 @@
+# 打包元数据（阶段 5 新增）。
+#
+# 作用：让 `drsr_420` 成为**可安装**的包。此前没有任何打包信息，包内代码用
+# `from llm import LLMClient` 引用仓库根目录下的顶层模块 `llm.py`——只能在"仓库根
+# 恰好位于 sys.path 上"时工作，且顶层名字 `llm` 与 PyPI 上的同名包冲突。
+# 现在 LLM 接入层在 `drsr_420/llm/`，包自包含。
+#
+# 依赖清单的唯一来源是 requirements.txt（下面用 dynamic 引用），
+# 避免 pyproject 与 requirements 两处清单各自漂移。
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "drsr-420"
+description = "DrSR：基于多智能体的科学方程发现（LLM 公式生成 + 数据拟合，符号回归）"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+dynamic = ["version", "dependencies"]
+keywords = ["symbolic-regression", "llm", "multi-agent", "equation-discovery"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+
+# 命令行入口（重构后 cli.main 已是 `main(argv) -> int`，可直接作为入口点）
+[project.scripts]
+drsr420 = "drsr_420.cli.main:main"
+
+[tool.setuptools.dynamic]
+# 版本单一来源：drsr_420/__init__.py 的 __version__
+version = { attr = "drsr_420.__version__" }
+# 依赖单一来源：requirements.txt
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+include = ["drsr_420*"]

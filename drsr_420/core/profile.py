@@ -19,7 +19,7 @@ try:
 except Exception:  # pragma: no cover - standalone drsr fallback
     try:
         import drsr_420.core.llm_stats as llm_stats
-    except Exception:  # 仓库根不在 sys.path 时降级为无统计（_llm_usage_record 已容错）
+    except Exception:  # 包不可导入时降级为无统计（_llm_usage_record 已容错）
         llm_stats = None
 
 
