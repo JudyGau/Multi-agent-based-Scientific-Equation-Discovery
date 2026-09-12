@@ -1,58 +1,52 @@
-"""RAG 文献知识库命令行工具。
+"""兼容层（@deprecated）：旧路径 ``drsr_420.rag_build`` → 新路径 ``drsr_420.knowledge.rag_build``。
 
-用法：
-    python -m drsr_420.rag_build --ingest [--dir pdf_downloads] [--limit N] [--rebuild]
-    python -m drsr_420.rag_build --query "磁流变 屈服应力 压缩" [--k 5]
+本文件只做转发、不含实现，且**读写都转发**：
+
+* 读：模块级 ``__getattr__`` 转发所有名字（含私有名）；
+* 写：把模块类换成"写入转发给实现模块"的 ``ModuleType`` 子类。只做读转发是不够的
+  ——`mock.patch` / 测试里的 ``old_path.NAME = stub`` 只会落在本兼容层，实现模块
+  看不到，打桩静默失效（MCP 工具与嵌入器单例的测试正是这样打桩的）。
+
+请在新代码中使用新路径。
 """
-import argparse
-import json
-from pathlib import Path
+if __package__ in (None, ""):     # 支持 `python 旧路径.py` 直接执行
+    import sys as _sys2
+    from pathlib import Path as _Path
 
-from drsr_420.rag_kb import RagKB, load_config, _REPO_ROOT
+    _sys2.path.insert(0, str(_Path(__file__).resolve().parents[1]))
 
+import sys as _sys
+import types as _types
 
-def _resolve_dir(path: str) -> str:
-    """相对目录按项目根解析（与 rag_kb 对 config/persist_dir 的策略一致），
-    避免同一知识库在不同 cwd 下指向不同目录。"""
-    p = Path(path)
-    if p.is_absolute() or p.exists():
-        return str(p)
-    candidate = _REPO_ROOT / p
-    return str(candidate) if candidate.exists() else str(p)
+from drsr_420.knowledge.rag_build import *            # noqa: F401,F403  触发子模块导入
+from drsr_420.knowledge import rag_build as _impl
 
 
-def main():
-    parser = argparse.ArgumentParser(description="RAG 文献知识库工具")
-    parser.add_argument("--ingest", action="store_true", help="批量入库 PDF 到知识库")
-    parser.add_argument("--dir", default="pdf_downloads", help="PDF 目录（默认 pdf_downloads）")
-    parser.add_argument("--limit", type=int, default=None, help="最多入库的文件数")
-    parser.add_argument("--rebuild", action="store_true", help="重建 collection（删除后重新入库）")
-    parser.add_argument("--query", default=None, help="检索关键词")
-    parser.add_argument("--k", type=int, default=5, help="检索返回条数")
-    parser.add_argument("--config", default="rag.config", help="配置文件路径（默认 rag.config）")
-    args = parser.parse_args()
+class _ForwardingModule(_types.ModuleType):
+    """属性读写与删除都转发到实现模块（属性读取由模块级 __getattr__ 处理）。
 
-    kb = RagKB(load_config(args.config))
+    ``__delattr__`` 同样必要：``mock.patch.object`` 靠 ``hasattr`` 判断"原本有没有
+    这个属性"，有则在退出时 ``delattr`` 还原；只转发写入会让还原阶段抛
+    AttributeError（属性实际删在了实现模块上）。
+    """
 
-    if args.ingest:
-        if args.rebuild:
-            print("[RAG] 重建 collection ...")
-            kb.reset_collection()
-        results = kb.ingest_dir(_resolve_dir(args.dir), limit=args.limit)
-        print(json.dumps(results, ensure_ascii=False))
-        print(f"[RAG] 库内总数: {kb.count()}")
+    def __setattr__(self, name, value):
+        setattr(_impl, name, value)
 
-    if args.query:
-        hits = kb.search(args.query, k=args.k)
-        print(f"\n[RAG] 共 {len(hits)} 条命中（distance 越小越相关）:\n")
-        for i, h in enumerate(hits, 1):
-            print(f"--- [{i}] {h['title']} | doi={h['doi']} | source={h['source_file']} | distance={h['distance']:.4f} ---")
-            print(h["text"])
-            print()
+    def __delattr__(self, name):
+        delattr(_impl, name)
 
-    if not args.ingest and not args.query:
-        parser.print_help()
+
+_sys.modules[__name__].__class__ = _ForwardingModule
+
+
+def __getattr__(name: str):
+    return getattr(_impl, name)
+
+
+def __dir__():
+    return dir(_impl)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(_impl.main())

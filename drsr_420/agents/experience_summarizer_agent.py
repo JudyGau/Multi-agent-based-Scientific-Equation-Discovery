@@ -9,8 +9,8 @@
 """
 from __future__ import annotations
 
-from drsr_420.console import StreamDeltaPrinter
-from drsr_420 import prompt_config as pc
+from drsr_420.core.console import StreamDeltaPrinter
+from drsr_420.core import prompt_config as pc
 
 from drsr_420.agents.base import THREAD_PER_SAMPLER, AgentSpec, BaseAgent
 from drsr_420.agents.messages import ExperienceEntry, check_alignment

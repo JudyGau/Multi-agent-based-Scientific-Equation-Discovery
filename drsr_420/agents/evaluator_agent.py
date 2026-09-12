@@ -36,10 +36,10 @@ from typing import Any, Type
 
 import numpy as np
 
-from drsr_420 import buffer
-from drsr_420 import code_manipulation
-from drsr_420 import evaluate_on_problems
-from drsr_420 import evaluator_accelerate
+from drsr_420.core import buffer
+from drsr_420.core import code_manipulation
+from drsr_420.evaluation import problems as evaluate_on_problems
+from drsr_420.evaluation import accelerate as evaluator_accelerate
 from drsr_420.agents.base import (
     PIPELINE,
     THREAD_PER_SAMPLER,

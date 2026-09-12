@@ -11,8 +11,8 @@ from __future__ import annotations
 import json
 import threading
 
-from drsr_420.console import StreamDeltaPrinter, print_block
-from drsr_420 import prompt_config as pc
+from drsr_420.core.console import StreamDeltaPrinter, print_block
+from drsr_420.core import prompt_config as pc
 
 from drsr_420.agents.base import THREAD_PER_SAMPLER, AgentSpec, BaseAgent
 
@@ -45,7 +45,7 @@ class ToolCallerAgent(BaseAgent):
     def __init__(self, llm_client, tool_executor=None, max_tool_rounds: int = 4):
         self._llm_client = llm_client
         if tool_executor is None:
-            from drsr_420.tool_runner import mcp_call_tool
+            from drsr_420.knowledge.tool_runner import mcp_call_tool
             tool_executor = mcp_call_tool
         self._tool_executor = tool_executor
         self._max_tool_rounds = max_tool_rounds

@@ -32,8 +32,8 @@ import dataclasses
 from typing import TYPE_CHECKING, Any, Sequence
 
 if TYPE_CHECKING:      # 仅类型检查：避免 messages → core 的运行时依赖
-    from drsr_420 import buffer
-    from drsr_420.profile import Profiler
+    from drsr_420.core import buffer
+    from drsr_420.core.profile import Profiler
 
 #: 样本质量标签取值。
 QUALITY_GOOD = "Good"

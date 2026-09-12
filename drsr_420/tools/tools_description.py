@@ -1,102 +1,48 @@
-# ── Tool Schema（DeepSeek 兼容 OpenAI tools 协议）───────
-tools = [
-    {
-        "type": "function",
-        "function": {
-            "name": "search_paper",
-            "description": "Search academic papers by keywords (Chinese/English). Returns paper metadata (DOI, title, journal/conference, authors, year, citation count, etc.), but not the paper content.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Academic search keyword, e.g. 'Machine Learning'",
-                    },
-                    "num": {
-                        "type": "integer",
-                        "description": "Number of results to return, default 10",
-                        "default": 10,
-                    },
-                },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "read_paper",
-            "description": "Download the paper by its DOI link and extract its content.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "title_doi": {
-                        "type": "array",
-                        "items": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "[title, DOI] pair",
-                        },
-                        "description": "List of (title, DOI) pairs; each item is a [title, DOI] pair.",
-                    }
-                },
-                "required": ["title_doi"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "ingest_paper",
-            "description": (
-                "Embed an existing local PDF literature file into the RAG knowledge base. "
-                "pdf_path is the PDF file path (relative to the project root is OK, e.g. 'pdf_downloads/xxx.pdf'). "
-                "doi and title are optional. Returns the number of chunks ingested."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "pdf_path": {
-                        "type": "string",
-                        "description": "PDF file path, relative to the project root is allowed.",
-                    },
-                    "doi": {
-                        "type": "string",
-                        "description": "Paper DOI (optional, used for deduplication and provenance).",
-                    },
-                    "title": {
-                        "type": "string",
-                        "description": "Paper title (optional).",
-                    },
-                },
-                "required": ["pdf_path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_kb",
-            "description": (
-                "Search the RAG knowledge base for literature chunks semantically related to query; "
-                "returns the top-k hits (title, DOI, source file, text, similarity distance). "
-                "The knowledge base must be populated first via ingest_paper or the CLI."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search keyword or question description.",
-                    },
-                    "k": {
-                        "type": "integer",
-                        "description": "Number of results to return, default 5.",
-                        "default": 5,
-                    },
-                },
-                "required": ["query"],
-            },
-        },
-    },
-]
+"""兼容层（@deprecated）：旧路径 ``drsr_420.tools.tools_description`` → 新路径 ``drsr_420.llm.tools_schema``。
+
+本文件只做转发、不含实现，且**读写都转发**：
+
+* 读：模块级 ``__getattr__`` 转发所有名字（含私有名）；
+* 写：把模块类换成"写入转发给实现模块"的 ``ModuleType`` 子类。只做读转发是不够的
+  ——`mock.patch` / 测试里的 ``old_path.NAME = stub`` 只会落在本兼容层，实现模块
+  看不到，打桩静默失效（MCP 工具与嵌入器单例的测试正是这样打桩的）。
+
+请在新代码中使用新路径。
+"""
+if __package__ in (None, ""):     # 支持 `python 旧路径.py` 直接执行
+    import sys as _sys2
+    from pathlib import Path as _Path
+
+    _sys2.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+
+import sys as _sys
+import types as _types
+
+from drsr_420.llm.tools_schema import *            # noqa: F401,F403  触发子模块导入
+from drsr_420.llm import tools_schema as _impl
+
+
+class _ForwardingModule(_types.ModuleType):
+    """属性读写与删除都转发到实现模块（属性读取由模块级 __getattr__ 处理）。
+
+    ``__delattr__`` 同样必要：``mock.patch.object`` 靠 ``hasattr`` 判断"原本有没有
+    这个属性"，有则在退出时 ``delattr`` 还原；只转发写入会让还原阶段抛
+    AttributeError（属性实际删在了实现模块上）。
+    """
+
+    def __setattr__(self, name, value):
+        setattr(_impl, name, value)
+
+    def __delattr__(self, name):
+        delattr(_impl, name)
+
+
+_sys.modules[__name__].__class__ = _ForwardingModule
+
+
+def __getattr__(name: str):
+    return getattr(_impl, name)
+
+
+def __dir__():
+    return dir(_impl)

@@ -1,0 +1,464 @@
+# Copyright 2023 DeepMind Technologies Limited
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
+"""A multi-island experience buffer that implements the evolutionary algorithm."""
+from __future__ import annotations
+
+import copy
+import dataclasses
+import json
+import threading
+import time
+from collections.abc import Mapping, Sequence
+from typing import Any, TYPE_CHECKING, Tuple, Mapping
+
+if TYPE_CHECKING:
+    # 仅用于类型注解（运行时不求值，已启用 from __future__ import annotations）。
+    # 此前误用 `import profile`（标准库性能分析模块）占用 profile 名字，已修正。
+    from drsr_420.core.profile import Profiler
+
+import logging
+import numpy as np
+import scipy
+
+from drsr_420.core import code_manipulation
+from drsr_420.core import config as config_lib
+
+
+Signature = Tuple[float, ...]
+ScoresPerTest = Mapping[Any, float]
+
+
+def _softmax(logits: np.ndarray, temperature: float) -> np.ndarray:
+    """Returns the tempered softmax of 1D finite `logits`."""
+    if not np.all(np.isfinite(logits)):
+        non_finites = set(logits[~np.isfinite(logits)])
+        raise ValueError(f'`logits` contains non-finite value(s): {non_finites}')
+    if not np.issubdtype(logits.dtype, np.floating):
+        logits = np.array(logits, dtype=np.float32)
+
+    result = scipy.special.softmax(logits / temperature, axis=-1)
+    index = np.argmax(result)
+    result[index] = 1 - np.sum(result[0:index]) - np.sum(result[index + 1:])
+    return result
+
+
+def _reduce_score(scores_per_test: ScoresPerTest) -> float:
+    test_scores = [scores_per_test[k] for k in scores_per_test.keys()]
+    return sum(test_scores) / len(test_scores)
+
+
+def _get_signature(scores_per_test: ScoresPerTest) -> Signature:
+    """Represents test scores as a canonical signature."""
+    return tuple(scores_per_test[k] for k in sorted(scores_per_test.keys()))
+
+
+@dataclasses.dataclass(frozen=True)
+class Prompt:
+    """ A prompt produced by the Experience Buffer, to be sent to Samplers.
+
+    Args:
+      code: The prompt, ending with the header of the function to be completed.
+      version_generated: The function to be completed is `_v{version_generated}`.
+      island_id: Identifier of the island that produced the samples
+                included in the prompt. Used to direct the newly generated sample
+                into the same island.
+    """
+    code: str
+    version_generated: int
+    island_id: int
+
+
+class ExperienceBuffer:
+    """A collection of programs, organized as islands."""
+
+    def __init__(
+            self,
+            config: config_lib.ExperienceBufferConfig,
+            template: code_manipulation.Program,
+            function_to_evolve: str,
+    ) -> None:
+        self._config: config_lib.ExperienceBufferConfig = config
+        self._template: code_manipulation.Program = template
+        self._function_to_evolve: str = function_to_evolve
+
+        # Initialize empty islands.
+        self._islands: list[Island] = []
+        for _ in range(config.num_islands):
+            self._islands.append(
+                Island(template, function_to_evolve, config.functions_per_prompt,
+                       config.cluster_sampling_temperature_init,
+                       config.cluster_sampling_temperature_period))
+        self._best_score_per_island: list[float] = (
+                [-float('inf')] * config.num_islands)
+        self._best_program_per_island: list[code_manipulation.Function | None] = (
+                [None] * config.num_islands)
+        self._best_scores_per_test_per_island: list[ScoresPerTest | None] = (
+                [None] * config.num_islands)
+
+        self._last_reset_time: float = time.time()
+        # 线程锁：多 sampler 并行时保护经验缓冲的读改写
+        self._lock: threading.RLock = threading.RLock()
+
+
+    def get_prompt(self) -> Prompt:
+        """Returns a prompt containing samples from one chosen island.
+
+        仅在非空岛屿中随机选取：空岛屿没有 cluster，其 softmax/argmax 会因零尺寸数组
+        崩溃。全部岛屿为空时抛出明确错误，避免难以定位的内部异常。
+        """
+        with self._lock:
+            non_empty = [i for i, island in enumerate(self._islands)
+                         if island.num_programs > 0]
+            if not non_empty:
+                raise RuntimeError("经验缓冲中没有任何已注册程序，无法生成 prompt")
+            island_id = int(np.random.choice(non_empty))
+            code, version_generated = self._islands[island_id].get_prompt()
+            return Prompt(code, version_generated, island_id)
+
+
+    def _register_program_in_island(
+            self,
+            program: code_manipulation.Function,
+            island_id: int,
+            scores_per_test: ScoresPerTest,
+            *,
+            profiler: Profiler | None = None,
+            global_sample_nums: int | None = None,
+            sample_time: float | None = None,
+            evaluate_time: float | None = None,
+    ) -> None:
+        """Registers `program` in the specified island.
+
+        记录用的 4 个字段改为显式关键字参数：此前经 ``**kwargs`` 从
+        EvaluatorAgent 一路透传，字段名与"是否存在"只能靠读实现反推，
+        而且调用方拼错字段名不会报错、只会静默丢记录。
+        """
+        self._islands[island_id].register_program(program, scores_per_test)
+        score = _reduce_score(scores_per_test)
+        if score > self._best_score_per_island[island_id]:
+            self._best_program_per_island[island_id] = program
+            self._best_scores_per_test_per_island[island_id] = scores_per_test
+            self._best_score_per_island[island_id] = score
+            logging.info('Best score of island %d increased to %s', island_id, score)
+
+        if profiler:
+            program.score = score
+            program.global_sample_nums = global_sample_nums
+            program.sample_time = sample_time
+            program.evaluate_time = evaluate_time
+            profiler.register_function(program)
+
+
+    def register_program(
+            self,
+            program: code_manipulation.Function,
+            island_id: int | None,
+            scores_per_test: ScoresPerTest,
+            *,
+            profiler: Profiler | None = None,
+            global_sample_nums: int | None = None,
+            sample_time: float | None = None,
+            evaluate_time: float | None = None,
+    ) -> None:
+        """Registers new `program` skeleton hypotheses in the experience buffer."""
+        with self._lock:
+            if island_id is None:
+                for island_id in range(len(self._islands)):
+                    self._register_program_in_island(
+                        program, island_id, scores_per_test, profiler=profiler,
+                        global_sample_nums=global_sample_nums,
+                        sample_time=sample_time, evaluate_time=evaluate_time)
+            else:
+                self._register_program_in_island(
+                    program, island_id, scores_per_test, profiler=profiler,
+                    global_sample_nums=global_sample_nums,
+                    sample_time=sample_time, evaluate_time=evaluate_time)
+
+            # Check island reset
+            if time.time() - self._last_reset_time > self._config.reset_period:
+                self._last_reset_time = time.time()
+                self.reset_islands()
+
+
+    def reset_islands(self) -> None:
+        """Resets the weaker half of islands."""
+        with self._lock:
+            # Sort best scores after adding minor noise to break ties.
+            indices_sorted_by_score: np.ndarray = np.argsort(
+                self._best_score_per_island +
+                np.random.randn(len(self._best_score_per_island)) * 1e-6)
+            num_islands_to_reset = self._config.num_islands // 2
+            reset_islands_ids = indices_sorted_by_score[:num_islands_to_reset]
+            keep_islands_ids = indices_sorted_by_score[num_islands_to_reset:]
+            for island_id in reset_islands_ids:
+                self._islands[island_id] = Island(
+                    self._template,
+                    self._function_to_evolve,
+                    self._config.functions_per_prompt,
+                    self._config.cluster_sampling_temperature_init,
+                    self._config.cluster_sampling_temperature_period)
+                self._best_score_per_island[island_id] = -float('inf')
+                founder_island_id = np.random.choice(keep_islands_ids)
+                founder = self._best_program_per_island[founder_island_id]
+                founder_scores = self._best_scores_per_test_per_island[founder_island_id]
+                self._register_program_in_island(founder, island_id, founder_scores)
+
+    def to_dict(self) -> dict:
+        """将经验缓冲序列化为可 JSON 化的 dict（用于 checkpoint 断点续跑）。"""
+        return {
+            "best_score_per_island": list(self._best_score_per_island),
+            "best_program_per_island": [
+                str(p) if p else None for p in self._best_program_per_island
+            ],
+            "best_scores_per_test_per_island": [
+                None if d is None else [[str(k), v] for k, v in d.items()]
+                for d in self._best_scores_per_test_per_island
+            ],
+            "islands": [island.to_dict() for island in self._islands],
+            "last_reset_time": self._last_reset_time,
+        }
+
+    @classmethod
+    def from_dict(
+            cls,
+            data: dict,
+            config: config_lib.ExperienceBufferConfig,
+            template: code_manipulation.Program,
+            function_to_evolve: str,
+    ) -> "ExperienceBuffer":
+        eb = cls(config, template, function_to_evolve)
+        eb._best_score_per_island = list(data["best_score_per_island"])
+        eb._best_program_per_island = [
+            code_manipulation.text_to_function(p) if p else None
+            for p in data["best_program_per_island"]
+        ]
+        eb._best_scores_per_test_per_island = [
+            None if d is None else dict(d) for d in data["best_scores_per_test_per_island"]
+        ]
+        islands_data = data.get("islands", [])
+        eb._islands = [
+            Island.from_dict(
+                idata, eb._template, eb._function_to_evolve,
+                config.functions_per_prompt,
+                config.cluster_sampling_temperature_init,
+                config.cluster_sampling_temperature_period)
+            for idata in islands_data
+        ]
+        eb._last_reset_time = float(data.get("last_reset_time", time.time()))
+        return eb
+
+    def save_checkpoint(self, path: str, extra: dict | None = None) -> None:
+        """保存 checkpoint 到 JSON 文件（可选携带额外字段）。"""
+        with self._lock:
+            data = self.to_dict()
+            if extra:
+                data.update(extra)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def load_checkpoint(self, path: str) -> None:
+        """从 checkpoint 恢复经验缓冲状态。"""
+        with self._lock:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            restored = type(self).from_dict(data, self._config, self._template, self._function_to_evolve)
+            self._islands = restored._islands
+            self._best_score_per_island = restored._best_score_per_island
+            self._best_program_per_island = restored._best_program_per_island
+            self._best_scores_per_test_per_island = restored._best_scores_per_test_per_island
+            self._last_reset_time = restored._last_reset_time
+
+
+class Island:
+    """A sub-population of the program skeleton experience buffer."""
+
+    def __init__(
+            self,
+            template: code_manipulation.Program,
+            function_to_evolve: str,
+            functions_per_prompt: int,
+            cluster_sampling_temperature_init: float,
+            cluster_sampling_temperature_period: int,
+    ) -> None:
+        self._template: code_manipulation.Program = template
+        self._function_to_evolve: str = function_to_evolve
+        self._functions_per_prompt: int = functions_per_prompt
+        self._cluster_sampling_temperature_init = cluster_sampling_temperature_init
+        self._cluster_sampling_temperature_period = (
+            cluster_sampling_temperature_period)
+
+        self._clusters: dict[Signature, Cluster] = {}
+        self._num_programs: int = 0
+
+    @property
+    def num_programs(self) -> int:
+        """本岛屿已注册的程序总数（用于判断岛屿是否为空）。"""
+        return self._num_programs
+
+
+    def register_program(
+            self,
+            program: code_manipulation.Function,
+            scores_per_test: ScoresPerTest,
+    ) -> None:
+        """Stores a program on this island, in its appropriate cluster."""
+        signature = _get_signature(scores_per_test)
+        if signature not in self._clusters:
+            score = _reduce_score(scores_per_test)
+            self._clusters[signature] = Cluster(score, program)
+        else:
+            self._clusters[signature].register_program(program)
+        self._num_programs += 1
+
+
+    def get_prompt(self) -> tuple[str, int]:
+        """Constructs a prompt containing equation program skeletons from this island."""
+        signatures = list(self._clusters.keys())
+        cluster_scores = np.array(
+            [self._clusters[signature].score for signature in signatures])
+        
+        period = self._cluster_sampling_temperature_period
+        temperature = self._cluster_sampling_temperature_init * (
+                1 - (self._num_programs % period) / period)
+        probabilities = _softmax(cluster_scores, temperature)
+
+        functions_per_prompt = min(len(self._clusters), self._functions_per_prompt)
+
+        idx = np.random.choice(
+            len(signatures), size=functions_per_prompt, p=probabilities)
+        chosen_signatures = [signatures[i] for i in idx]
+        implementations = []
+        scores = []
+        for signature in chosen_signatures:
+            cluster = self._clusters[signature]
+            implementations.append(cluster.sample_program())
+            scores.append(cluster.score)
+
+        indices = np.argsort(scores)
+        sorted_implementations = [implementations[i] for i in indices]
+
+        # _generate_prompt 把待补全头部命名为 _v{len(implementations)}（见其
+        # next_version），Prompt 契约要求 version_generated 即该头部版本号；
+        # 旧实现的 +1 让 _sample_to_program 的递归改名目标（_v{k+1}）永不存在，
+        # 改名恒为 no-op，自递归假设在 exec 时 NameError 被误判为无效样本。
+        version_generated = len(sorted_implementations)
+        return self._generate_prompt(sorted_implementations), version_generated
+
+
+    def _generate_prompt(
+            self,
+            implementations: Sequence[code_manipulation.Function]) -> str:
+        """ Create a prompt containing a sequence of function `implementations`."""
+        implementations = copy.deepcopy(implementations)
+
+        # Format the names and docstrings of functions to be included in the prompt.
+        versioned_functions: list[code_manipulation.Function] = []
+        for i, implementation in enumerate(implementations):
+            new_function_name = f'{self._function_to_evolve}_v{i}'
+            implementation.name = new_function_name
+            # Update the docstring for all subsequent functions after `_v0`.
+            if i >= 1:
+                implementation.docstring = (
+                    f'Improved version of `{self._function_to_evolve}_v{i - 1}`.')
+            # If the function is recursive, replace calls to itself with its new name.
+            implementation = code_manipulation.rename_function_calls(
+                str(implementation), self._function_to_evolve, new_function_name)
+            versioned_functions.append(
+                code_manipulation.text_to_function(implementation))
+
+        # Create header of new function to be completed
+        next_version = len(implementations)
+        new_function_name = f'{self._function_to_evolve}_v{next_version}'
+        header = dataclasses.replace(
+            implementations[-1],
+            name=new_function_name,
+            body='',
+            docstring=('Improved version of '
+                       f'`{self._function_to_evolve}_v{next_version - 1}`.'),
+        )
+        versioned_functions.append(header)
+
+        # Replace functions in the template with the list constructed here.
+        prompt = dataclasses.replace(self._template, functions=versioned_functions)
+        
+        return str(prompt)
+
+    def to_dict(self) -> dict:
+        return {
+            "clusters": [
+                {"signature": list(sig), "cluster": cluster.to_dict()}
+                for sig, cluster in self._clusters.items()
+            ],
+            "num_programs": self._num_programs,
+        }
+
+    @classmethod
+    def from_dict(
+            cls,
+            data: dict,
+            template: code_manipulation.Program,
+            function_to_evolve: str,
+            functions_per_prompt: int,
+            cluster_sampling_temperature_init: float,
+            cluster_sampling_temperature_period: int,
+    ) -> "Island":
+        island = cls(
+            template, function_to_evolve, functions_per_prompt,
+            cluster_sampling_temperature_init, cluster_sampling_temperature_period)
+        for item in data.get("clusters", []):
+            island._clusters[tuple(item["signature"])] = Cluster.from_dict(item["cluster"])
+        island._num_programs = int(data.get("num_programs", 0))
+        return island
+
+
+class Cluster:
+    """ A cluster of programs on the same island and with the same Signature. """
+
+    def __init__(self, score: float, implementation: code_manipulation.Function):
+        self._score = score
+        self._programs: list[code_manipulation.Function] = [implementation]
+        self._lengths: list[int] = [len(str(implementation))]
+
+    @property
+    def score(self) -> float:
+        return self._score
+
+    def register_program(self, program: code_manipulation.Function) -> None:
+        """Adds `program` to the cluster."""
+        self._programs.append(program)
+        self._lengths.append(len(str(program)))
+
+    def sample_program(self) -> code_manipulation.Function:
+        """Samples a program, giving higher probability to shorther programs."""
+        normalized_lengths = (np.array(self._lengths) - min(self._lengths)) / (
+                max(self._lengths) + 1e-6)
+        probabilities = _softmax(-normalized_lengths, temperature=1.0)
+        return np.random.choice(self._programs, p=probabilities)
+
+    def to_dict(self) -> dict:
+        return {
+            "score": self._score,
+            "programs": [str(p) for p in self._programs],
+            "lengths": list(self._lengths),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Cluster":
+        programs = [code_manipulation.text_to_function(p) for p in data["programs"]]
+        cluster = cls(data["score"], programs[0])
+        for p in programs[1:]:
+            cluster.register_program(p)
+        return cluster

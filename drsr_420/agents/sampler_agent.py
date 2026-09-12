@@ -16,13 +16,13 @@ from abc import ABC, abstractmethod
 from typing import Collection, Type, Any
 import random
 
-from drsr_420.console import StreamDeltaPrinter, print_block
-from drsr_420 import config as config_lib
+from drsr_420.core.console import StreamDeltaPrinter, print_block
+from drsr_420.core import config as config_lib
 import json
 import os
 import traceback
-from drsr_420 import prompt_config as pc
-from llm import LLMClient
+from drsr_420.core import prompt_config as pc
+from drsr_420.llm import LLMClient
 
 from drsr_420.agents.tool_caller_agent import ToolCallerAgent
 from drsr_420.agents.base import THREAD_PER_SAMPLER, AgentSpec, BaseAgent

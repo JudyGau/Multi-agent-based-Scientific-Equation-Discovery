@@ -1,164 +1,48 @@
-"""评估模块：对 LLM 生成的方程做参数优化并打分。
+"""兼容层（@deprecated）：旧路径 ``drsr_420.evaluate_on_problems`` → 新路径 ``drsr_420.evaluation.problems``。
 
-统一返回契约：
-    evaluate() 成功返回 (score, result_matrix, optimized_params) 三元组；
-    优化无法给出有限解（所有起点损失非有限但无异常）时返回 (None, None, None)。
-    以下情况显式抛异常（供上层 remark 携带真实原因，喂给经验回路）：
-      - 数据集本身含 NaN/inf 或维度非法（ValueError，配置错误应响亮的失败）；
-      - 所有优化起点均以异常告终（透传首个真实异常，如方程越界 IndexError）。
-    score 取负均方误差（越大越好）；result_matrix 为 (输入, 输出, 残差) 拼接矩阵，
-    供残差分析回路消费（残差列保持全精度）；optimized_params 可直接作为下一轮
-    优化的热启动起点。
+本文件只做转发、不含实现，且**读写都转发**：
+
+* 读：模块级 ``__getattr__`` 转发所有名字（含私有名）；
+* 写：把模块类换成"写入转发给实现模块"的 ``ModuleType`` 子类。只做读转发是不够的
+  ——`mock.patch` / 测试里的 ``old_path.NAME = stub`` 只会落在本兼容层，实现模块
+  看不到，打桩静默失效（MCP 工具与嵌入器单例的测试正是这样打桩的）。
+
+请在新代码中使用新路径。
 """
-from __future__ import annotations
+if __package__ in (None, ""):     # 支持 `python 旧路径.py` 直接执行
+    import sys as _sys2
+    from pathlib import Path as _Path
 
-import numpy as np
+    _sys2.path.insert(0, str(_Path(__file__).resolve().parents[1]))
 
-# 模块级默认配置，可通过 evaluate() 关键字参数覆盖
-MAX_NPARAMS = 10                    # 方程参数个数
-DECIMAL_PLACES = 3                  # 结果矩阵保留的小数位数（仅展示，不影响评分）
-N_STARTS = 5                        # 多起点优化的起点数
-MAX_ITER = 300                      # 每个起点的最大函数评估次数
-PARAMS_BOUNDS = (-1000.0, 1000.0)   # 参数边界，防止无界优化导致溢出/NaN；据历史最优参数分布(最大|p|≈738)定
-SAMPLE_SIZE = 100                   # 残差采样点数上限
+import sys as _sys
+import types as _types
 
-
-def _clamp_params(x0: np.ndarray, bounds) -> np.ndarray:
-    """把初始参数裁剪进边界（least_squares 要求初始点在边界内）。"""
-    lower, upper = bounds
-    return np.clip(x0, lower, upper)
+from drsr_420.evaluation.problems import *            # noqa: F401,F403  触发子模块导入
+from drsr_420.evaluation import problems as _impl
 
 
-def _multi_start_least_squares(
-        residual_func,
-        n_params: int,
-        *,
-        n_starts: int = N_STARTS,
-        max_iter: int = MAX_ITER,
-        bounds=PARAMS_BOUNDS,
-        x0: np.ndarray | None = None,
-        seed: int | None = None,
-) -> tuple[np.ndarray | None, float]:
-    """多起点最小二乘求解，返回 (最优参数, 最小均方误差)；全部失败时返回 (None, inf)。
+class _ForwardingModule(_types.ModuleType):
+    """属性读写与删除都转发到实现模块（属性读取由模块级 __getattr__ 处理）。
 
-    相比 BFGS：least_squares 利用残差结构求 Jacobian，收敛更快更稳；
-    带参数边界可避免无界优化使方程参数发散（产生 NaN/inf）。
+    ``__delattr__`` 同样必要：``mock.patch.object`` 靠 ``hasattr`` 判断"原本有没有
+    这个属性"，有则在退出时 ``delattr`` 还原；只转发写入会让还原阶段抛
+    AttributeError（属性实际删在了实现模块上）。
     """
-    from scipy.optimize import least_squares
 
-    rng = np.random.default_rng(seed)
-    starts: list[np.ndarray] = []
-    if x0 is not None:  # 热启动：把上一轮最优参数作为额外首起点（在 n_starts 随机起点之外）
-        starts.append(np.asarray(x0, dtype=float))
-    starts.extend(rng.uniform(-1.0, 1.0, size=n_params) for _ in range(n_starts))
+    def __setattr__(self, name, value):
+        setattr(_impl, name, value)
 
-    best_x, best_loss = None, np.inf
-    first_exc: Exception | None = None
-    for start in starts:
-        start = _clamp_params(start, bounds)
-        try:
-            result = least_squares(
-                residual_func,
-                start,
-                bounds=bounds,
-                max_nfev=max_iter,
-                xtol=1e-8,
-                ftol=1e-8,
-                gtol=1e-8,
-            )
-        except Exception as e:
-            # 该起点失败（如方程在该参数域不可用/越界索引），尝试下一个起点，
-            # 但保留首个真实异常：若所有起点都以异常告终，向上抛出。旧实现把
-            # 异常彻底吞掉，LLM 生成的方程里 `params[10]` 越界之类的错误全部
-            # 伪装成无信息量的 'no output'，经验学习回路（error 注入提示词）
-            # 因此永远学不到任何东西。
-            if first_exc is None:
-                first_exc = e
-            continue
-        loss = float(np.mean(np.square(result.fun)))
-        if not np.isfinite(loss):
-            continue
-        if loss < best_loss:
-            best_loss, best_x = loss, result.x
-    if best_x is None and first_exc is not None:
-        raise first_exc
-    return best_x, best_loss
+    def __delattr__(self, name):
+        delattr(_impl, name)
 
 
-def evaluate(
-        data: dict,
-        equation,
-        *,
-        n_params: int = MAX_NPARAMS,
-        decimal_places: int = DECIMAL_PLACES,
-        n_starts: int = N_STARTS,
-        max_iter: int = MAX_ITER,
-        bounds=PARAMS_BOUNDS,
-        x0: np.ndarray | None = None,
-        seed: int | None = None,
-        verbose: bool = False,
-) -> tuple[float | None, np.ndarray | None, np.ndarray | None]:
-    """对 `equation(*X.T, params)` 做参数优化并评分。
+_sys.modules[__name__].__class__ = _ForwardingModule
 
-    Args:
-        data: 含 'inputs' 与 'outputs' 的数据字典。
-        equation: 可调用对象，签名 equation(*feature_arrays, params)。
-        x0: 热启动参数（例如上一轮评估得到的最优参数），作为首个优化起点。
 
-    Returns:
-        (score, result_matrix, optimized_params)；优化失败时为 (None, None, None)。
-    """
-    inputs = np.asarray(data['inputs'], dtype=float)
-    outputs = np.asarray(data['outputs'], dtype=float)
+def __getattr__(name: str):
+    return getattr(_impl, name)
 
-    # 数据前置校验：一个 NaN 目标值会让每个起点产生 NaN 损失，所有样本
-    # 统一失败成无信息量的 'no output'，整场实验静默产出零程序。
-    # （np.var(outputs) 为 nan 也会击穿下面的 var_outputs != 0 保护。）
-    if inputs.ndim == 1:
-        # 1 维按"n 个样本 × 1 个特征"解释，避免 `*inputs.T` 把标量当特征列表展开
-        inputs = inputs.reshape(-1, 1)
-    elif inputs.ndim != 2:
-        raise ValueError(f'inputs 需为 1/2 维数组，实际 ndim={inputs.ndim}')
-    if not np.isfinite(inputs).all():
-        raise ValueError('inputs 包含 NaN/inf，请先清洗数据（如 read_csv 后 dropna）')
-    if not np.isfinite(outputs).all():
-        raise ValueError('outputs 包含 NaN/inf，请先清洗数据（如 read_csv 后 dropna）')
 
-    def residual(params):
-        return equation(*inputs.T, params) - outputs
-
-    best_x, best_loss = _multi_start_least_squares(
-        residual,
-        n_params,
-        n_starts=n_starts,
-        max_iter=max_iter,
-        bounds=bounds,
-        x0=x0,
-        seed=seed,
-    )
-    if best_x is None:
-        return None, None, None
-
-    predictions = equation(*inputs.T, best_x)
-    res = outputs - predictions
-    var_outputs = float(np.var(outputs))
-    if var_outputs > 0:
-        nmse = best_loss / var_outputs
-    else:
-        # 常数输出数据集：完美拟合记 nmse=0（R²=1），否则 R² 无定义记为 inf
-        nmse = 0.0 if best_loss <= 0 else np.inf
-    if verbose:
-        # 不用 'R²' 上标：GBK 控制台（Windows 默认代码页）无法编码 \xb2，
-        # verbose 路径会直接 UnicodeEncodeError 拖垮一次评估。
-        print(f'R2 指标: {1.0 - nmse:.6f}  NMSE 指标: {nmse:.6f}')
-
-    # 输入/输出列按 decimal_places 取整仅供展示；残差列必须保持完整精度：
-    # 它就是 ResidualAnalyzerAgent 的唯一输入（residual[:, -1]），按绝对
-    # 3 位小数取整会把拟合越好的样本变成全 0 残差——恰好毁掉残差分析
-    # 回路最该批评的那批样本。
-    result_data = np.column_stack((
-        np.round(inputs, decimal_places),
-        np.round(outputs, decimal_places),
-        res,
-    ))
-    return -best_loss, result_data, np.asarray(best_x)
+def __dir__():
+    return dir(_impl)

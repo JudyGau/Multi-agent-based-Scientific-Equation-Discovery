@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import json
 import os
-from drsr_420.console import StreamDeltaPrinter, print_block
+from drsr_420.core.console import StreamDeltaPrinter, print_block
 import traceback
 
 import numpy as np
 
-from drsr_420 import prompt_config as pc
+from drsr_420.core import prompt_config as pc
 
 from drsr_420.agents.base import THREAD_PER_SAMPLER, AgentSpec, BaseAgent
 from drsr_420.agents.messages import ResidualInsight

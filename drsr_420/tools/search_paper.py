@@ -1,58 +1,48 @@
-import json
-import sys
+"""兼容层（@deprecated）：旧路径 ``drsr_420.tools.search_paper`` → 新路径 ``drsr_420.knowledge.tools.search_paper``。
 
-import requests
-MAILTO = "zhuqg@mail.ustc.edu.cn"
+本文件只做转发、不含实现，且**读写都转发**：
 
-def search_paper(query: str, num: int=10) -> str:
+* 读：模块级 ``__getattr__`` 转发所有名字（含私有名）；
+* 写：把模块类换成"写入转发给实现模块"的 ``ModuleType`` 子类。只做读转发是不够的
+  ——`mock.patch` / 测试里的 ``old_path.NAME = stub`` 只会落在本兼容层，实现模块
+  看不到，打桩静默失效（MCP 工具与嵌入器单例的测试正是这样打桩的）。
+
+请在新代码中使用新路径。
+"""
+if __package__ in (None, ""):     # 支持 `python 旧路径.py` 直接执行
+    import sys as _sys2
+    from pathlib import Path as _Path
+
+    _sys2.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+
+import sys as _sys
+import types as _types
+
+from drsr_420.knowledge.tools.search_paper import *            # noqa: F401,F403  触发子模块导入
+from drsr_420.knowledge.tools import search_paper as _impl
+
+
+class _ForwardingModule(_types.ModuleType):
+    """属性读写与删除都转发到实现模块（属性读取由模块级 __getattr__ 处理）。
+
+    ``__delattr__`` 同样必要：``mock.patch.object`` 靠 ``hasattr`` 判断"原本有没有
+    这个属性"，有则在退出时 ``delattr`` 还原；只转发写入会让还原阶段抛
+    AttributeError（属性实际删在了实现模块上）。
     """
-    只返回期刊论文(journal-article)的 DOI 及核心元数据
-    """
-    params = {
-        "query": query,
-        "filter": "type:journal-article,type:proceedings-article,type:posted-content",  #包含期刊和会议论文，预印本，学术论文
-        # "sort": "is-referenced-by-count",
-        "order": "desc",
-        "rows": num,
-        "mailto": MAILTO,          # 进入 polite pool，更稳定
-        "select": "DOI,URL,title,author,container-title,published-print,is-referenced-by-count,link,license"
-    }
-    r = requests.get("https://api.crossref.org/works", params=params, timeout=30)
-    r.raise_for_status()
-    items = r.json()["message"]["items"]
 
-    results = []
-    for it in items:
-        # # 进一步保险：双重校验 type 字段
-        # if it.get("type") != "journal-article":
-        #     continue
+    def __setattr__(self, name, value):
+        setattr(_impl, name, value)
 
-        # 年/月/日可能缺失（如 date-parts: [[]]），直接 [0][0] 会 IndexError 拖垮整个查询；
-        # 链尾补 issued：Crossref 大量条目只有 issued 有日期（实测 ~5% 命中缺 print/online）
-        dp = ((it.get("published-print") or it.get("published-online") or it.get("issued") or {})
-              .get("date-parts") or [[]])
-        year = dp[0][0] if dp and dp[0] else None
+    def __delattr__(self, name):
+        delattr(_impl, name)
 
-        results.append({
-            "doi": it.get("DOI"),
-            "title": (it.get("title") or [""])[0],
-            "journal": (it.get("container-title") or [""])[0],
-            "year": year,
-            "citations": it.get("is-referenced-by-count", 0),
-            "authors": [f"{a.get('given','')} {a.get('family','')}"
-                        for a in it.get("author", [])[:5]]
-        })
 
-    # 注意：经 MCP stdio 运行时 stdout 被改道且块缓冲，print 不可见；
-    # 调试输出走 stderr 才能显示到控制台。
-    # print(results, file=sys.stderr)
+_sys.modules[__name__].__class__ = _ForwardingModule
 
-    results = json.dumps(results, ensure_ascii=False)
-    return results
 
-if __name__ == "__main__":
-    # 用法
-    papers = search_paper("磁流变液", num=20)
-    print(papers)
-    # for p in papers:
-    #     print(f"{p['doi']}  |  {p['title'][:60]}  |  被引{p['citations']}")
+def __getattr__(name: str):
+    return getattr(_impl, name)
+
+
+def __dir__():
+    return dir(_impl)

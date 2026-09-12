@@ -16,8 +16,8 @@ import os
 import numpy as np
 import pandas as pd
 
-from drsr_420.console import StreamDeltaPrinter, print_block
-from drsr_420 import prompt_config as pc
+from drsr_420.core.console import StreamDeltaPrinter, print_block
+from drsr_420.core import prompt_config as pc
 
 from drsr_420.agents.base import (
     PIPELINE,

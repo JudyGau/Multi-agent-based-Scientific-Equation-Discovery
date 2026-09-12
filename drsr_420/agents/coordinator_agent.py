@@ -28,11 +28,11 @@ from typing import Any, Sequence, Type
 
 import numpy as np
 
-from drsr_420 import buffer
-from drsr_420 import config as config_lib
-from drsr_420 import prompt_config as pc
-from drsr_420.console import print_block
-from llm import LLMClient
+from drsr_420.core import buffer
+from drsr_420.core import config as config_lib
+from drsr_420.core import prompt_config as pc
+from drsr_420.core.console import print_block
+from drsr_420.llm import LLMClient
 
 from drsr_420.agents.sampler_agent import LLM, SamplerAgent
 from drsr_420.agents.evaluator_agent import EvaluatorAgent
