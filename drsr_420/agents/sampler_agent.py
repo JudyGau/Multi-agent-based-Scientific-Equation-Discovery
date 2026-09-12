@@ -16,7 +16,7 @@ from abc import ABC, abstractmethod
 from typing import Collection, Type, Any
 import random
 
-from drsr_420.console import LineStreamPrinter, print_block
+from drsr_420.console import StreamDeltaPrinter, print_block
 from drsr_420 import config as config_lib
 import json
 import os
@@ -28,6 +28,8 @@ from drsr_420.agents.tool_caller_agent import ToolCallerAgent
 
 # 骨架提取不到可执行代码时的最大重采样次数（避免无效骨架占用评估与经验配额）
 _MAX_BODY_RETRIES = 3
+# 单次 draw_samples 采样的最大尝试次数（异常时有界重试，避免 while True 死循环）
+_MAX_SAMPLE_ATTEMPTS = 5
 
 
 class LLM(ABC):
@@ -71,10 +73,39 @@ class SamplerAgent(LLM):
         self._tool_caller = ToolCallerAgent(llm_client)
         # 本地文件目录（用于加载经验/残差），由 draw_samples 时设置
         self._base_dir = "."
+        # 经验/残差 JSON 内存缓存：{path: ..., mtime: ..., data: ...}
+        # 跨轮采样复用，避免每次构造提示词都重读磁盘（大批量时是 IO 热点）。
+        # CoordinatorAgent 以原子写（os.replace）更新这些文件，mtime 变化即失效重读。
+        self._json_cache: dict = {}
 
         ####################################
         # 添加会话ID存储
         self._conversation_ids = {}  # 用于存储每个样本的对话ID
+
+    def _load_json_cached(self, path: str):
+        """读取 JSON 并按 mtime 缓存；文件不存在或解析失败返回 None。
+
+        跨轮采样复用同一份内存副本，仅在文件被原子替换（mtime 变化）时重新读盘，
+        兼顾正确性与 IO 开销。SamplerAgent 实例随 CoordinatorAgent 生命周期复用，
+        因此缓存覆盖整个采样线程的连续轮次。
+        """
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            # 文件不存在或不可访问：清掉可能的旧缓存并返回 None
+            if self._json_cache.get('path') == path:
+                self._json_cache.clear()
+            return None
+        cache = self._json_cache
+        if cache.get('path') == path and cache.get('mtime') == mtime:
+            return cache.get('data')
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return None
+        self._json_cache = {'path': path, 'mtime': mtime, 'data': data}
+        return data
 
     def draw_samples(self, prompt: str, config: config_lib.Config) -> tuple[list[Any] | list[str], list[Any]] | None:
         """Returns multiple equation program skeleton hypotheses for the given `prompt`."""
@@ -91,7 +122,11 @@ class SamplerAgent(LLM):
         Any]] | None:
         # instruction
         prompt = '\n'.join([self._instruction_prompt, prompt])
-        while True:
+        # 有界重试：原先 `while True: ... except: continue` 在异常时会无限重试，
+        # 且 `print(Exception)` 打印的是类对象而非异常实例，无调试价值。
+        # 改为最多 _MAX_SAMPLE_ATTEMPTS 次尝试，耗尽后返回空列表交由上层处理，
+        # 避免单次采样故障拖死整个采样线程。
+        for _attempt in range(1, _MAX_SAMPLE_ATTEMPTS + 1):
             try:
                 all_samples = []
                 all_thinking_contents = []
@@ -142,37 +177,22 @@ class SamplerAgent(LLM):
                     all_thinking_contents = trimmed_thinking
 
                 return all_samples, all_thinking_contents
-            except Exception:
-                print(Exception)
+            except Exception as e:
+                # 打印真实异常实例与堆栈，便于定位；有界重试避免死循环
+                print(f"[Sampler] 采样第 {_attempt}/{_MAX_SAMPLE_ATTEMPTS} 次失败: {e!r}")
+                traceback.print_exc()
                 continue
+        print(f"[Sampler] 采样连续 {_MAX_SAMPLE_ATTEMPTS} 次失败，返回空结果（本轮跳过）")
+        return [], []
 
     def _draw_samples_api(self, prompt: str, config: config_lib.Config) -> Collection[str]:
         all_samples = []
         prompt = '\n'.join([self._instruction_prompt, prompt])
         for _ in range(self._samples_per_prompt):
             try:
-                stream = LineStreamPrinter()
-                shown = 0
-                think_label_printed = False
-                content_label_printed = False
-
-                def _on_delta(chunk):
-                    nonlocal shown, think_label_printed, content_label_printed
-                    reasoning = chunk.get('reasoning_content') or ''
-                    content = chunk.get('content') or ''
-                    text = reasoning + content
-                    if len(text) > shown:
-                        if shown < len(reasoning) and not think_label_printed:
-                            stream.write("[思考]\n")
-                            think_label_printed = True
-                        elif not content_label_printed:
-                            stream.write_line("[正文]")
-                            content_label_printed = True
-                        stream.write(text[shown:])
-                        shown = len(text)
-
-                resp = self._llm_client.chat([{"role": "user", "content": prompt}], on_delta=_on_delta)
-                stream.flush()
+                printer = StreamDeltaPrinter()
+                resp = self._llm_client.chat([{"role": "user", "content": prompt}], on_delta=printer.on_delta)
+                printer.flush()
                 print("\n====================================================\n")
                 # 兜底：content 为空时回退到 reasoning，避免模型只思考不输出正文时骨架丢失
                 response = resp.get('content', '') or resp.get('reasoning_content', '')
@@ -186,7 +206,12 @@ class SamplerAgent(LLM):
     def _build_request_content(self, content: str, config: config_lib.Config | None = None) -> str:
         """构造最终发送给 LLM 的内容：任务头 + 历史经验/残差注入。
 
-        经验注入规则（超参数可由 Config.experience_injection 覆盖，缺省用默认值）：
+        编排顺序（前置注入，最终顺序为 head + residual + experience + 原始 content）：
+        1. _inject_experiences：从 experiences.json 选经验条目拼块前置注入；
+        2. _inject_residual：按概率注入最近一条残差分析；
+        3. 任务头前置。
+
+        经验注入规则（超参数由 Config.experience_injection 覆盖，缺省用默认值）：
         - None（失败教训）：始终注入，最多 max_per_category['None'] 条（默认 3）；
         - Good / Bad：各自以 optional_category_probability 概率参与，最多 max_per_category 条（默认 2）；
         - 样本进度超过 freshness_threshold 后，只注入 sample_order 在
@@ -194,194 +219,187 @@ class SamplerAgent(LLM):
         - Good 按 score 降序（最成功优先），Bad 按 score 升序（最差教训优先），None 按时间序。
         """
         content = content.strip('\n').strip()
+        exp_cfg = getattr(config, "experience_injection", None)
+        try:
+            content = self._inject_experiences(content, exp_cfg)
+            inject_residual_probability = (
+                exp_cfg.inject_residual_probability if exp_cfg else 0.5)
+            content = self._inject_residual(content, inject_residual_probability)
+        except Exception as e:
+            print(f"加载经验数据时出错: {str(e)}")
+            print("Error details:")
+            traceback.print_exc()
+
+        content = self._render_head() + '\n' + content
+        print_block("========================最终输入给大模型的content========================\n")
+        print_block(content)
+        return content
+
+    def _render_head(self) -> str:
+        """任务头：有 PromptContext 时用动态渲染，否则用默认模板。"""
+        if self._prompt_ctx is not None:
+            return self._prompt_ctx.render_head()
+        return pc.head_template.format(
+            dependent=pc.dependent_name_in_prompt,
+            problem=pc.problem_name_in_prompt,
+            independent=pc.independent_name_in_prompt,
+        )
+
+    def _inject_experiences(self, content: str, exp_cfg) -> str:
+        """从 experiences.json 选经验条目拼块，前置注入 content；无经验文件则原样返回。"""
+        experience_file = os.path.join(getattr(self, "_base_dir", "."), "experiences.json")
+        experiences = self._load_json_cached(experience_file)
+        if experiences is None:
+            return content
 
         # 经验注入超参数（Config.experience_injection 可覆盖，缺省用默认值）
-        exp_cfg = getattr(config, "experience_injection", None)
         optional_category_probability = exp_cfg.optional_category_probability if exp_cfg else 0.5
         category_max_samples = exp_cfg.max_per_category if exp_cfg else {"None": 3, "Good": 2, "Bad": 2}
         freshness_threshold = exp_cfg.freshness_threshold if exp_cfg else 50
         freshness_ratio = exp_cfg.freshness_window_ratio if exp_cfg else 0.7
         max_analysis_chars = exp_cfg.max_analysis_chars if exp_cfg else 500
-        inject_residual_probability = exp_cfg.inject_residual_probability if exp_cfg else 0.5
 
-        # 尝试加载经验数据
-        try:
-            # 当前样本进度 = 各类别中最大的 sample_order（而不是各类别条数之和；
-            # 多轮累计后条数总和会远大于真实样本序号，导致新鲜度窗口把所有经验过滤掉）。
-            current_sample_order = 0
+        # 当前样本进度 = 各类别中最大的 sample_order（而非条数之和；
+        # 多轮累计后条数总和远大于真实样本序号，会使新鲜度窗口把所有经验过滤掉）
+        current_sample_order = 0
+        for category in ("None", "Good", "Bad"):
+            for exp in experiences.get(category, []):
+                order = exp.get("sample_order", 0)
+                if isinstance(order, (int, float)):
+                    current_sample_order = max(current_sample_order, int(order))
 
-            experience_file = os.path.join(getattr(self, "_base_dir", "."), "experiences.json")
+        selected = self._select_experiences(
+            experiences, current_sample_order,
+            optional_category_probability, category_max_samples,
+            freshness_threshold, freshness_ratio)
+        if not selected:
+            return content
 
-            if os.path.exists(experience_file):
-                with open(experience_file, "r", encoding="utf-8") as f:
-                    experiences = json.load(f)
-
-                for category in ("None", "Good", "Bad"):
-                    for exp in experiences.get(category, []):
-                        order = exp.get("sample_order", 0)
-                        if isinstance(order, (int, float)):
-                            current_sample_order = max(current_sample_order, int(order))
-
-                # 按类别筛选 + 排序 + 截断。
-                filtered_experiences = {"None": [], "Good": [], "Bad": []}
-                for category in ("None", "Good", "Bad"):
-                    category_exps = experiences.get(category) or []
-                    if not category_exps:
-                        continue
-
-                    # None 类经验始终注入；Good / Bad 先按概率决定是否注入。
-                    if category != "None" and random.random() >= optional_category_probability:
-                        continue
-
-                    # 新鲜度窗口：样本进度超过阈值后，只保留近期经验。
-                    if current_sample_order > freshness_threshold:
-                        min_order = current_sample_order * freshness_ratio
-                        category_exps = [
-                            exp for exp in category_exps
-                            if isinstance(exp.get("sample_order"), (int, float))
-                            and min_order <= exp["sample_order"] <= current_sample_order
-                        ]
-                    if not category_exps:
-                        continue
-
-                    # 排序：Good 取最成功（score 降序），Bad 取最值得借鉴（score 升序），None 保持时间序。
-                    if category == "Good":
-                        category_exps = sorted(
-                            category_exps,
-                            key=lambda e: e.get("score") if isinstance(e.get("score"), (int, float)) else float('-inf'),
-                            reverse=True,
-                        )
-                    elif category == "Bad":
-                        category_exps = sorted(
-                            category_exps,
-                            key=lambda e: e.get("score") if isinstance(e.get("score"), (int, float)) else float('inf'),
-                        )
-
-                    # 截断到每类条数上限（原先 category_max_samples 定义了却未使用，导致 None 类被全部注入）。
-                    filtered_experiences[category] = category_exps[:category_max_samples.get(category, 2)]
-
-                # 合并所有类别的经验
-                all_selected_experiences = []
-                for category, exps in filtered_experiences.items():
-                    for exp in exps:
-                        experience_entry = {
-                            "type": category,
-                            "analysis": exp.get("analysis", ""),
-                            "sample_order": exp.get("sample_order", "unknown"),
-                        }
-
-                        # 对于 None 类别，添加错误信息（如果有）
-                        if category == "None" and "error" in exp:
-                            error_msg = exp["error"]
-                            # 移除特定错误信息（如果需要）
-                            if error_msg == "Execution Error: too many values to unpack (expected 5)":
-                                error_msg = ""
-
-                            if error_msg:
-                                experience_entry["error"] = error_msg
-
-                        all_selected_experiences.append(experience_entry)
-
-                # 如果有经验可用，构建经验提示
-                if all_selected_experiences:
-                    experience_prompt = pc.ideas_block_title
-
-                    # 为每个经验分配编号，并标注类别（成功经验/待改进/失败教训），
-                    # 帮助模型区分“要复制的成功因子”与“要避免的失败”。
-                    label_map = {"Good": "successful experience", "Bad": "needs improvement", "None": "failure lesson"}
-                    for i, exp in enumerate(all_selected_experiences, 1):
-                        label = label_map.get(exp["type"], exp["type"])
-                        experience_prompt += pc.idea_item_prefix.format(index=i, label=label)
-                        print("=================================sample_order: ==================================\n", exp['sample_order'])
-
-                        # 限制经验分析文本的最大字符数
-                        analysis_text = exp["analysis"] if exp.get("analysis") else ""
-                        if len(analysis_text) > max_analysis_chars:
-                            analysis_text = analysis_text[:max_analysis_chars] + "..."
-                        experience_prompt += analysis_text
-
-                        experience_prompt += "\n---\n\n"
-
-                    # 若包含失败经验，追加参数预算提示，避免模型为修复越界而要求更多参数
-                    if any(exp.get("type") == "None" for exp in all_selected_experiences):
-                        max_params = (
-                            self._prompt_ctx.max_param_count
-                            if hasattr(self, "_prompt_ctx") and self._prompt_ctx is not None else None
-                        )
-                        if max_params is not None:
-                            experience_prompt += (
-                                f"Note: the evaluator passes exactly {max_params} trainable parameters "
-                                f"(params[0]..params[{max_params - 1}]). "
-                                "Keep every equation within this budget; do not request more parameters.\n"
-                            )
-
-                    # 将经验添加到原始内容中
-                    content = experience_prompt + "\n\n" + content
-
-            # 有 p 的几率进入以下代码（注入最新残差分析）：
-            p = inject_residual_probability  # 残差分析注入概率（Config.experience_injection.inject_residual_probability 可覆盖）
-
-            if random.random() < p and os.path.exists(experience_file):
-                print("use residual_analyze: True")
-
-                residual_file = os.path.join(getattr(self, "_base_dir", "."), "residual_analyze.json")
-                if os.path.exists(residual_file):
-                    with open(residual_file, "r", encoding="utf-8") as f:
-                        experiences = json.load(f)
-
-                    # 提取最后一条信息
-                    if experiences:
-                        last_experience = experiences[-1]
-                        last_analysis = last_experience.get("analysis", "")
-                        last_sample_order = last_experience.get("sample_order", "unknown")
-                        last_equation = last_experience.get("equation", "")
-                        if last_equation is not None:
-                            # 构建提示
-                            experience_prompt = (
-                                self._prompt_ctx.render_residual_block_title()
-                                if hasattr(self, "_prompt_ctx") and self._prompt_ctx is not None
-                                else pc.residual_block_title.format(problem=pc.problem_name_in_prompt)
-                            )
-                            if len(last_analysis) > 2000:
-                                last_analysis = last_analysis[:2000] + "..."
-                            experience_prompt += last_analysis
-                            print("=================================sample_order: ==================================\n", last_sample_order)
-                            # 将经验添加到原始内容中
-                            content = experience_prompt + "\n\n" + content
-                        else:
-                            # 构建提示
-                            experience_prompt = (
-                                self._prompt_ctx.render_residual_block_title()
-                                if hasattr(self, "_prompt_ctx") and self._prompt_ctx is not None
-                                else pc.residual_block_title.format(problem=pc.problem_name_in_prompt)
-                            )
-                            if isinstance(last_analysis, list):
-                                last_analysis = last_analysis[0] if last_analysis else ""
-                            if len(last_analysis) > 2000:
-                                last_analysis = last_analysis[:2000] + "..."
-                            experience_prompt += last_analysis
-
-                            # 将经验添加到原始内容中
-                            content = experience_prompt + "\n\n" + content
-
-        except Exception as e:
-            print(f"加载经验数据时出错: {str(e)}")
-            print("Error details:")
-            traceback.print_exc()  # 输出详细的错误堆栈信息
-
-        # 添加任务头
-        if hasattr(self, "_prompt_ctx") and self._prompt_ctx is not None:
-            head = self._prompt_ctx.render_head()
-        else:
-            head = pc.head_template.format(
-                dependent=pc.dependent_name_in_prompt,
-                problem=pc.problem_name_in_prompt,
-                independent=pc.independent_name_in_prompt,
-            )
-        content = head + '\n' + content
-        print_block("========================最终输入给大模型的content========================\n")
-        print_block(content)
+        experience_prompt = self._build_experience_prompt(selected, max_analysis_chars)
+        if experience_prompt:
+            print_block(f"[经验] 注入 {len(selected)} 条经验（进度 sample_order={current_sample_order}）")
+            content = experience_prompt + "\n\n" + content
         return content
+
+    def _select_experiences(self, experiences: dict, current_sample_order: int,
+                            optional_category_probability: float,
+                            category_max_samples: dict,
+                            freshness_threshold: int,
+                            freshness_ratio: float) -> list:
+        """按类别筛选 + 排序 + 截断，返回扁平化经验条目列表。
+
+        每条含 type/analysis/sample_order；None 类额外附 error（过滤掉指定噪声错误）。
+        """
+        selected = []
+        for category in ("None", "Good", "Bad"):
+            category_exps = experiences.get(category) or []
+            if not category_exps:
+                continue
+            # None 类始终注入；Good / Bad 先按概率决定是否注入
+            if category != "None" and random.random() >= optional_category_probability:
+                continue
+            # 新鲜度窗口：样本进度超过阈值后，只保留近期经验
+            if current_sample_order > freshness_threshold:
+                min_order = current_sample_order * freshness_ratio
+                category_exps = [
+                    exp for exp in category_exps
+                    if isinstance(exp.get("sample_order"), (int, float))
+                    and min_order <= exp["sample_order"] <= current_sample_order
+                ]
+            if not category_exps:
+                continue
+            # 排序：Good 取最成功（score 降序），Bad 取最值得借鉴（score 升序），None 保持时间序
+            if category == "Good":
+                category_exps = sorted(
+                    category_exps,
+                    key=lambda e: e.get("score") if isinstance(e.get("score"), (int, float)) else float('-inf'),
+                    reverse=True,
+                )
+            elif category == "Bad":
+                category_exps = sorted(
+                    category_exps,
+                    key=lambda e: e.get("score") if isinstance(e.get("score"), (int, float)) else float('inf'),
+                )
+            # 截断到每类条数上限
+            category_exps = category_exps[:category_max_samples.get(category, 2)]
+
+            for exp in category_exps:
+                entry = {
+                    "type": category,
+                    "analysis": exp.get("analysis", ""),
+                    "sample_order": exp.get("sample_order", "unknown"),
+                }
+                # None 类附加错误信息（过滤特定噪声错误）
+                if category == "None" and "error" in exp:
+                    error_msg = exp["error"]
+                    if error_msg == "Execution Error: too many values to unpack (expected 5)":
+                        error_msg = ""
+                    if error_msg:
+                        entry["error"] = error_msg
+                selected.append(entry)
+        return selected
+
+    def _build_experience_prompt(self, selected: list, max_analysis_chars: int) -> str:
+        """把选中的经验条目拼成提示词块（含编号、类别标签、参数预算提示）。"""
+        prompt = pc.ideas_block_title
+        # 为每个经验分配编号并标注类别（成功经验/待改进/失败教训），
+        # 帮助模型区分"要复制的成功因子"与"要避免的失败"
+        label_map = {"Good": "successful experience", "Bad": "needs improvement", "None": "failure lesson"}
+        for i, exp in enumerate(selected, 1):
+            label = label_map.get(exp["type"], exp["type"])
+            prompt += pc.idea_item_prefix.format(index=i, label=label)
+            analysis_text = exp["analysis"] if exp.get("analysis") else ""
+            if len(analysis_text) > max_analysis_chars:
+                analysis_text = analysis_text[:max_analysis_chars] + "..."
+            prompt += analysis_text
+            prompt += "\n---\n\n"
+        # 若包含失败经验，追加参数预算提示，避免模型为修复越界而要求更多参数
+        if any(exp.get("type") == "None" for exp in selected):
+            max_params = (
+                self._prompt_ctx.max_param_count
+                if self._prompt_ctx is not None else None
+            )
+            if max_params is not None:
+                prompt += (
+                    f"Note: the evaluator passes exactly {max_params} trainable parameters "
+                    f"(params[0]..params[{max_params - 1}]). "
+                    "Keep every equation within this budget; do not request more parameters.\n"
+                )
+        return prompt
+
+    def _inject_residual(self, content: str, inject_residual_probability: float) -> str:
+        """以 inject_residual_probability 概率注入最近一条残差分析，前置 content。
+
+        合并原先 if last_equation is not None / else 两个几乎重复的分支：统一处理
+        analysis 为 list 的历史格式（取首条），并截断到 2000 字符。
+        """
+        if random.random() >= inject_residual_probability:
+            return content
+        # 仅当经验文件存在（已进入采样循环）时才注入残差，避免首轮空注入
+        experience_file = os.path.join(getattr(self, "_base_dir", "."), "experiences.json")
+        if not os.path.exists(experience_file):
+            return content
+
+        residual_file = os.path.join(getattr(self, "_base_dir", "."), "residual_analyze.json")
+        residual_data = self._load_json_cached(residual_file)
+        if not residual_data:
+            return content
+
+        last = residual_data[-1]
+        last_analysis = last.get("analysis", "")
+        # analysis 可能是 list（初始数据记录的历史格式），取首条
+        if isinstance(last_analysis, list):
+            last_analysis = last_analysis[0] if last_analysis else ""
+        if len(last_analysis) > 2000:
+            last_analysis = last_analysis[:2000] + "..."
+
+        block_title = (
+            self._prompt_ctx.render_residual_block_title()
+            if self._prompt_ctx is not None
+            else pc.residual_block_title.format(problem=pc.problem_name_in_prompt)
+        )
+        print_block(f"[残差] 注入最近残差分析（sample_order={last.get('sample_order', 'unknown')}）")
+        return block_title + last_analysis + "\n\n" + content
 
 
 def _extract_code_fragment(text: str) -> str | None:

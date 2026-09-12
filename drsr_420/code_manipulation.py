@@ -41,7 +41,7 @@ def sanitize_code_text(text: str) -> str:
 
 @dataclasses.dataclass
 class Function:
-    "" "A parsed Python function. """
+    """A parsed Python function."""
 
     name: str
     args: str
@@ -147,7 +147,10 @@ class ProgramVisitor(ast.NodeVisitor):
             
             # Extract the docstring.
             docstring = None
-            if isinstance(node.body[0], ast.Expr) and isinstance(node.body[0].value, ast.Str):
+            # ast.Str 自 Python 3.8 起弃用、3.14 移除；改用 ast.Constant + str 类型判断
+            if (isinstance(node.body[0], ast.Expr)
+                    and isinstance(node.body[0].value, ast.Constant)
+                    and isinstance(node.body[0].value.value, str)):
                 docstring = f'  """{ast.literal_eval(ast.unparse(node.body[0]))}"""'
                 if len(node.body) > 1:
                     body_start_line = node.body[1].lineno - 1

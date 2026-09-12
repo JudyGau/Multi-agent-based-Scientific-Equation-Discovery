@@ -48,6 +48,42 @@ class LineStreamPrinter:
                 print(flush=True)
 
 
+class StreamDeltaPrinter:
+    """LLM 流式增量打印器：把 chat(on_delta=...) 回调的 reasoning/content 实时按行输出。
+
+    在思考段与正文段交界处插入 [思考]/[正文] 视觉分隔，底色由 LineStreamPrinter
+    保证多线程并行下整行完整、带线程前缀。
+
+    封装原先在 tool_caller_agent / experience_summarizer_agent /
+    residual_analyzer_agent / data_analyzer_agent 中逐字重复的 _on_delta 闭包。
+    """
+
+    def __init__(self):
+        self._stream = LineStreamPrinter()
+        self._shown = 0  # 已实时打印的字符数（reasoning 在前、content 在后拼接）
+        self._think_label_printed = False
+        self._content_label_printed = False
+
+    def on_delta(self, chunk: dict) -> None:
+        """流式回调：chunk 含 reasoning_content / content 字段，按到达顺序打印增量。"""
+        reasoning = chunk.get('reasoning_content') or ''
+        content = chunk.get('content') or ''
+        text = reasoning + content
+        if len(text) > self._shown:
+            if self._shown < len(reasoning) and not self._think_label_printed:
+                self._stream.write("[思考]\n")
+                self._think_label_printed = True
+            elif not self._content_label_printed:
+                self._stream.write_line("[正文]")
+                self._content_label_printed = True
+            self._stream.write(text[self._shown:])
+            self._shown = len(text)
+
+    def flush(self) -> None:
+        """输出剩余未换行的缓冲内容。"""
+        self._stream.flush()
+
+
 def print_block(text) -> None:
     """带线程前缀完整输出多行文本块。
 

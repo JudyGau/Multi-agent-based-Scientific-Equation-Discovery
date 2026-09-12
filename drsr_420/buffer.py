@@ -16,14 +16,18 @@
 """A multi-island experience buffer that implements the evolutionary algorithm."""
 from __future__ import annotations
 
-import profile
-from collections.abc import Mapping, Sequence
 import copy
 import dataclasses
 import json
 import threading
 import time
-from typing import Any, Tuple, Mapping
+from collections.abc import Mapping, Sequence
+from typing import Any, TYPE_CHECKING, Tuple, Mapping
+
+if TYPE_CHECKING:
+    # 仅用于类型注解（运行时不求值，已启用 from __future__ import annotations）。
+    # 此前误用 `import profile`（标准库性能分析模块）占用 profile 名字，已修正。
+    from drsr_420.profile import Profiler
 
 import logging
 import numpy as np
@@ -110,13 +114,17 @@ class ExperienceBuffer:
 
 
     def get_prompt(self) -> Prompt:
-        """Returns a prompt containing samples from one chosen island."""
+        """Returns a prompt containing samples from one chosen island.
+
+        仅在非空岛屿中随机选取：空岛屿没有 cluster，其 softmax/argmax 会因零尺寸数组
+        崩溃。全部岛屿为空时抛出明确错误，避免难以定位的内部异常。
+        """
         with self._lock:
-            island_id = np.random.randint(len(self._islands))
-
-            # code, version_generated, prompt_scores = self._islands[island_id].get_prompt()
-            # return Prompt(code, version_generated, island_id, prompt_scores)
-
+            non_empty = [i for i, island in enumerate(self._islands)
+                         if island.num_programs > 0]
+            if not non_empty:
+                raise RuntimeError("经验缓冲中没有任何已注册程序，无法生成 prompt")
+            island_id = int(np.random.choice(non_empty))
             code, version_generated = self._islands[island_id].get_prompt()
             return Prompt(code, version_generated, island_id)
 
@@ -137,7 +145,7 @@ class ExperienceBuffer:
             self._best_score_per_island[island_id] = score
             logging.info('Best score of island %d increased to %s', island_id, score)
 
-        profiler: profile.Profiler = kwargs.get('profiler', None)
+        profiler: Profiler = kwargs.get('profiler', None)
         if profiler:
             global_sample_nums = kwargs.get('global_sample_nums', None)
             sample_time = kwargs.get('sample_time', None)
@@ -280,6 +288,11 @@ class Island:
         self._clusters: dict[Signature, Cluster] = {}
         self._num_programs: int = 0
 
+    @property
+    def num_programs(self) -> int:
+        """本岛屿已注册的程序总数（用于判断岛屿是否为空）。"""
+        return self._num_programs
+
 
     def register_program(
             self,
@@ -321,12 +334,6 @@ class Island:
 
         indices = np.argsort(scores)
         sorted_implementations = [implementations[i] for i in indices]
-        
-
-        # ################## 将分数输入岛屿
-        # sorted_scores = [scores[i] for i in indices]
-
-
 
         version_generated = len(sorted_implementations) + 1
         return self._generate_prompt(sorted_implementations), version_generated

@@ -107,8 +107,10 @@ class MCPStdioClient:
             if getattr(c, "text", None) is not None
         ]
         text = "\n".join(parts)
-        # mcp>=2.x 中 CallToolResult 字段为 snake_case 的 is_error（旧版 1.x 为 isError）
-        if resp.is_error:
+        # mcp>=2.x 中 CallToolResult 字段为 snake_case 的 is_error；旧版 1.x 为 isError。
+        # requirements 声明 mcp>=1.0，故同时兼容两种拼写，缺失时按"非错误"处理。
+        is_error = getattr(resp, "is_error", getattr(resp, "isError", False))
+        if is_error:
             return json.dumps({"error": text})
         return text
 

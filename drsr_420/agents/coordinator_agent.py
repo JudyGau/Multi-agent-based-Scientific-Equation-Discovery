@@ -216,12 +216,16 @@ class CoordinatorAgent:
         )
 
     def _evaluate_batch(self, batch: SampleBatch, best_score: float, **kwargs) -> None:
-        """逐样本评估：全局计数 +1、随机选 evaluator 执行 analyse，追踪本轮最优样本。"""
-        residual_data = None
+        """逐样本评估：全局计数 +1、随机选 evaluator 执行 analyse，追踪本轮最优样本。
+
+        best 追踪用单标量 round_best（O(n)）替代原先的 temp_best_score 列表 + max()
+        （O(n^2)）；语义保持一致：仅严格超过评估前 best_score 的样本参与本轮最优
+        评比，平局取后出现者（用 >= 比较）。
+        """
         best_sample = None
-        if_best = False
+        residual_data = None
         id = 0
-        temp_best_score = []
+        round_best = best_score  # 本轮已见最高分，初值=评估前阈值基准
         for sample in batch.samples:
             self._global_sample_nums_plus_one()
             cur_global_sample_nums = self._get_global_sample_nums()
@@ -237,43 +241,37 @@ class CoordinatorAgent:
             batch.scores.append(score)
             batch.errors.append(error_msg)
             id += 1
-            print(best_score)
-            print(score)
-            print('===================从chosen_evaluator.analyse中获得残差=====================\n')
-            print_block(residual)
-            if score is not None and score > best_score:
-                temp_best_score.append(score)
-                # 如果score比temp_best_score中的最大值大，就更新best
-                if score >= max(temp_best_score):
-                    batch.best_id = id
-                    if_best = True
-                    print("我在这里变成true了")
-                    residual_data = residual
-                    best_sample = sample
-                    batch.best_score = score
+            # 严格超过评估前最佳，且不劣于本轮已见最高分（平局取后出现者）
+            if score is not None and score > best_score and score >= round_best:
+                round_best = score
+                batch.best_id = id
+                residual_data = residual
+                best_sample = sample
+                batch.best_score = score
         batch.best_residual = residual_data
         batch.best_sample = best_sample
 
-        print("score_for_sample: ")
-        print_block(batch.scores)
-        print("===========error_for_samlple:============================\n ")
-        print_block(batch.errors)
-        print("=========================residual_data: ================\n")
-        print_block(residual_data)
+        # 批次摘要（替代原先散落的裸 print 调试噪声：best_score/score 裸打、长分隔线等）
+        scores_preview = [round(s, 6) if isinstance(s, (int, float)) else s for s in batch.scores]
+        print_block(
+            f"[评估] 岛屿 {batch.prompt.island_id} 本轮 {len(batch.scores)} 个样本，"
+            f"分数={scores_preview}，本轮最优 id={batch.best_id} score={batch.best_score}")
 
     def _classify_quality(self, batch: SampleBatch, best_score: float) -> None:
         """按评估前 best_score 将每样本分为 Good/Bad/None。"""
         for each_score in batch.scores:
-            if each_score == None:
+            if each_score is None:
                 batch.qualities.append('None')
             elif each_score > best_score:
                 batch.qualities.append('Good')
             else:
                 batch.qualities.append('Bad')
 
-        print("quality_for_sample:")
-        print('================================检查一下if_best的值====================\n')
-        print(batch.best_id is not None)
+        # 质量分布摘要（替代原先的裸 print 噪声：quality_for_sample/if_best 等）
+        print_block(
+            f"[质量] Good={batch.qualities.count('Good')} "
+            f"Bad={batch.qualities.count('Bad')} None={batch.qualities.count('None')}，"
+            f"本轮最优命中={batch.best_id is not None}")
 
     def _summarize_experience(self, batch: SampleBatch) -> None:
         """委托 ExperienceSummarizerAgent 对整批样本做经验总结。"""

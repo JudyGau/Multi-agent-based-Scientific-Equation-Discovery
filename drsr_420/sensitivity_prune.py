@@ -187,7 +187,7 @@ class SensitivityPruner:
 
         # Step 2: 贪心移除 —— 按贡献从小到大排序
         kept: List[sp.Expr] = list(pruned_terms)
-        self._greedy_remove(kept, neutral=sp.Integer(0),
+        self._greedy_remove(kept, neutral=sp.Integer(0), reducer=sp.Add,
                             kind="term_of_Add", depth=depth)
 
         if not kept:
@@ -209,7 +209,7 @@ class SensitivityPruner:
         sym_factors = [f for f in kept if not f.is_number]
 
         if len(sym_factors) > 1:    # 至少保留一个符号因子
-            self._greedy_remove(kept, neutral=sp.Integer(1),
+            self._greedy_remove(kept, neutral=sp.Integer(1), reducer=sp.Mul,
                                 kind="factor_of_Mul", depth=depth,
                                 skip_numbers=True)
 
@@ -233,6 +233,7 @@ class SensitivityPruner:
         self,
         kept: List[sp.Expr],
         neutral: sp.Expr,
+        reducer,
         kind: str,
         depth: int,
         skip_numbers: bool = False,
@@ -244,17 +245,19 @@ class SensitivityPruner:
         ----------
         kept         : 当前保留的子表达式列表（原位修改）。
         neutral      : 中性元（Add → 0，Mul → 1）。
+        reducer      : 父节点构造器（sp.Add 或 sp.Mul），与 neutral 配对。
         kind         : 节点类型标签，用于日志/统计。
         depth        : 当前深度。
         skip_numbers : 若 True，跳过纯数字项（用于 Mul）。
         """
-        # 构建父节点的工厂函数
+        # 构建父节点的工厂函数：显式传入 reducer，避免靠 neutral == sp.Integer(0)
+        # 这种隐式相等比较来推断构造器（脆弱且每次重建 Integer 对象）。
         def build(items):
             if not items:
                 return neutral
             if len(items) == 1:
                 return items[0]
-            return (sp.Add if neutral == sp.Integer(0) else sp.Mul)(*items)
+            return reducer(*items)
 
         # 按各项在采样点上的贡献排序（贡献小的优先尝试）。
         # 用 nanmedian 抗离群点；若全部无效则视为 0 贡献（最后再尝试移除）。

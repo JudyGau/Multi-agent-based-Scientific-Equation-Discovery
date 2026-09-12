@@ -28,12 +28,17 @@ from __future__ import annotations
 import ast
 import copy
 import multiprocessing
-import profile
 import threading
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from typing import Any, Type
+from typing import Any, TYPE_CHECKING, Type
+
+if TYPE_CHECKING:
+    # 仅用于类型注解（运行时不求值，文件已启用 from __future__ import annotations）。
+    # 此前误用 `import profile`（标准库性能分析模块）占用 profile 名字，已修正为
+    # 显式从项目 drsr_420.profile 导入 Profiler，避免命名冲突与误导。
+    from drsr_420.profile import Profiler
 
 import numpy as np
 
@@ -426,7 +431,7 @@ class EvaluatorAgent:
             )
 
         else:
-            profiler: profile.Profiler = kwargs.get('profiler', None)
+            profiler: Profiler = kwargs.get('profiler', None)
             if profiler:
                 global_sample_nums = kwargs.get('global_sample_nums', None)
                 sample_time = kwargs.get('sample_time', None)

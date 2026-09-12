@@ -615,6 +615,35 @@ def normalize_llm_config(config: dict) -> dict:
 
 
 class ClientFactory:
+    """LLM 客户端工厂：按 'provider/model' 解析提供商并构造对应客户端。
+
+    提供商规格集中在 ``_PROVIDER_SPECS``（类→环境变量→默认 base_url）与
+    ``_PROVIDER_ALIASES``（别名→规范名）两张表，新增提供商只需加一行，
+    无需在 from_config 内维护 if/elif 分支。
+    """
+
+    # 规范提供商 -> (客户端类, api_key 环境变量名, 默认 base_url)
+    #   env_var 为 None 表示不强制要求 key（如 ollama 本地部署）。
+    #   default_base_url 为 None 表示由客户端类自行从环境变量兜底（如 blt）。
+    _PROVIDER_SPECS = {
+        'deepseek':   (DeepSeekClient,    'DEEPSEEK_API_KEY',   'https://api.deepseek.com'),
+        'siliconflow':(SiliconflowClient, 'SILICONFLOW_API_KEY','https://api.siliconflow.cn/v1'),
+        'deepinfra':  (DeepInfraClient,   'DEEPINFRA_API_KEY',  'https://api.deepinfra.com/v1/openai'),
+        'ollama':     (OllamaClient,      None,                 'http://localhost:11111/v1'),
+        'blt':        (BltClient,         'BLT_API_KEY',        None),
+        'cstcloud':   (CSTCloudClient,    'CSTCLOUD_API_KEY',   'https://uni-api.cstcloud.cn/v1'),
+        'glm':        (ZhipuClient,       'ZHIPU_API_KEY',      'https://open.bigmodel.cn/api/paas/v4'),
+    }
+
+    # 提供商别名 -> 规范名（大小写不敏感的 provider 段经别名归一）
+    _PROVIDER_ALIASES = {
+        'silicon-flow': 'siliconflow', 'sflow': 'siliconflow',
+        'deep-infra': 'deepinfra',
+        'bltcy': 'blt', 'plato': 'blt',
+        'cst': 'cstcloud', 'cst-cloud': 'cstcloud', 'keji': 'cstcloud', 'keji-yun': 'cstcloud',
+        'glm4': 'glm', 'zhipu': 'glm', 'bigmodel': 'glm', 'big-model': 'glm',
+    }
+
     @staticmethod
     def from_config(config: dict):
         """
@@ -661,30 +690,25 @@ class ClientFactory:
                 )
             return resolved
 
-        # 设置默认 base_url 并构造对应客户端
-        if provider == 'deepseek':
-            base_url = base_url or "https://api.deepseek.com"
-            client = DeepSeekClient(api_key=_require_api_key(api_key, 'DEEPSEEK_API_KEY'), model=model, base_url=base_url)
-        elif provider in ('siliconflow', 'silicon-flow', 'sflow'):
-            base_url = base_url or "https://api.siliconflow.cn/v1"
-            client = SiliconflowClient(api_key=_require_api_key(api_key, 'SILICONFLOW_API_KEY'), model=model, base_url=base_url)
-        elif provider in ('deepinfra', 'deep-infra'):
-            base_url = base_url or "https://api.deepinfra.com/v1/openai"
-            client = DeepInfraClient(api_key=_require_api_key(api_key, 'DEEPINFRA_API_KEY'), model=model, base_url=base_url)
-        elif provider == 'ollama':
-            base_url = base_url or "http://localhost:11111/v1"
-            client = OllamaClient(api_key=api_key or '', model=model, base_url=base_url)
-        elif provider in ('blt', 'bltcy', 'plato'):
-            # 优先使用传入 api_key，否则读环境变量 BLT_API_KEY
-            client = BltClient(api_key=_require_api_key(api_key, 'BLT_API_KEY'), model=model, base_url=base_url or os.getenv('BLT_API_BASE', 'https://api.bltcy.ai/v1'))
-        elif provider in ('cstcloud', 'cst', 'cst-cloud', 'keji', 'keji-yun'):
-            # 科技云：默认基址 https://uni-api.cstcloud.cn/v1
-            client = CSTCloudClient(api_key=_require_api_key(api_key, 'CSTCLOUD_API_KEY'), model=model, base_url=base_url or 'https://uni-api.cstcloud.cn/v1')
-        elif provider in ('glm', 'glm4', 'zhipu', 'bigmodel', 'big-model'):
-            # GLM（智谱）：默认基址 https://open.bigmodel.cn/api/paas/v4
-            client = ZhipuClient(api_key=_require_api_key(api_key, 'ZHIPU_API_KEY'), model=model, base_url=base_url or 'https://open.bigmodel.cn/api/paas/v4')
+        # 设置默认 base_url 并构造对应客户端（表驱动，替代原先 7 分支 if/elif）
+        canonical = ClientFactory._PROVIDER_ALIASES.get(provider, provider)
+        spec = ClientFactory._PROVIDER_SPECS.get(canonical)
+        if spec is None:
+            raise ValueError(
+                f"不支持的提供商: {provider}，请使用 'deepseek'、'siliconflow'、"
+                f"'deepinfra'、'blt'、'cstcloud'、'glm' 或 'ollama'")
+        client_cls, env_var, default_base_url = spec
+
+        # ollama 不强制 api_key；其余提供商走 _require_api_key（缺失时回退环境变量）
+        if env_var is None:
+            resolved_key = api_key or ''
         else:
-            raise ValueError(f"不支持的提供商: {provider}，请使用 'deepseek'、'siliconflow'、'deepinfra'、'blt'、'cstcloud'、'glm' 或 'ollama'")
+            resolved_key = _require_api_key(api_key, env_var)
+
+        # base_url：传入优先，否则用 spec 默认；spec 默认为 None 时由客户端类
+        # 自行从环境变量兜底（如 BltClient 读 BLT_API_BASE）
+        final_base_url = base_url or default_base_url
+        client = client_cls(api_key=resolved_key, model=model, base_url=final_base_url)
 
         client.provider = provider
         # 统一从配置注入生成参数（temperature/top_p/max_tokens 等），
@@ -703,54 +727,20 @@ class ClientFactory:
 
 
 if __name__ == '__main__':
-    # 确保你的 API 密钥已经设置为环境变量 SILICONFLOW_API_KEY
-    # 或者直接在这里替换 "your-siliconflow-api-key"
-
-
-    # client = OllamaClient(api_key='', model='llama3.1:8b')
-    # messages = [
-    #     {"role": "user", "content": "你好，请介绍一下你自己，并说明你的思考过程。"}
-    # ]
-    # response_content = client.chat(messages)
-    # print(response_content)
-
-    deepseek_api_key = 'xxx'
-    # deepseek_api_key = os.getenv("DEEPSEEK_API_KEY", "your-deepseek-api-key")
-    if deepseek_api_key == "your-deepseek-api-key":
-        print("请设置 DEEPSEEK_API_KEY 环境变量或直接在代码中提供您的 API 密钥。")
+    # 命令行冒烟测试入口。需要真实 API key，请通过环境变量提供，例如：
+    #   DEEPSEEK_API_KEY=sk-... python llm.py
+    # 切勿在此硬编码密钥。原先此处含硬编码 'xxx' 与大量注释掉的测试代码，已清理。
+    import os as _os
+    _api_key = _os.getenv("DEEPSEEK_API_KEY", "")
+    if not _api_key:
+        print("未设置 DEEPSEEK_API_KEY 环境变量，跳过冒烟测试。")
+        print("用法：DEEPSEEK_API_KEY=sk-... python llm.py")
     else:
-        client = DeepSeekClient(api_key=deepseek_api_key, model='deepseek-reasoner')
-        messages = [
-            {"role": "user", "content": "你好，请介绍一下你自己，并说明你的思考过程。"}
-        ]
-        response_content = client.chat(messages)
-        print(response_content)
-
-    print('=='*20)
-
-    # api_key = os.getenv("SILICONFLOW_API_KEY", "your-siliconflow-api-key")
-    # if api_key == "your-siliconflow-api-key":
-    #     print("请设置 SILICONFLOW_API_KEY 环境变量或直接在代码中提供您的 API 密钥。")
-    # else:
-    #     model_lists = [
-    #         'Qwen/Qwen3-8B/think',
-    #         'Qwen/Qwen3-8B',
-    #         'Qwen/QwQ-32B',
-    #         'Qwen/Qwen3-32B',
-    #         'Qwen/Qwen2.5-72B-Instruct',
-    #         'Qwen/Qwen2.5-32B-Instruct',
-    #     ]
-    #     for model in model_lists:
-    #         print('【this is model: 】', model)
-    #         client = SliconflowClient(api_key=api_key, model=model)
-    #         messages = [
-    #             {"role": "user", "content": "你好，请介绍一下你自己，并说明你的思考过程。"}
-    #         ]
-            
-    #         try:
-    #             response_content = client.chat(messages)
-    #             print(response_content)
-    #         except Exception as e:
-    #             print(f"调用模型时出错: {e}")
-
-    #         print("\n" + "="*20 + "\n")
+        client = DeepSeekClient(api_key=_api_key, model='deepseek-reasoner')
+        messages = [{"role": "user", "content": "你好，请介绍一下你自己，并说明你的思考过程。"}]
+        try:
+            response_content = client.chat(messages)
+            print(response_content)
+        except Exception as e:
+            print(f"调用模型时出错: {e}")
+    print('=' * 40)

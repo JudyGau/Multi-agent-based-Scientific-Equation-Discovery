@@ -8,38 +8,33 @@
 - 上游：pipeline.main（传入 inputs 数据 + PromptContext 动态渲染的初次分析提示）；
 - 下游：LLMClient（analysis 任务），产物写入 residual_analyze.json。
 """
-import time
-import threading
-from drsr_420.console import LineStreamPrinter, print_block
-import numpy as np
-import pandas as pd
 import io
 from typing import Dict, Any, Optional, Union
-import requests
 import json
 import os
-import http.client
 
+import numpy as np
+import pandas as pd
+
+from drsr_420.console import StreamDeltaPrinter, print_block
 from drsr_420 import prompt_config as pc
-
-Port = '5000'
 
 
 class DataAnalyzerAgent:
     """数据分析 Agent：使用本地大模型分析 CSV / 数据字典。"""
 
-    # 全局变量：保留小数位数和随机采样数量
+    # 默认配置（实例级覆盖，不再写回类属性，避免多实例互相污染）
     DECIMAL_PLACES = 3  # 默认保留3位小数
     SAMPLE_SIZE = 100   # 默认随机采样100条数据
 
-    def __init__(self, api_url: str = f"http://127.0.0.1:{Port}/completions", timeout: int = 300,
-                 decimal_places: int = None, sample_size: int = None, base_dir: str | None = None,
+    def __init__(self, api_url: str = "http://127.0.0.1:5000/completions", timeout: int = 300,
+                 decimal_places: int | None = None, sample_size: int | None = None, base_dir: str | None = None,
                  llm_client: object | None = None, seed: int | None = None):
         """
         初始化数据分析器
 
         Args:
-            api_url: 语言模型API的URL地址
+            api_url: 语言模型API的URL地址（保留兼容，主流程走 llm_client）
             timeout: API请求超时时间(秒)
             decimal_places: 保留小数位数，None表示使用默认值
             sample_size: 随机采样数量，None表示使用默认值
@@ -49,12 +44,10 @@ class DataAnalyzerAgent:
         self.base_dir = base_dir or "."
         self.llm_client = llm_client
         self.seed = seed
-
-        # 如果传入了自定义值，则覆盖默认值
-        if decimal_places is not None:
-            self.__class__.DECIMAL_PLACES = decimal_places
-        if sample_size is not None:
-            self.__class__.SAMPLE_SIZE = sample_size
+        # 实例级配置：原先 self.__class__.DECIMAL_PLACES = ... 会污染所有实例共享的
+        # 类属性（多实例/复用类时互相覆盖），改为实例属性隔离。
+        self.decimal_places = self.DECIMAL_PLACES if decimal_places is None else decimal_places
+        self.sample_size = self.SAMPLE_SIZE if sample_size is None else sample_size
 
     def _read_csv_data(self, csv_file_path: str, max_rows: Optional[int] = None) -> str:
         """
@@ -74,12 +67,12 @@ class DataAnalyzerAgent:
             # 对数值列应用小数位数保留
             numeric_cols = df.select_dtypes(include=['float64', 'float32', 'int64', 'int32']).columns
             for col in numeric_cols:
-                df[col] = df[col].round(self.__class__.DECIMAL_PLACES)
+                df[col] = df[col].round(self.decimal_places)
 
             # 如果数据行数超过采样数量，则进行随机采样
-            if len(df) > self.__class__.SAMPLE_SIZE and self.__class__.SAMPLE_SIZE > 0:
-                df = df.sample(n=self.__class__.SAMPLE_SIZE, random_state=self.seed)  # 使用固定随机种子以保持结果可复现
-                print(f"已从{csv_file_path}随机采样{self.__class__.SAMPLE_SIZE}行数据")
+            if len(df) > self.sample_size and self.sample_size > 0:
+                df = df.sample(n=self.sample_size, random_state=self.seed)  # 使用固定随机种子以保持结果可复现
+                print(f"已从{csv_file_path}随机采样{self.sample_size}行数据")
 
             # 转换为字符串
             buffer = io.StringIO()
@@ -120,16 +113,16 @@ class DataAnalyzerAgent:
 
             # 随机采样
             rows_count = combined_data.shape[0]
-            if rows_count > self.__class__.SAMPLE_SIZE and self.__class__.SAMPLE_SIZE > 0:
+            if rows_count > self.sample_size and self.sample_size > 0:
                 # 使用独立 RNG 保持可复现，避免污染全局随机态
                 rng = np.random.default_rng(self.seed)
                 # 随机选择行索引
-                indices = rng.choice(rows_count, self.__class__.SAMPLE_SIZE, replace=False)
+                indices = rng.choice(rows_count, self.sample_size, replace=False)
                 combined_data = combined_data[indices]
-                print(f"已从数据集随机采样{self.__class__.SAMPLE_SIZE}行数据")
+                print(f"已从数据集随机采样{self.sample_size}行数据")
 
             # 保留指定位数的小数
-            combined_data = np.round(combined_data, self.__class__.DECIMAL_PLACES)
+            combined_data = np.round(combined_data, self.decimal_places)
 
             return combined_data
 
@@ -210,31 +203,12 @@ STRICTLY deliver results in the following structured format:
             # 数据分析仅需简短结论，限制输出长度，避免 max_tokens 过大导致服务端长时间生成
             llm_client.kwargs['max_tokens'] = 32768
             # 流式输出：通过 on_delta 回调实时打印思考内容与正文（[思考]/[正文] 视觉分隔）
-            stream = LineStreamPrinter()
-            shown = 0
-            think_label_printed = False
-            content_label_printed = False
-
-            def _on_delta(chunk):
-                nonlocal shown, think_label_printed, content_label_printed
-                reasoning = chunk.get('reasoning_content') or ''
-                content = chunk.get('content') or ''
-                text = reasoning + content
-                if len(text) > shown:
-                    if shown < len(reasoning) and not think_label_printed:
-                        stream.write("[思考]\n")
-                        think_label_printed = True
-                    elif not content_label_printed:
-                        stream.write_line("[正文]")
-                        content_label_printed = True
-                    stream.write(text[shown:])
-                    shown = len(text)
-
+            printer = StreamDeltaPrinter()
             resp = llm_client.chat([
                 {"role": "system", "content": pc.system_prompt},
                 {"role": "user", "content": prompt},
-            ], on_delta=_on_delta)
-            stream.flush()
+            ], on_delta=printer.on_delta)
+            printer.flush()
             print()  # 流式结束后换行
             # 兜底：推理模型可能把完整分析输出在 reasoning_content 而 content 为空，
             # 此时回退到思考内容，避免初次/残差分析结果丢失导致经验注入链路断裂。
@@ -277,7 +251,6 @@ STRICTLY deliver results in the following structured format:
         else:
             # 处理数据字典
             array_data = self._read_dataset_and_to_array(data_source, max_rows)
-            print('====================================是字典=============================')
             if array_data.size == 0:
                 return "无法处理数据字典"
 
@@ -295,11 +268,9 @@ STRICTLY deliver results in the following structured format:
 
 
         if verbose:
-            if isinstance(data_content, str):
-                data_size = len(data_content)
-                print(f"数据大小: {data_size} 字符")
-            else:
-                print(f"数据形状: {array_data.shape}")
+            # data_content 两个分支均为 str，统一报告字符数（原先 else 分支引用
+            # 仅 dict 分支定义的 array_data，CSV 分支会 NameError，此处为死代码已移除）
+            print(f"数据大小: {len(data_content)} 字符")
 
         # 创建提示
         prompt = self._create_prompt(data_content, custom_prompt)
@@ -313,47 +284,44 @@ STRICTLY deliver results in the following structured format:
 
         if verbose:
             print("分析完成")
-            json_residual_file = os.path.join(self.base_dir, "residual_analyze.json")
-                                # 加载现有的初次分析数据（如果文件存在）
-            data_list = []
-            if os.path.exists(json_residual_file):
-                try:
-                    with open(json_residual_file, "r", encoding="utf-8") as f:
-                        existing_data = json.load(f)
-                        if isinstance(existing_data, list):
-                            data_list = existing_data
-                except json.JSONDecodeError:
-                    print(f"现有的初次分析JSON文件格式有误，将创建新文件")
-                except Exception as e:
-                    print(f"读取现有初次分析文件时出错: {e}")
 
-            # 创建新的初次分析记录
-            current_sample_order = 0  # 获取当前样本的顺序号
-
-
-            # 创建初次分析数据结构
-            residual_record = {
-                "sample_order": current_sample_order,
-                "island_id": 'this is the initial data',
-                "equation": None,
-                "analysis": result,
-                "stats": {
-                    "mean_residual": None,
-                    "max_absolute_residual": None,
-                    "std_residual": None
-                },
-            }
-
-            # 添加到初次分析数据列表
-            data_list.append(residual_record)
-
-            # 保存更新后的初次分析数据
+        # 持久化初次分析记录到 residual_analyze.json（sample_order=0 基线）。
+        # 此前整段写盘逻辑被误嵌在 `if verbose:` 内 —— verbose=False 时初始分析不落盘，
+        # 会导致后续残差注入链路（ResidualAnalyzer 读取 last_analysis）断裂。这里改为无条件执行。
+        json_residual_file = os.path.join(self.base_dir, "residual_analyze.json")
+        data_list = []
+        if os.path.exists(json_residual_file):
             try:
-                with open(json_residual_file, "w", encoding="utf-8") as f:
-                    json.dump(data_list, f, ensure_ascii=False, indent=2)
-                print(f"成功更新初次分析JSON文件: {json_residual_file}")
+                with open(json_residual_file, "r", encoding="utf-8") as f:
+                    existing_data = json.load(f)
+                    if isinstance(existing_data, list):
+                        data_list = existing_data
+            except json.JSONDecodeError:
+                print(f"现有的初次分析JSON文件格式有误，将创建新文件")
             except Exception as e:
-                print(f"保存初次分析JSON文件时出错: {e}")
+                print(f"读取现有初次分析文件时出错: {e}")
+
+        # 创建初次分析数据结构（sample_order=0，作为残差分析链路的起点）
+        residual_record = {
+            "sample_order": 0,
+            "island_id": 'this is the initial data',
+            "equation": None,
+            "analysis": result,
+            "stats": {
+                "mean_residual": None,
+                "max_absolute_residual": None,
+                "std_residual": None,
+            },
+        }
+        data_list.append(residual_record)
+
+        # 保存更新后的初次分析数据
+        try:
+            with open(json_residual_file, "w", encoding="utf-8") as f:
+                json.dump(data_list, f, ensure_ascii=False, indent=2)
+            print(f"成功更新初次分析JSON文件: {json_residual_file}")
+        except Exception as e:
+            print(f"保存初次分析JSON文件时出错: {e}")
 
         return result
 

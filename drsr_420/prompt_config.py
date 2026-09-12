@@ -119,7 +119,7 @@ residual_analysis_prompt = (
     "The equation corresponding to the residuals:{sample}\n\n"
     "The independent variables are x0 and x1.\n"
     "The dependent variable is y.\n"
-    "The forth column contains residuals (calculated as observed value - predicted value from the equation).\n"
+    "The fourth column contains residuals (calculated as observed value - predicted value from the equation).\n"
     "Each row represents a set of independent variables and the corresponding dependent variable and residual.\n\n"
     "Task Requirements:\n\n"
     "1. Please analyze and summarize the influence of the changes in the values of different independent variables on the dependent variable,\n"
