@@ -17,7 +17,33 @@ from drsr_420 import code_manipulation
 try:
     from scientific_intelligent_modelling.srkit import llm as llm_stats
 except Exception:  # pragma: no cover - standalone drsr fallback
-    import llm as llm_stats
+    try:
+        import llm as llm_stats
+    except Exception:  # 仓库根不在 sys.path 时降级为无统计（_llm_usage_record 已容错）
+        llm_stats = None
+
+
+def _atomic_dump_json(path: str, obj) -> bool:
+    """先写 .part 再 os.replace 原子落盘。
+
+    旧实现 open("w") 会先截断目标文件，中途失败（磁盘满、Windows 文件锁、
+    意外类型）就留下半截 JSON——samples/progress 正是 find_best_eq 下游读取的
+    产物，坏文件比缺文件更糟；且失败此前被静默吞掉，无从排查。
+    """
+    tmp = path + ".part"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+        return True
+    except Exception as e:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        print(f"[WARN] Profiler 写入 {os.path.basename(path)} 失败: {e}")
+        return False
 
 
 class Profiler:
@@ -114,12 +140,8 @@ class Profiler:
             pass
 
         path = os.path.join(self._json_dir, f"samples_{sample_order}.json")
-        try:
-            with open(path, "w", encoding="utf-8") as json_file:
-                json.dump(content, json_file, ensure_ascii=False, indent=2)
-        except Exception:
-            # 单个样本写失败不影响主流程
-            pass
+        # 单个样本写失败不影响主流程（_atomic_dump_json 内部已捕获并告警）
+        _atomic_dump_json(path, content)
 
         # 2) 基于所有样本重新计算 Top-K，并写入 topXX_ 前缀文件
         try:
@@ -129,9 +151,11 @@ class Profiler:
             pass
 
     def register_function(self, programs: code_manipulation.Function):
-        if self._max_log_nums is not None and self._num_samples >= self._max_log_nums:
-            return
         with self._lock:
+            # 上限判断必须在锁内：多 sampler 线程并行时，锁外检查会让多个线程
+            # 同时通过守卫，实际写入量超过 max_log_nums
+            if self._max_log_nums is not None and self._num_samples >= self._max_log_nums:
+                return
             sample_orders: int = programs.global_sample_nums
             if sample_orders not in self._all_sampled_functions:
                 self._num_samples += 1
@@ -234,11 +258,7 @@ class Profiler:
                 self._best_history_dir,
                 f"best_sample_{self._global_best_sample_order}.json",
             )
-            try:
-                with open(best_path, "w", encoding="utf-8") as f:
-                    json.dump(content, f, ensure_ascii=False, indent=2)
-            except Exception:
-                pass
+            _atomic_dump_json(best_path, content)
 
         # 2. 更新 progress.json：确保 iteration 条目存在，并写入“截至该 iteration 的全局最优”
         # 扩展进度列表到当前 iteration
@@ -265,12 +285,8 @@ class Profiler:
         )
         self._progress_records[iteration - 1].update(self._llm_usage_record())
 
-        try:
-            with open(self._progress_path, "w", encoding="utf-8") as f:
-                json.dump(self._progress_records, f, ensure_ascii=False, indent=2)
-        except Exception:
-            # 写进度失败也不终止主流程
-            pass
+        # 写进度失败不终止主流程（失败已在 _atomic_dump_json 内告警）
+        _atomic_dump_json(self._progress_path, self._progress_records)
 
     def _record_and_verbose(self, sample_orders: int):
         function = self._all_sampled_functions[sample_orders]
@@ -299,7 +315,9 @@ class Profiler:
             self._cur_best_program_str = function_str
 
         # update statistics about function
-        if score:
+        # 用 is not None 判成功：score = -MSE，完美拟合时 score 为 -0.0（布尔假），
+        # 按真值判断会把最成功的样本误计入失败数
+        if score is not None:
             self._evaluate_success_program_num += 1
         else:
             self._evaluate_failed_program_num += 1
@@ -374,9 +392,5 @@ class Profiler:
 
             file_name = f"top{rank:02d}_samples_{sample_order}.json"
             path = os.path.join(self._json_dir, file_name)
-            try:
-                with open(path, "w", encoding="utf-8") as json_file:
-                    json.dump(content, json_file, ensure_ascii=False, indent=2)
-            except Exception:
-                # 单个样本写失败不影响其它样本
-                continue
+            # 单个样本写失败不影响其它样本
+            _atomic_dump_json(path, content)

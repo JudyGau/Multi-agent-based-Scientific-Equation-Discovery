@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from typing import Any, Tuple, Sequence
 import numpy as np
 
@@ -237,8 +238,18 @@ def _launch_samplers(
         print(f"[Sampler-{i}] 采样线程启动，开始并行采样", flush=True)
         t.start()
         threads.append(t)
-    for t in threads:
-        t.join()
+    try:
+        for t in threads:
+            t.join()
+    except KeyboardInterrupt:
+        # 采样线程是 daemon：主线程直接退出会把它们杀死在半轮上，
+        # 可能留下写到一半的 checkpoint.json（下次续跑只能静默放弃、从头开始）。
+        # 这里给每个线程最多 60s 收尾当前轮次的 checkpoint 落盘，再放行中断。
+        print("[WARN] 收到中断：等待采样线程完成当前轮次的 checkpoint 保存（最多 60s）…", flush=True)
+        deadline = time.time() + 60
+        for t in threads:
+            t.join(timeout=max(0.0, deadline - time.time()))
+        raise
 
 
 def main(

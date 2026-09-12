@@ -4,15 +4,19 @@ import os
 import random
 import re
 import sys
+from pathlib import Path
 from typing import List
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
+
+if __package__ in (None, ""):
+    # 直接以脚本运行（python drsr_420/tools/read_paper.py）时项目根不在 sys.path，
+    # 下面的 drsr_420.* 绝对导入会 ModuleNotFoundError；补上根目录使两种方式均可用。
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from bs4 import BeautifulSoup
+import pymupdf  # PyMuPDF
 import requests
 from tqdm import tqdm
-from drsr_420.tools.tools_description import tools
-
-import pymupdf  # PyMuPDF
 import llm
 from drsr_420.tools.search_paper import search_paper
 
@@ -53,17 +57,31 @@ def _summarize_text(client, cfg, full_text):
     本地文献库与新下载两条路径共用，保证工具恒返回摘要而非原文，
     避免长文本直接回传给 agent 撑爆上下文。
     """
-    client.kwargs.update({
+    # 输出上限优先读 max_completion_tokens，缺失则回退 max_tokens：
+    # 直接 cfg.get("max_completion_tokens") 会把 None 写进 kwargs，
+    # 而 llm 的 glm 分支会用该 None 覆盖已配置好的 max_tokens（请求 400）。
+    max_out = cfg.get("max_completion_tokens") or cfg.get("max_tokens")
+    overrides = {
         'temperature': 0.4,
         'frequency_penalty': 0.1,
         'top_p': 0.9,
-        'max_completion_tokens': cfg.get("max_completion_tokens"),
-    })
+    }
+    if isinstance(max_out, int) and max_out > 0:
+        overrides['max_completion_tokens'] = max_out
+    client.kwargs.update(overrides)
     response = client.chat([
         {"role": "system", "content": "You are a helpful assistant, you need to read literature and summarize."},
         {"role": "user", "content": f"{full_text}"}
     ])
-    return response["content"]
+    # llm.py 对每个请求都附带 tools + tool_choice=auto：摘要模型偶尔会"回答"成
+    # 工具调用而 content 为空——必须显式报错（由调用方记入返回列表），
+    # 否则空字符串会被当成合法摘要静默入库。
+    if response.get("tool_calls"):
+        raise RuntimeError("摘要模型返回了工具调用而非文本摘要")
+    content = (response.get("content") or "").strip()
+    if not content:
+        raise RuntimeError("摘要模型返回空内容")
+    return content
 
 
 _agent_client = None
@@ -132,29 +150,57 @@ def _download_to(file_path: str, url: str, session=None, timeout: int = 30) -> b
     """下载 url 到 file_path，用 %PDF 魔数校验内容，成功返回 True。
 
     用独立 session 时（sci-hub）可复用其中的 cookie/header；默认用 requests 直接下载。
+    先写入 .part 临时文件、校验并下载完整后才原子替换到目标路径：避免网络中断
+    留下半截 PDF——本地缓存分支会永久命中这个坏文件（pymupdf 打开失败或读到空文本），
+    该文献在此后每次运行中都"下载成功但读取失败"。
     """
+    tmp_path = file_path + ".part"
     try:
         fetcher = session if session is not None else requests
         resp = fetcher.get(url, stream=True, timeout=timeout)
+    except Exception:
+        return False
+    stream = None
+    try:
         resp.raise_for_status()
-        first = next(resp.iter_content(1024), b"")
+        stream = resp.iter_content(1024)
+        first = next(stream, b"")
         if not first.startswith(b"%PDF"):
             return False
-        with open(file_path, "wb") as f:
+        with open(tmp_path, "wb") as f:
             f.write(first)
-            for chunk in resp.iter_content(1024):
+            for chunk in stream:
                 f.write(chunk)
+        os.replace(tmp_path, file_path)
         return True
     except Exception:
         return False
+    finally:
+        # 先关生成器再关响应：魔数校验失败提前 return 时生成器仍挂起，
+        # 直接 resp.close() 会在 GC 时抛 "ignored GeneratorExit" 噪音进 stderr
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception:
+                pass
+        try:
+            resp.close()
+        except Exception:
+            pass
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 
 def _try_unpaywall(doi: str, file_path: str, timeout: int = 30) -> bool:
     """通过 Unpaywall 查询开放获取（OA）PDF 直链并下载（合法、无 JS 挑战）。"""
     email = os.environ.get("UNPAYWALL_EMAIL", "drsr.rag.download@outlook.com")
     try:
+        # DOI 可能含 URL 保留字符（如括号），必须转义，否则请求路径被破坏
         resp = requests.get(
-            f"https://api.unpaywall.org/v2/{doi}?email={email}",
+            f"https://api.unpaywall.org/v2/{quote(str(doi), safe='')}?email={email}",
             timeout=timeout,
             headers={'user-agent': random.choice(USER_AGENTS)},
         )
@@ -169,6 +215,17 @@ def _try_unpaywall(doi: str, file_path: str, timeout: int = 30) -> bool:
         return False
 
 
+def _doi_filename(doi: str) -> str:
+    """DOI → 安全本地文件名：只保留 [A-Za-z0-9._-]，其余字符（含 '/'）直接删除。
+
+    DOI 来自 LLM 生成的检索结果，不可信。旧实现只删 '/'，`\\` 与 `:` 原样保留：
+    `..\\..\\evil` 会穿越出 save_dir，绝对路径 `C:\\...` 会让 os.path.join 直接
+    丢弃 save_dir —— 等于给 LLM 开了任意文件写入口。典型 DOI（如 10.1016/j.x）
+    在新旧规则下文件名一致，缓存向后兼容。
+    """
+    return re.sub(r"[^A-Za-z0-9._-]", "", str(doi)) or "unnamed"
+
+
 def _download_pdf_by_doi(doi: str, save_dir: str, timeout: int = 30) -> str:
     """按 DOI 下载 PDF 到 save_dir，返回本地文件路径。
 
@@ -179,8 +236,7 @@ def _download_pdf_by_doi(doi: str, save_dir: str, timeout: int = 30) -> str:
     """
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
-    safe_doi = "".join('' if c == '/' else c for c in doi)
-    file_path = os.path.join(save_dir, f"{safe_doi}.pdf")
+    file_path = os.path.join(save_dir, f"{_doi_filename(doi)}.pdf")
 
     # 渠道 1：Open Access（合法渠道，优先）
     if _try_unpaywall(doi, file_path, timeout):
@@ -233,17 +289,28 @@ def read_paper(title_doi: list[tuple[str, str]] | tuple[str, str], save_dir="pdf
 
     textlist = []
 
-    if isinstance(title_doi, list) and all(isinstance(item, str) for item in title_doi):
+    if isinstance(title_doi, tuple):
+        title_doi = [title_doi]
+    if isinstance(title_doi, list) and len(title_doi) == 2 and all(isinstance(item, str) for item in title_doi):
+        # 单对 (title, doi) 被平铺成字符串列表的情况
         title_doi = [title_doi]
 
-    for title, pdf_url in tqdm(title_doi, desc="下载PDF"):
+    for item in tqdm(title_doi, desc="下载PDF"):
+        try:
+            # 非法条目单独报错回传，不让整批调用崩溃。
+            # 注意：2 个字符的字符串也能解包出 2 个变量（逐字符），必须先排除 str。
+            if not isinstance(item, (list, tuple)) or len(item) != 2:
+                raise ValueError
+            title, pdf_url = item
+        except (TypeError, ValueError):
+            textlist.append(f"非法条目（期望 [title, doi] 二元组）: {item!r}")
+            continue
         try:
 
             # 先尝试从本地文献库寻找文献
-            # 替换文标题中的非法字符
+            # 文件名按 DOI 净化（防穿越，见 _doi_filename）
             doi=pdf_url
-            safe_doi = "".join('' if c == '/' else c for c in doi)
-            file_path = os.path.join(save_dir, f"{safe_doi}.pdf")
+            file_path = os.path.join(save_dir, f"{_doi_filename(doi)}.pdf")
 
             if os.path.exists(file_path):
                 print(f"在本地文献库找到文献: {file_path}", file=sys.stderr)
@@ -286,8 +353,12 @@ def read_paper(title_doi: list[tuple[str, str]] | tuple[str, str], save_dir="pdf
 
         except requests.exceptions.RequestException as e:
             print(f"请求异常: {title} | 错误: {e}",file=sys.stderr)
+            # 错误必须进返回列表：只 print 会让结果无声变短，
+            # agent 拿到的数组与请求的论文对不上号，误以为"该文无内容"
+            textlist.append(f"请求异常: {title} | 错误: {e}")
         except Exception as e:
             print(f"未知错误: {title} | 错误: {e}",file=sys.stderr)
+            textlist.append(f"未知错误: {title} | 错误: {e}")
 
     return json.dumps(textlist)
 
@@ -345,7 +416,17 @@ def agent_run(user_query: str, model: str = "deepseek-v4-pro"):
 
             for tc in tool_calls:
                 fn_name = tc.get('function', {}).get('name')
-                args = json.loads(tc.get('function', {}).get('arguments', '{}') or '{}')
+                try:
+                    args = json.loads(tc.get('function', {}).get('arguments', '{}') or '{}')
+                except json.JSONDecodeError as e:
+                    # LLM 偶发产出非法工具参数 JSON：把错误回传给模型自行纠正，
+                    # 而不是让整个循环崩溃
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.get('id', ''),
+                        "content": json.dumps({"error": f"invalid tool arguments: {e}"})
+                    })
+                    continue
                 result = ''
                 if fn_name == "search_paper":
                     result = search_paper(**args)

@@ -28,7 +28,11 @@ DEFAULT_CONFIG = {
     "collection": "literature",
     "k": 5,
     "query_prefix": "",
-    "default_query": "磁流变 颗粒 本构 屈服应力 压缩",
+    # "" 表示"按问题自动推导检索词"（调用方回退到背景文本/自变量）。
+    # 此前放的是固定 MRF 关键词，且因 load_config 恒合并本默认值，
+    # 导致任何非 MRF 问题也永远用这串中文检索、调用方的按问题回退成为死代码。
+    # 需要固定检索词时在 rag.config 里显式配置 default_query。
+    "default_query": "",
     # "embed_batch_size": 64,
     # "embed_max_retries": 6,
     # "embed_backoff_base": 1.0,
@@ -68,7 +72,7 @@ def load_config(path=_CONFIG_PATH) -> dict:
 # ── 嵌入模型 ──────────────────────────────────────────────────────────
 class EmbeddingModel(ABC):
     @abstractmethod
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed(self, texts: list[str], is_query: bool = False) -> list[list[float]]:
         ...
 
 
@@ -86,8 +90,10 @@ class SentenceTransformerEmbedder(EmbeddingModel):
             self._model = SentenceTransformer(self._model_name)
         return self._model
 
-    def embed(self, texts):
-        if self._query_prefix:
+    def embed(self, texts, is_query: bool = False):
+        # query_prefix 只作用于查询侧：bge 等模型的指令前缀是按"仅查询"训练的，
+        # 旧实现对文档嵌入也加前缀，会把查询指令烧进知识库向量、静默劣化检索
+        if self._query_prefix and is_query:
             texts = [self._query_prefix + t for t in texts]
         vecs = self._get_model().encode(texts, normalize_embeddings=True)
         return np.asarray(vecs, dtype=np.float32).tolist()
@@ -104,10 +110,12 @@ class APIEmbedder(EmbeddingModel):
                  batch_size: int = 64,
                  max_retries: int = 6,
                  backoff_base: float = 1.0,
-                 batch_interval: float = 0.3):
+                 batch_interval: float = 0.3,
+                 query_prefix: str = ""):
         self._api_host = api_host.rstrip("/")
         self._api_key = api_key
         self._api_model = api_model
+        self._api_prefix = query_prefix or ""
         self._batch_size = int(batch_size or 64)
         self._max_retries = int(max_retries or 6)
         self._backoff_base = float(backoff_base or 1.0)
@@ -149,8 +157,11 @@ class APIEmbedder(EmbeddingModel):
         # 理论不可达
         raise requests.exceptions.Timeout("embedding 请求最终失败")
 
-    def embed(self, texts):
+    def embed(self, texts, is_query: bool = False):
         import time
+        # api 后端同样支持 query_prefix（此前仅 local 生效，两后端行为分叉）
+        if self._api_prefix and is_query:
+            texts = [self._api_prefix + t for t in texts]
         url = f"{self._api_host}/embeddings"
         headers = {"Content-Type": "application/json"}
         if self._api_key:
@@ -168,8 +179,7 @@ class APIEmbedder(EmbeddingModel):
         return out
 
 
-_embedder = None
-_embedder_key = None
+_embedder_state = None  # (key, embedder) 元组，整体原子替换（见 get_embedder）
 _embedder_lock = threading.Lock()
 
 
@@ -190,33 +200,40 @@ def _env_key_for_host(api_host: str) -> str:
 
 
 def get_embedder(config=None) -> EmbeddingModel:
-    """进程级懒加载单例（仅首次调用才构造/加载模型）。"""
-    global _embedder, _embedder_key
+    """进程级懒加载单例（仅首次调用才构造/加载模型，双重检查锁定）。"""
+    global _embedder_state
     cfg = config or load_config()
     api_key = cfg.get("api_key") or _env_key_for_host(cfg.get("api_host", ""))
     key = (cfg.get("backend"), cfg.get("model"), cfg.get("api_host"),
            api_key, cfg.get("api_model"), cfg.get("query_prefix"))
-    if _embedder is not None and _embedder_key == key:
-        return _embedder
+    state = _embedder_state
+    if state is not None and state[0] == key:
+        return state[1]
     with _embedder_lock:
+        # 锁内复查：并发首调时防止重复加载 torch/模型
+        state = _embedder_state
+        if state is not None and state[0] == key:
+            return state[1]
         if cfg.get("backend") == "api":
-            _embedder = APIEmbedder(
+            embedder = APIEmbedder(
                 cfg.get("api_host", ""), api_key, cfg.get("api_model", "bge-m3"),
                 batch_size=cfg.get("embed_batch_size", 64),
                 max_retries=cfg.get("embed_max_retries", 6),
                 backoff_base=cfg.get("embed_backoff_base", 1.0),
-                batch_interval=cfg.get("embed_batch_interval", 0.3))
+                batch_interval=cfg.get("embed_batch_interval", 0.3),
+                query_prefix=cfg.get("query_prefix", ""))
         else:
-            _embedder = SentenceTransformerEmbedder(
+            embedder = SentenceTransformerEmbedder(
                 cfg.get("model", DEFAULT_CONFIG["model"]), cfg.get("query_prefix", ""))
-        _embedder_key = key
-    return _embedder
+        # 以单一元组原子发布 (key, embedder)，杜绝无锁快路径读到"新实例+旧键"的撕裂
+        _embedder_state = (key, embedder)
+    return _embedder_state[1]
 
 
 def reset_embedder():
-    global _embedder, _embedder_key
-    _embedder = None
-    _embedder_key = None
+    global _embedder_state
+    with _embedder_lock:
+        _embedder_state = None
 
 
 # ── 文本处理 ──────────────────────────────────────────────────────────
@@ -248,18 +265,24 @@ def _safe_id(name: str) -> str:
 
 
 def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]:
-    """按空行分段，合并到约 chunk_size；相邻块保留 overlap 字符。"""
+    """按空行分段，合并到约 chunk_size；相邻块保留 overlap 字符（含超长段硬切）。"""
     text = (text or "").strip()
     if not text:
         return []
+    overlap = max(0, min(int(overlap), int(chunk_size) - 1))
+    step = chunk_size - overlap  # 硬切步长：相邻硬切片段之间保留 overlap
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
     chunks, current = [], ""
     for para in paragraphs:
-        while len(para) > chunk_size:  # 单段超长硬切
+        if len(para) > chunk_size:
+            # 先冲刷未完成的 current：旧实现把它在每次硬切前重复 append 却不清空，
+            # 导致同一短块在知识库里出现多次、污染检索结果
             if current:
                 chunks.append(current)
-            chunks.append(para[:chunk_size])
-            para = para[chunk_size:]
+                current = ""
+            while len(para) > chunk_size:  # 单段超长硬切（带重叠）
+                chunks.append(para[:chunk_size])
+                para = para[step:]
         if current and len(current) + len(para) + 1 > chunk_size:
             tail = current[-overlap:] if overlap > 0 else ""
             chunks.append(current)
@@ -336,8 +359,10 @@ class RagKB:
             try:
                 import pymupdf
                 doc = pymupdf.open(pdf_path)
-                title = ((doc.metadata or {}).get("title") or "").strip()
-                doc.close()
+                try:
+                    title = ((doc.metadata or {}).get("title") or "").strip()
+                finally:
+                    doc.close()  # 异常路径也要释放文件句柄（Windows 上句柄不关会锁文件）
             except Exception:
                 title = ""
         title = title or doi or stem
@@ -351,13 +376,20 @@ class RagKB:
         if limit is not None:
             files = files[:limit]
         col = self._get_collection()
+        # 文件间节流：rag.config 里的 embed_file_interval 此前没有任何代码读取，
+        # 用户以为限流生效、实际每个文件的请求批次背靠背打向 API
+        file_interval = float(self.cfg.get("embed_file_interval", 0) or 0)
         results = {"ingested": 0, "skipped": 0, "failed": 0, "chunks": 0}
-        for fname in files:
-            if col.get(where={"source_file": fname}).get("ids"):
-                results["skipped"] += 1
-                continue
-            path = os.path.join(dir_path, fname)
+        for idx, fname in enumerate(files):
+            if file_interval and idx:
+                import time
+                time.sleep(file_interval)
             try:
+                # 判重查询也纳入容错：一次 chroma 读失败不应中断整批入库
+                if col.get(where={"source_file": fname}).get("ids"):
+                    results["skipped"] += 1
+                    continue
+                path = os.path.join(dir_path, fname)
                 n = self.add_pdf(path)
                 results["ingested"] += 1
                 results["chunks"] += n

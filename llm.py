@@ -231,7 +231,9 @@ class LLMClient:
         if provider == 'glm':
             # 智谱 v4：输出上限字段名为 max_tokens；thinking 开启时 reasoning_effort 生效
             if 'max_completion_tokens' in payload:
-                payload['max_tokens'] = payload.pop('max_completion_tokens')
+                mc = payload.pop('max_completion_tokens')
+                if mc is not None:  # None 表示调用方未设置：不得覆盖已配置的 max_tokens
+                    payload['max_tokens'] = mc
             if effort:
                 payload['thinking'] = {'type': 'enabled'}
             return

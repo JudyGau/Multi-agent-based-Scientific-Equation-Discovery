@@ -28,6 +28,7 @@ from __future__ import annotations
 import ast
 import copy
 import multiprocessing
+import queue
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -260,11 +261,21 @@ class LocalSandbox(Sandbox):
         return workers
 
     def _respawn_workers(self):
-        """销毁并重建 worker 池：某条样本超时卡死后恢复调度能力。"""
+        """销毁并重建 worker 池：某条样本超时卡死后恢复调度能力。
+
+        同时清空任务队列中被超时任务之后的陈旧任务：这些任务的结果管道已被
+        关闭，新 worker 若继续消费只会白白执行（重任务可再占用数十秒），
+        造成后续所有样本评估连锁超时。
+        """
         for p in self._workers:
             if p.is_alive():
                 p.terminate()
                 p.join()
+        while True:
+            try:
+                self._task_queue.get_nowait()
+            except queue.Empty:
+                break
         self._workers = self._spawn_workers()
 
 
@@ -366,6 +377,9 @@ class EvaluatorAgent:
         new_function, program = _sample_to_program(
             sample, version_generated, self._template, self._function_to_evolve)
         scores_per_test = {}
+
+        # 循环外初始化：self._inputs 为空时循环不执行，避免末尾 return 触发 UnboundLocalError
+        test_output, error_msg, res = None, None, None
 
         time_reset = time.time()
 

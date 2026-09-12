@@ -9,9 +9,12 @@
 #   - 服务器端对应脚本 drsr_420/tools/mcp_server.py，cwd 固定为项目根目录，
 #     确保 read_paper 内的 './glm_glm-5.3-flash.config' 等相对路径可用。
 #   - 依赖：mcp>=1.0（见 requirements.txt）。
+import concurrent.futures
 import json
+import os
 import sys
 import threading
+import time
 from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters
@@ -21,6 +24,23 @@ _ROOT = Path(__file__).resolve().parent.parent
 
 # stdio 服务器命令（需在项目根目录下执行）
 _SERVER_ARGS = ["-m", "drsr_420.tools.mcp_server"]
+
+# mcp SDK 为子进程构造环境时只透传系统级白名单（PATH/TEMP/...），提供商 API key
+# 环境变量会被剥离——配置里 api_key 留空、靠环境变量回退的提供商在服务子进程中
+# 必然鉴权失败。这里把项目用到的密钥类变量显式并入 server.env（env 是合并而非替换）。
+_ENV_PASSTHROUGH = (
+    "ZHIPU_API_KEY", "SILICONFLOW_API_KEY", "DEEPSEEK_API_KEY",
+    "DEEPINFRA_API_KEY", "OPENAI_API_KEY", "UNPAYWALL_EMAIL",
+)
+
+
+def _server_env() -> dict:
+    env = {"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    for name in _ENV_PASSTHROUGH:
+        value = os.environ.get(name)
+        if value:
+            env[name] = value
+    return env
 
 
 class MCPStdioClient:
@@ -34,14 +54,14 @@ class MCPStdioClient:
             command=command,
             args=list(server_args or _SERVER_ARGS),
             cwd=str(cwd or _ROOT),
-            # mcp 的 stdio_client 只透传白名单环境变量，PYTHONUTF8/PYTHONIOENCODING
-            # 会被丢弃，导致服务子进程退回 GBK 编码，中文/tqdm 进度条在控制台乱码。
-            # 这里显式补上，保证子进程所有输出按 UTF-8 编码。
-            env={"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+            # 编码变量 + 提供商密钥变量显式并入（见 _server_env）：mcp 的 stdio_client
+            # 只透传系统级白名单，不补这些变量子进程会退回 GBK 编码且拿不到 API key。
+            env=_server_env(),
         )
         self._loop = None
         self._session = None
         self._error = None
+        self._connecting = False
         self._ready = threading.Event()
         self._connect_lock = threading.Lock()
 
@@ -52,26 +72,41 @@ class MCPStdioClient:
         with self._connect_lock:
             if self._session is not None:
                 return
-            import asyncio
+            # 清掉上一次失败的残留错误：否则一次瞬时失败后，即使本次连接成功
+            # 也会在错误检查处再次抛出，把已建好的 session/事件循环/子进程孤儿化
+            self._error = None
+            if not self._connecting:
+                import asyncio
 
-            self._loop = asyncio.new_event_loop()
-            self._ready.clear()
-            t = threading.Thread(target=self._run_loop, daemon=True)
-            t.start()
-            self._ready.wait(60)
+                self._loop = asyncio.new_event_loop()
+                self._ready.clear()
+                self._connecting = True
+                threading.Thread(target=self._run_loop, daemon=True).start()
+            # 连接线程只会有一个：超时后再次等待同一线程的结果，绝不新建第二个
+            # （旧实现会在慢连接后重建循环，两个循环线程争写 _loop/_session，
+            # 且 session 与 _loop 可能配对到不同的事件循环，导致 anyio 跨循环挂死）
+            deadline = time.monotonic() + 120
+            while not self._ready.wait(1.0):
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("MCP 服务器连接超时")
             if self._error:
                 raise RuntimeError(f"MCP 服务器连接失败: {self._error}")
             if self._session is None:
-                raise RuntimeError("MCP 服务器连接超时")
+                raise RuntimeError("MCP 服务器连接未就绪")
 
     def _run_loop(self):
         import asyncio
 
-        asyncio.set_event_loop(self._loop)
+        loop = self._loop  # 本地引用：不动态读 self._loop，避免与重建流程互相踩写
+        asyncio.set_event_loop(loop)
 
         async def _connect():
             try:
-                async with stdio_client(self._params) as (read, write):
+                # errlog 显式绑定 sys.__stderr__：mcp 的默认参数 errlog=sys.stderr
+                # 在 mcp.client.stdio 导入瞬间求值，而本模块可能被 tool_caller_agent
+                # 在 main.py 把 sys.stderr 换成无 fileno 的 _Tee 之后才首次导入——
+                # 届时默认值即 _Tee，子进程 spawn 直接 AttributeError 起不来。
+                async with stdio_client(self._params, errlog=sys.__stderr__) as (read, write):
                     async with ClientSession(read, write) as session:
                         await session.initialize()
                         self._session = session
@@ -81,9 +116,11 @@ class MCPStdioClient:
                             await asyncio.sleep(3600)
             except Exception as e:  # noqa: BLE001
                 self._error = e
+            finally:
+                self._connecting = False
                 self._ready.set()
 
-        self._loop.run_until_complete(_connect())
+        loop.run_until_complete(_connect())
 
     # ── 工具调用 ─────────────────────────────
     def call_tool(self, name, arguments=None):
@@ -94,13 +131,25 @@ class MCPStdioClient:
         future = asyncio.run_coroutine_threadsafe(
             self._do_call(name, arguments or {}), self._loop
         )
-        return future.result(timeout=600)
+        try:
+            return future.result(timeout=600)
+        except concurrent.futures.TimeoutError:
+            # 本方法契约是"出错返回 error JSON"而非抛异常：抛出去会让上层
+            # tool_caller_agent 把整条样本连同已成功的前几轮工具结果一起丢掉
+            future.cancel()
+            return json.dumps({"error": f"调用 {name} 超时(600s)"}, ensure_ascii=False)
+        except Exception as e:  # noqa: BLE001
+            future.cancel()
+            return json.dumps({"error": f"调用 {name} 失败: {e}"}, ensure_ascii=False)
 
     async def _do_call(self, name, arguments):
         try:
             resp = await self._session.call_tool(name, arguments=arguments)
         except Exception as e:  # noqa: BLE001
-            return json.dumps({"error": f"调用 {name} 失败: {e}"})
+            # 传输层异常（子进程死亡/管道断裂）：丢弃当前 session，下一次调用重建连接，
+            # 否则整个实验余下时间所有工具调用永久报错
+            self._session = None
+            return json.dumps({"error": f"调用 {name} 失败: {e}"}, ensure_ascii=False)
         parts = [
             getattr(c, "text", None)
             for c in (resp.content or [])

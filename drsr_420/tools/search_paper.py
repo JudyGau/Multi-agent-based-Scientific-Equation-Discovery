@@ -27,12 +27,17 @@ def search_paper(query: str, num: int=10) -> str:
         # if it.get("type") != "journal-article":
         #     continue
 
+        # 年/月/日可能缺失（如 date-parts: [[]]），直接 [0][0] 会 IndexError 拖垮整个查询；
+        # 链尾补 issued：Crossref 大量条目只有 issued 有日期（实测 ~5% 命中缺 print/online）
+        dp = ((it.get("published-print") or it.get("published-online") or it.get("issued") or {})
+              .get("date-parts") or [[]])
+        year = dp[0][0] if dp and dp[0] else None
+
         results.append({
             "doi": it.get("DOI"),
             "title": (it.get("title") or [""])[0],
             "journal": (it.get("container-title") or [""])[0],
-            "year": ((it.get("published-print") or it.get("published-online") or {})
-                     .get("date-parts", [[None]])[0][0]),
+            "year": year,
             "citations": it.get("is-referenced-by-count", 0),
             "authors": [f"{a.get('given','')} {a.get('family','')}"
                         for a in it.get("author", [])[:5]]

@@ -3,6 +3,8 @@
 #   python -m drsr_420.tools.mcp_server          # stdio 传输（MCP 协议默认）
 #   python -m drsr_420.tools.mcp_server --http   # 单 streamable HTTP 端点，127.0.0.1:8000/mcp
 import json
+import sys
+import traceback
 
 from mcp.server.mcpserver import MCPServer
 
@@ -10,6 +12,18 @@ from drsr_420.tools.search_paper import search_paper as _search_paper_impl
 from drsr_420.tools.read_paper import read_paper as _read_paper_impl
 
 mcp = MCPServer("drsr-tools")
+
+
+def _error_json(context: str, exc: Exception) -> str:
+    """统一的工具错误返回格式（{"error": ...} JSON）。
+
+    mcp SDK 对抛出的异常只回传固定的 "Error executing tool <name>" 文本、
+    吞掉真实错误信息（tools/base.py），调用方 agent 无从判断原因；
+    这里在处理器内捕获，把错误文本放进正常结果通道，并把 traceback 打到
+    服务器 stderr 留痕。与 ingest_paper/search_kb 的错误风格保持一致。
+    """
+    traceback.print_exc(file=sys.stderr)
+    return json.dumps({"error": f"{context} 失败: {exc}"}, ensure_ascii=False)
 
 
 @mcp.tool(
@@ -20,7 +34,10 @@ mcp = MCPServer("drsr-tools")
 )
 def search_paper(query: str, num: int = 10) -> str:
     """搜索中/英文论文，返回文献元数据 JSON 字符串。"""
-    return _search_paper_impl(query=query, num=num)
+    try:
+        return _search_paper_impl(query=query, num=num)
+    except Exception as e:
+        return _error_json("search_paper", e)
 
 
 @mcp.tool(
@@ -32,9 +49,11 @@ def search_paper(query: str, num: int = 10) -> str:
 )
 def read_paper(title_doi: list[list[str]]) -> str:
     """下载论文并获取论文内容，返回结构化文本的 JSON 字符串。"""
-    # 兼容原始签名 list[tuple[str, str]] | tuple[str, str]
-    payload = [tuple(pair) for pair in title_doi] if isinstance(title_doi, list) else title_doi
-    return _read_paper_impl(payload)
+    try:
+        # 条目合法性（二元组等）由 read_paper 实现统一校验并逐条回传错误
+        return _read_paper_impl(title_doi)
+    except Exception as e:
+        return _error_json("read_paper", e)
 
 
 @mcp.tool(

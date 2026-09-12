@@ -411,7 +411,7 @@ def _build_explain_content(func: str, exp: dict) -> str | None:
     try:
         from drsr_420.rag_kb import get_kb, load_config
         _rag_cfg = load_config()
-        rag_block = get_kb().get_context(_rag_cfg.get('default_query', independent), k=_rag_cfg.get('k', 5))
+        rag_block = get_kb().get_context(_rag_cfg.get('default_query') or independent, k=_rag_cfg.get('k', 5))
     except Exception as _e:
         print(f"[RAG] 解释阶段文献检索失败（跳过）: {_e}")
 
