@@ -183,11 +183,15 @@ def _run_evaluation_task(program, function_to_run, function_to_evolve, dataset,
     opt_params = None
     try:
         program = code_manipulation.sanitize_code_text(program)
-        # numba 加速（可选）：编译失败或方程不受支持时自动降级为原始程序
+        # numba 加速（可选）：编译失败或方程不受支持时自动降级为原始程序。
+        # 探测只需验证"可编译可运行"，用小切片（numba njit 按 dtype 而非 shape
+        # 特化）：旧实现拿整个数据集执行探测，每个样本都完整跑两遍方程，
+        # 白白吃掉 evaluate_timeout_seconds 预算，把本可及格的样本拖成超时。
         if numba_accelerate:
-            X = dataset['inputs']
+            X = np.atleast_2d(dataset['inputs'])
             n_params = eval_config.get('n_params', evaluate_on_problems.MAX_NPARAMS)
-            sample_args = tuple(X.T) + (np.ones(n_params),)
+            probe_rows = min(64, X.shape[0])
+            sample_args = tuple(X[:probe_rows].T) + (np.ones(n_params),)
             program = evaluator_accelerate.try_add_numba_decorator(
                 program, function_to_evolve, sample_args)
 
@@ -259,6 +263,32 @@ class LocalSandbox(Sandbox):
             p.start()
             workers.append(p)
         return workers
+
+    def close(self) -> None:
+        """关停常驻 worker：向队列投递与 worker 数等量的 None 哨兵（_eval_worker
+        收到即正常退出），超时未退再 terminate。旧实现没有任何关停路径，
+        pipeline 的初始 evaluator 集合在初次分析后整组闲置，其 worker 进程
+        一直挂到解释器退出（daemon 兜底），Windows 下白占内存。"""
+        for _ in self._workers:
+            try:
+                self._task_queue.put(None)
+            except Exception:
+                break
+        for p in self._workers:
+            try:
+                p.join(timeout=2)
+                if p.is_alive():
+                    p.terminate()
+                    p.join(timeout=1)
+            except Exception:
+                pass
+        self._workers = []
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _respawn_workers(self):
         """销毁并重建 worker 池：某条样本超时卡死后恢复调度能力。
@@ -356,7 +386,7 @@ class EvaluatorAgent:
             function_to_run: str,
             inputs: Sequence[Any],
             timeout_seconds: int = 30,
-            sandbox_class: Type[Sandbox] = Sandbox
+            sandbox_class: Type[Sandbox] | None = None
     ):
         self._database = database
         self._template = template
@@ -364,7 +394,9 @@ class EvaluatorAgent:
         self._function_to_run = function_to_run
         self._inputs = inputs
         self._timeout_seconds = timeout_seconds
-        self._sandbox = sandbox_class()
+        # 默认 LocalSandbox：此前默认值是抽象基类 Sandbox，__init__ 里立刻
+        # sandbox_class() 实例化会直接 TypeError，等于"文档声明的默认值不可用"
+        self._sandbox = (sandbox_class or LocalSandbox)()
 
     def analyse(
             self,
@@ -460,8 +492,24 @@ class EvaluatorAgent:
                     pass
                 profiler.register_function(new_function)
 
+        # 缓冲区没有登记这个样本（如调用了祖先版本被拒）时，必须以"无分数"
+        # 返回：否则 coordinator 会把被丢弃的程序当作已评分样本更新 best、
+        # 写入 experiences.json（带数值分、无 error），经验回路反过来
+        # 推荐一个已被判废的程序。
+        if not scores_per_test:
+            test_output = None
+            res = None
 
         return test_output, error_msg, res
+
+    def close(self) -> None:
+        """释放沙箱资源（LocalSandbox 常驻 worker）；沙箱不支持则静默跳过。"""
+        try:
+            close = getattr(self._sandbox, 'close', None)
+            if callable(close):
+                close()
+        except Exception:
+            pass
 
 
 # 兼容别名：旧模块名 drsr_420.evaluator.Evaluator 指向本类

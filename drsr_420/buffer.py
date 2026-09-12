@@ -335,7 +335,11 @@ class Island:
         indices = np.argsort(scores)
         sorted_implementations = [implementations[i] for i in indices]
 
-        version_generated = len(sorted_implementations) + 1
+        # _generate_prompt 把待补全头部命名为 _v{len(implementations)}（见其
+        # next_version），Prompt 契约要求 version_generated 即该头部版本号；
+        # 旧实现的 +1 让 _sample_to_program 的递归改名目标（_v{k+1}）永不存在，
+        # 改名恒为 no-op，自递归假设在 exec 时 NameError 被误判为无效样本。
+        version_generated = len(sorted_implementations)
         return self._generate_prompt(sorted_implementations), version_generated
 
 

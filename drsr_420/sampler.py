@@ -8,12 +8,14 @@
 """
 from __future__ import annotations
 
-# 旧 API 常量占位（原实现在旧版 sampler.py 中定义，保留以兼容潜在引用）
-Port = '5000'
-API_HOST = "api.bltcy.ai"
-API_KEY = "sk-1zejrP7CKGPUXASwGpow3vOQ1Pjl5QzeU8xCjMrOEMSbqFQd"
-API_MODEL = "gpt-3.5-turbo"
-MAX_TOKENS = 1024
+# 旧 API 常量占位（原实现在旧版 sampler.py 中定义，保留以兼容潜在引用）。
+# 注意：这里绝不允许放真实密钥——本文件在 git 跟踪内，任何 key 都会随仓库公开
+# 并永久留在历史中（与 data_analyse_real.py 的占位风格保持一致，全部置 None）。
+Port = None
+API_HOST = None
+API_KEY = None
+API_MODEL = None
+MAX_TOKENS = None
 
 from drsr_420.agents.sampler_agent import (  # noqa: E402
     LLM,

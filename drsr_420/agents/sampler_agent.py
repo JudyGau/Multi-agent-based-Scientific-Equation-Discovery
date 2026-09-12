@@ -143,8 +143,8 @@ class SamplerAgent(LLM):
                 else:
                     for _ in range(self._samples_per_prompt):
                         content = self._build_request_content(prompt, config)
-                        first_responses, _second_responses = self._tool_caller.complete(content, 1)
-                        all_samples.append(first_responses)
+                        responses, _thinks = self._tool_caller.complete(content, 1)
+                        all_samples.append(responses[0])
 
                 # trim equation program skeleton body from samples
                 if self._trim:
@@ -160,7 +160,8 @@ class SamplerAgent(LLM):
                                 break
                             print(f"[Sampler] 第 {idx + 1} 个样本骨架为空，重采样（第 {retry}/{_MAX_BODY_RETRIES} 次）")
                             content = self._build_request_content(prompt, config)
-                            resp, resp_think = self._tool_caller.complete(content, 1)
+                            resp_list, think_list = self._tool_caller.complete(content, 1)
+                            resp, resp_think = resp_list[0], think_list[0]
                             print_block(f"[Sampler] 重采样原始响应: {resp}")
                             body = _extract_body(resp, config)
                             think = resp_think

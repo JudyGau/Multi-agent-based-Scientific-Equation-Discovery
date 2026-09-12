@@ -37,8 +37,12 @@ class ToolCallerAgent:
         """对同一 content 连续采样 repeat 次；每次内部自动处理工具调用循环。
 
         Returns:
-            repeat > 1 时返回 (responses, think_responses) 两个 list；
-            repeat == 1 时返回 (response_str, think_str)。
+            (responses, think_responses) 两个 list，长度恒为 max(1, repeat)。
+
+        契约必须恒定返回 list：旧实现在 repeat<=1 时返回标量字符串，而
+        sampler 的批量分支无条件 `list(responses)`——把 81 字符的响应炸成
+        81 个"单字符样本"，逐个走 _MAX_BODY_RETRIES 重采样（实测 1 次请求
+        变 82 次 LLM 调用），并瞬间烧光全局样本配额。
         """
         responses = []
         think_responses = []
@@ -97,8 +101,6 @@ class ToolCallerAgent:
                 print(f"API请求发生错误: {str(e)}")
                 responses.append("")
                 think_responses.append("")
-        if repeat <= 1:
-            return responses[0], think_responses[0]
         return responses, think_responses
 
 

@@ -277,6 +277,10 @@ def main(
         inputs, config, class_config)
     _run_initial_analysis(
         inputs, config, kwargs, evaluators, profiler, template, function_to_evolve)
+    # 初始 evaluator 集合只用于初次模板评估：其 LocalSandbox 常驻 worker 若不用
+    # 显式释放，会整场实验闲置占内存（_launch_samplers 为每个 sampler 另建独享集合）
+    for _ev in evaluators:
+        _ev.close()
     _launch_samplers(
         database, template, function_to_evolve, function_to_run,
         inputs, config, max_sample_nums, class_config, kwargs, profiler)

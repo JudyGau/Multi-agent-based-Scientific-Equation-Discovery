@@ -37,6 +37,11 @@ def parallel_multi_start_bfgs(loss_func, n_starts=10, n_params=10):
 
     best_result = None
     for result in results:
+        # 必须过滤非有限的 result.fun：`x < nan` 恒为 False，若首个结果
+        # 是 NaN，best_result.fun 将永远是 NaN、一切有限解全被拒绝，
+        # 函数返回 NaN 最优解（对照 evaluate_on_problems 的 isfinite 守卫）
+        if not np.isfinite(result.fun):
+            continue
         if best_result is None or result.fun < best_result.fun:
             best_result = result
             

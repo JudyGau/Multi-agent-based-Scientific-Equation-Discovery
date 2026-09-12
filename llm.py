@@ -6,6 +6,7 @@
 import copy
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from typing import List, Dict, Tuple
@@ -26,12 +27,27 @@ GLOBAL_TOKENS = {
 }
 GLOBAL_TIME_SECONDS: float = 0.0
 
+# 多 Sampler 线程并发累加（+= 非原子），无锁会让 progress.json 的
+# llm_tokens / llm_time_seconds 少记；统计写入另有 try/except 兜底。
+_GLOBAL_STATS_LOCK = threading.Lock()
+
+def _accumulate_global_stats(prompt: int, thinking: int, content: int,
+                             total: int, elapsed: float) -> None:
+    with _GLOBAL_STATS_LOCK:
+        global GLOBAL_TIME_SECONDS
+        GLOBAL_TOKENS['prompt'] += prompt
+        GLOBAL_TOKENS['thinking'] += thinking
+        GLOBAL_TOKENS['content'] += content
+        GLOBAL_TOKENS['total'] += total
+        GLOBAL_TIME_SECONDS += elapsed
+
 def reset_global_tokens():
     """重置本次实验的全局 token 统计。"""
-    GLOBAL_TOKENS['prompt'] = 0
-    GLOBAL_TOKENS['thinking'] = 0
-    GLOBAL_TOKENS['content'] = 0
-    GLOBAL_TOKENS['total'] = 0
+    with _GLOBAL_STATS_LOCK:
+        GLOBAL_TOKENS['prompt'] = 0
+        GLOBAL_TOKENS['thinking'] = 0
+        GLOBAL_TOKENS['content'] = 0
+        GLOBAL_TOKENS['total'] = 0
 
 def get_global_tokens() -> Dict[str, int]:
     """获取本次实验的全局 token 统计（thinking/content/total）。"""
@@ -41,7 +57,8 @@ def get_global_tokens() -> Dict[str, int]:
 def reset_global_time():
     """重置本次实验的大模型总耗时统计（秒）。"""
     global GLOBAL_TIME_SECONDS
-    GLOBAL_TIME_SECONDS = 0.0
+    with _GLOBAL_STATS_LOCK:
+        GLOBAL_TIME_SECONDS = 0.0
 
 
 def get_global_time() -> float:
@@ -76,6 +93,13 @@ def _post_with_retry(url, headers, payload,
                     resp.raise_for_status()
                     return resp
                 print(f"[LLM] HTTP {resp.status_code}，{wait:.1f}s 后重试（{attempt}/{max_retries}）")
+                if stream:
+                    # stream=True 时响应体尚未消费：不关闭就 continue 会每次重试
+                    # 泄漏一个连接池中的连接直到进程结束
+                    try:
+                        resp.close()
+                    except Exception:
+                        pass
                 time.sleep(wait)
                 continue
             return resp
@@ -265,7 +289,7 @@ class LLMClient:
           此时 on_delta 不会触发；
         - 需要逐段输出（如控制台实时打印）的调用方可直接迭代 chat_stream()。
         """
-        if self.kwargs.get('stream', True) is False:
+        if self.kwargs.get('stream', True) in (False, 0, 'false', 'False'):
             return self._chat_non_stream(messages)
         full_result = None
         for chunk in self.chat_stream(messages):
@@ -427,35 +451,32 @@ class LLMClient:
         reasoning_tokens = 0
         if 'completion_tokens_details' in usage:
             reasoning_tokens = usage['completion_tokens_details'].get('reasoning_tokens', 0)
+        # completion - reasoning 对"completion_tokens 不含 reasoning"的提供商会
+        # 算出负数；统一 clamp 一次，三处累计（实例/全局/打印）共用该值。
+        content_tokens = max(0, int(completion_tokens) - int(reasoning_tokens))
 
         self.tokens['prompt'] += prompt_tokens
-        self.tokens['content'] += completion_tokens - reasoning_tokens
+        self.tokens['content'] += content_tokens
         self.tokens['reasoning'] += reasoning_tokens
         self.tokens['total'] += total_tokens
 
-        # 更新单次实验全局统计
+        # 更新单次实验全局统计（带锁，见 _accumulate_global_stats）
         try:
-            GLOBAL_TOKENS['prompt'] += int(prompt_tokens)
-            GLOBAL_TOKENS['thinking'] += int(reasoning_tokens)
-            GLOBAL_TOKENS['content'] += int(completion_tokens - reasoning_tokens)
-            GLOBAL_TOKENS['total'] += int(total_tokens)
+            _accumulate_global_stats(
+                int(prompt_tokens), int(reasoning_tokens), content_tokens,
+                int(total_tokens), time.time() - start_time)
         except Exception:
             pass
 
-        # 实例级累计、全局耗时与打印
+        # 实例级累计与打印
         try:
             elapsed = time.time() - start_time
             self._cum_time_seconds += float(elapsed)
-            try:
-                global GLOBAL_TIME_SECONDS
-                GLOBAL_TIME_SECONDS += float(elapsed)
-            except Exception:
-                pass
 
             self._call_index += 1
             self._cum_tokens['prompt'] += int(prompt_tokens)
             self._cum_tokens['thinking'] += int(reasoning_tokens)
-            self._cum_tokens['content'] += int(completion_tokens - reasoning_tokens)
+            self._cum_tokens['content'] += content_tokens
             self._cum_tokens['total'] += int(total_tokens)
 
             provider = self._provider_name()
@@ -481,7 +502,7 @@ class LLMClient:
             "reasoning_content": reasoning_content,
             "tokens": {
                 "prompt": prompt_tokens,
-                "content": completion_tokens - reasoning_tokens,
+                "content": content_tokens,
                 "reasoning": reasoning_tokens,
                 "total": total_tokens
             },
@@ -712,7 +733,11 @@ class ClientFactory:
         final_base_url = base_url or default_base_url
         client = client_cls(api_key=resolved_key, model=model, base_url=final_base_url)
 
-        client.provider = provider
+        # 必须写别名规范化后的 canonical：_provider_name() 只在 provider 为空时才
+        # 从 URL 推断，直接写原始别名（'zhipu'/'bigmodel'/'glm4'…）会让
+        # _adapt_payload 的所有提供商分支（glm 的 max_tokens 改名、thinking、
+        # deepseek 等）静默跳过——别名用户丢失按任务注入的 reasoning_effort。
+        client.provider = canonical
         # 统一从配置注入生成参数（temperature/top_p/max_tokens 等），
         # 调用方无需再手动 client.kwargs.update，避免各入口重复拼装同一套字段。
         for k in ('max_tokens', 'max_completion_tokens', 'temperature', 'top_p', 'top_k',

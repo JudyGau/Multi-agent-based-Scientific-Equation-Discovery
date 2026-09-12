@@ -4,7 +4,8 @@
     evaluate() 恒返回 (score, result_matrix, optimized_params) 三元组；
     优化失败（NaN/inf 损失、方程异常、所有起点失败）时返回 (None, None, None)。
     score 取负均方误差（越大越好）；result_matrix 为 (输入, 输出, 残差) 拼接矩阵，
-    仅用于残差分析展示；optimized_params 可直接作为下一轮优化的热启动起点。
+    供残差分析回路消费（残差列保持全精度）；optimized_params 可直接作为下一轮
+    优化的热启动起点。
 """
 from __future__ import annotations
 
@@ -44,11 +45,12 @@ def _multi_start_least_squares(
 
     rng = np.random.default_rng(seed)
     starts: list[np.ndarray] = []
-    if x0 is not None:  # 热启动：把上一轮最优参数作为首个起点
+    if x0 is not None:  # 热启动：把上一轮最优参数作为额外首起点（在 n_starts 随机起点之外）
         starts.append(np.asarray(x0, dtype=float))
     starts.extend(rng.uniform(-1.0, 1.0, size=n_params) for _ in range(n_starts))
 
     best_x, best_loss = None, np.inf
+    first_exc: Exception | None = None
     for start in starts:
         start = _clamp_params(start, bounds)
         try:
@@ -61,13 +63,22 @@ def _multi_start_least_squares(
                 ftol=1e-8,
                 gtol=1e-8,
             )
-        except Exception:
-            continue  # 该起点失败（如方程在该参数域不可用），尝试下一个起点
+        except Exception as e:
+            # 该起点失败（如方程在该参数域不可用/越界索引），尝试下一个起点，
+            # 但保留首个真实异常：若所有起点都以异常告终，向上抛出。旧实现把
+            # 异常彻底吞掉，LLM 生成的方程里 `params[10]` 越界之类的错误全部
+            # 伪装成无信息量的 'no output'，经验学习回路（error 注入提示词）
+            # 因此永远学不到任何东西。
+            if first_exc is None:
+                first_exc = e
+            continue
         loss = float(np.mean(np.square(result.fun)))
         if not np.isfinite(loss):
             continue
         if loss < best_loss:
             best_loss, best_x = loss, result.x
+    if best_x is None and first_exc is not None:
+        raise first_exc
     return best_x, best_loss
 
 
@@ -94,7 +105,21 @@ def evaluate(
     Returns:
         (score, result_matrix, optimized_params)；优化失败时为 (None, None, None)。
     """
-    inputs, outputs = data['inputs'], data['outputs']
+    inputs = np.asarray(data['inputs'], dtype=float)
+    outputs = np.asarray(data['outputs'], dtype=float)
+
+    # 数据前置校验：一个 NaN 目标值会让每个起点产生 NaN 损失，所有样本
+    # 统一失败成无信息量的 'no output'，整场实验静默产出零程序。
+    # （np.var(outputs) 为 nan 也会击穿下面的 var_outputs != 0 保护。）
+    if inputs.ndim == 1:
+        # 1 维按"n 个样本 × 1 个特征"解释，避免 `*inputs.T` 把标量当特征列表展开
+        inputs = inputs.reshape(-1, 1)
+    elif inputs.ndim != 2:
+        raise ValueError(f'inputs 需为 1/2 维数组，实际 ndim={inputs.ndim}')
+    if not np.isfinite(inputs).all():
+        raise ValueError('inputs 包含 NaN/inf，请先清洗数据（如 read_csv 后 dropna）')
+    if not np.isfinite(outputs).all():
+        raise ValueError('outputs 包含 NaN/inf，请先清洗数据（如 read_csv 后 dropna）')
 
     def residual(params):
         return equation(*inputs.T, params) - outputs
@@ -114,14 +139,21 @@ def evaluate(
     predictions = equation(*inputs.T, best_x)
     res = outputs - predictions
     var_outputs = float(np.var(outputs))
-    nmse = best_loss / var_outputs if var_outputs != 0 else np.inf
+    if var_outputs > 0:
+        nmse = best_loss / var_outputs
+    else:
+        # 常数输出数据集：完美拟合记 nmse=0（R²=1），否则 R² 无定义记为 inf
+        nmse = 0.0 if best_loss <= 0 else np.inf
     if verbose:
         print(f'R² 指标: {1.0 - nmse:.6f}  NMSE 指标: {nmse:.6f}')
 
-    # 结果矩阵仅用于残差分析展示：输入/输出/残差统一按 decimal_places 取整
+    # 输入/输出列按 decimal_places 取整仅供展示；残差列必须保持完整精度：
+    # 它就是 ResidualAnalyzerAgent 的唯一输入（residual[:, -1]），按绝对
+    # 3 位小数取整会把拟合越好的样本变成全 0 残差——恰好毁掉残差分析
+    # 回路最该批评的那批样本。
     result_data = np.column_stack((
         np.round(inputs, decimal_places),
         np.round(outputs, decimal_places),
-        np.round(res, decimal_places),
+        res,
     ))
     return -best_loss, result_data, np.asarray(best_x)
