@@ -84,6 +84,16 @@ if __name__ == '__main__':
                     s.flush()
                 except Exception:
                     pass
+        def fileno(self):
+            # 替换 sys.stdout/stderr 后，任何 Popen(stderr=sys.stderr) 或
+            # 探测终端能力的第三方库都会撞上无 fileno 的 AttributeError；
+            # 透传主流的 fileno（归档到 run.out/run.err 的旁路写入不受影响）。
+            return self.streams[0].fileno()
+        def isatty(self):
+            try:
+                return bool(self.streams[0].isatty())
+            except Exception:
+                return False
 
     out_path = os.path.join(results_root, "run.out")
     err_path = os.path.join(results_root, "run.err")
