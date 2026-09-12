@@ -68,6 +68,7 @@ python main.py --problem_name oscillator1 --data_csv ./data/oscillator1/train.cs
 ```
 
 - `api_key` 请替换为真实密钥，否则会报"未提供令牌"。
+- 仓库提供 `llm.config.example` 作为模板：真实配置文件受 `.gitignore` 的 `llm.config` / `*.config` 规则保护不会入库，故模板以 `.example` 结尾以便随仓库分发。新克隆的仓库执行 `cp llm.config.example llm.config` 并填入密钥即可运行；`.idea/runConfigurations/` 下的 IDE 运行配置默认使用 `--llm_config llm.config`。
 - `model` 使用 `provider/model` 形式。支持提供商：`deepseek`、`siliconflow`、`deepinfra`、`ollama`、`blt`（柏拉图）、`cstcloud`（科技云）、`glm`（智谱）。
 - 配置文件按提供商与模型命名（`提供商_模型.config`），与具体任务解耦：任务级私有参数（如思考强度）统一放在 `tasks` 字段中按任务声明。
 - 切换模型直接修改对应配置文件名即可（如 `deepseek_deepseek-v4-flash.config`）；`api_key` 留空时回退读取对应环境变量（如 `DEEPSEEK_API_KEY`、`ZHIPU_API_KEY`、`SILICONFLOW_API_KEY`）。
