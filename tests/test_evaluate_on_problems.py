@@ -1,5 +1,6 @@
 """evaluate_on_problems 单元测试：least_squares 优化、统一返回契约、配置项。"""
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -35,16 +36,38 @@ class EvaluateTest(unittest.TestCase):
         self.assertAlmostEqual(score, -0.01 ** 2, delta=2e-5)
 
     def test_failure_contract_for_nan_equation(self):
+        """全起点因 NaN 抛错 → 真实原因上抛（不再伪装成无信息的 (None,None,None)）。
+
+        scipy 对 NaN 初始残差抛 ValueError；若继续吞掉，_run_evaluation_task
+        只会给经验回路喂 'no output'，模型学不到任何东西。"""
         def nan_equation(x1, x2, params):
             return np.full_like(x1, np.nan)
 
-        self.assertEqual(eop.evaluate(make_dataset(), nan_equation), (None, None, None))
+        with self.assertRaises(ValueError) as ctx:
+            eop.evaluate(make_dataset(), nan_equation)
+        self.assertIn('not finite', str(ctx.exception))
 
     def test_failure_contract_for_exception_equation(self):
+        """方程自身异常（越界索引）必须穿透到 remark：'Execution Error: index...'。"""
         def bad_equation(x1, x2, params):
             return params[999] * x1  # IndexError：所有起点失败
 
-        self.assertEqual(eop.evaluate(make_dataset(), bad_equation), (None, None, None))
+        with self.assertRaises(IndexError):
+            eop.evaluate(make_dataset(), bad_equation)
+
+    def test_pure_nonfinite_loss_without_exception(self):
+        """least_squares 正常返回但损失非有限（result.fun 含 inf）→ 不抛错、
+        best_x 仍为 None，_multi_start 维持 (None, inf) 契约。
+
+        用 mock 注入"成功但结果非有限"的返回值（_multi_start 只读 .fun/.x，
+        鸭子类型即可），隔离 scipy 对 NaN 初始残差直接抛错的行为。"""
+        import types
+        fake = types.SimpleNamespace(fun=np.array([np.inf]), x=np.zeros(3))
+        with mock.patch('scipy.optimize.least_squares', return_value=fake):
+            best_x, best_loss = eop._multi_start_least_squares(
+                lambda p: np.array([1.0, 2.0]), 3, n_starts=1)
+        self.assertIsNone(best_x)
+        self.assertEqual(best_loss, np.inf)
 
     def test_warm_start_x0(self):
         data = make_dataset()
@@ -54,8 +77,11 @@ class EvaluateTest(unittest.TestCase):
 
     def test_decimal_places_respected(self):
         _, matrix, _ = eop.evaluate(make_dataset(), linear_equation, decimal_places=3)
-        # 取整后矩阵应为 0.001 的倍数
-        np.testing.assert_allclose(matrix / 0.001, np.round(matrix / 0.001))
+        # 展示列（输入/输出）按 decimal_places 取整；残差列保持全精度——
+        # 它是 ResidualAnalyzerAgent 的唯一输入，按绝对小数位取整会把
+        # 拟合越好的样本清零（第 8 轮修复）。
+        display = np.delete(matrix, matrix.shape[1] - 1, axis=1)
+        np.testing.assert_allclose(display / 0.001, np.round(display / 0.001))
 
 
 class HelperTest(unittest.TestCase):
@@ -63,13 +89,14 @@ class HelperTest(unittest.TestCase):
         out = eop._clamp_params(np.array([-20.0, 5.0, 20.0]), (-10.0, 10.0))
         np.testing.assert_array_equal(out, [-10.0, 5.0, 10.0])
 
-    def test_multi_start_all_fail_returns_none(self):
+    def test_multi_start_all_raise_propagates_reason(self):
+        """所有起点都抛同一类异常 → 首个真实异常上抛（不再静默 (None, inf)）。"""
         def always_raise(params):
             raise ValueError('boom')
 
-        best_x, best_loss = eop._multi_start_least_squares(always_raise, 3, n_starts=2)
-        self.assertIsNone(best_x)
-        self.assertEqual(best_loss, np.inf)
+        with self.assertRaises(ValueError) as ctx:
+            eop._multi_start_least_squares(always_raise, 3, n_starts=2)
+        self.assertIn('boom', str(ctx.exception))
 
 
 if __name__ == '__main__':

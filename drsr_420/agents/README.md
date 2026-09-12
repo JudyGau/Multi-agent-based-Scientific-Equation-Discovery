@@ -158,8 +158,9 @@ ToolCallerAgent(
     max_tool_rounds: int = 4,                   # 单个样本工具调用轮次上限
 )
 tool_caller.complete(content: str, repeat: int = 1)
-# repeat==1  -> (response_str, think_str)
-# repeat>1  -> (responses_list, think_list)
+# 恒返回 (responses_list, think_list)，长度均为 max(1, repeat)
+# 注意：repeat==1 也返回长度为 1 的 list（不再是标量字符串）——旧实现在
+# repeat<=1 时返回标量，被 sampler 批量分支 list(str) 逐字符炸开成海量伪样本。
 ```
 
 **调用示例**
@@ -170,7 +171,7 @@ from drsr_420.agents.tool_caller_agent import ToolCallerAgent
 tool_caller = ToolCallerAgent(llm_client, max_tool_rounds=4)
 content = "Please search papers about magnetorheological elastomer ..."
 responses, thinking = tool_caller.complete(content, repeat=4)   # 批量取 4 个骨架
-# 单次：resp, think = tool_caller.complete(content, repeat=1)
+# 单次：resp, think = (lambda rs, ts: (rs[0], ts[0]))(*tool_caller.complete(content, repeat=1))
 ```
 
 ---

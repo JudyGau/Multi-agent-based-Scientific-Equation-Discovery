@@ -1,8 +1,11 @@
 """评估模块：对 LLM 生成的方程做参数优化并打分。
 
 统一返回契约：
-    evaluate() 恒返回 (score, result_matrix, optimized_params) 三元组；
-    优化失败（NaN/inf 损失、方程异常、所有起点失败）时返回 (None, None, None)。
+    evaluate() 成功返回 (score, result_matrix, optimized_params) 三元组；
+    优化无法给出有限解（所有起点损失非有限但无异常）时返回 (None, None, None)。
+    以下情况显式抛异常（供上层 remark 携带真实原因，喂给经验回路）：
+      - 数据集本身含 NaN/inf 或维度非法（ValueError，配置错误应响亮的失败）；
+      - 所有优化起点均以异常告终（透传首个真实异常，如方程越界 IndexError）。
     score 取负均方误差（越大越好）；result_matrix 为 (输入, 输出, 残差) 拼接矩阵，
     供残差分析回路消费（残差列保持全精度）；optimized_params 可直接作为下一轮
     优化的热启动起点。
@@ -145,7 +148,9 @@ def evaluate(
         # 常数输出数据集：完美拟合记 nmse=0（R²=1），否则 R² 无定义记为 inf
         nmse = 0.0 if best_loss <= 0 else np.inf
     if verbose:
-        print(f'R² 指标: {1.0 - nmse:.6f}  NMSE 指标: {nmse:.6f}')
+        # 不用 'R²' 上标：GBK 控制台（Windows 默认代码页）无法编码 \xb2，
+        # verbose 路径会直接 UnicodeEncodeError 拖垮一次评估。
+        print(f'R2 指标: {1.0 - nmse:.6f}  NMSE 指标: {nmse:.6f}')
 
     # 输入/输出列按 decimal_places 取整仅供展示；残差列必须保持完整精度：
     # 它就是 ResidualAnalyzerAgent 的唯一输入（residual[:, -1]），按绝对

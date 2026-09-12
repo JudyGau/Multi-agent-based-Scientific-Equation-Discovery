@@ -62,11 +62,15 @@ class RunEvaluationTaskTest(unittest.TestCase):
         self.assertEqual(res.shape, (100, 4))
         self.assertIsInstance(params, np.ndarray)
 
-    def test_failure_returns_no_output(self):
+    def test_failure_returns_informative_error(self):
+        """NaN 方程 → remark 携带真实原因（'Execution Error: ...'），
+        不再是无信息量的 'no output'（第 8 轮修复，喂给经验回路）。"""
         dataset = make_inputs()['data']
-        self.assertEqual(
-            _run_evaluation_task(NAN, 'run', 'equation', dataset, False, {}, None),
-            (None, None, False, 'no output', None))
+        grade, res, runs_ok, remark, params = _run_evaluation_task(
+            NAN, 'run', 'equation', dataset, False, {}, None)
+        self.assertEqual((grade, res, runs_ok, params), (None, None, False, None))
+        self.assertIn('Execution Error', remark)
+        self.assertIn('not finite', remark)
 
     def test_program_missing_function_returns_error(self):
         dataset = make_inputs()['data']
@@ -111,13 +115,18 @@ class LocalSandboxTest(unittest.TestCase):
         results2, _ = sb.run(PROGRAM, 'run', 'equation', inputs, 'data', 30)
         self.assertTrue(results2[1])
 
-    def test_nan_program_returns_no_output(self):
+    def test_nan_program_returns_informative_error(self):
         sb = LocalSandbox(numba_accelerate=False)
-        inputs = make_inputs()
-        results, res = sb.run(NAN, 'run', 'equation', inputs, 'data', 30)
-        self.assertFalse(results[1])
-        self.assertEqual(results[2], 'no output')
-        self.assertIsNone(res)
+        try:
+            inputs = make_inputs()
+            results, res = sb.run(NAN, 'run', 'equation', inputs, 'data', 30)
+            self.assertFalse(results[1])
+            # 第 8 轮修复：evaluate 不再吞起点异常，remark 携带真实原因
+            self.assertIn('Execution Error', results[2])
+            self.assertIn('not finite', results[2])
+            self.assertIsNone(res)
+        finally:
+            sb.close()
 
 
 TEMPLATE_TEXT = """\
