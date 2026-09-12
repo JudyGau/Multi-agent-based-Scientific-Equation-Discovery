@@ -139,10 +139,10 @@ def equation(x1, x2, params):
 SAMPLE_BODY = "    return params[0] * x1 + params[1] * x2 + params[2]\n"
 
 
-class EvaluatorAnalyseTest(unittest.TestCase):
-    """Evaluator.analyse 端到端：模板编译 → 沙箱评估 → 经验缓冲注册。"""
+class EvaluatorAnalyzeTest(unittest.TestCase):
+    """Evaluator.analyze 端到端：模板编译 → 沙箱评估 → 经验缓冲注册。"""
 
-    def test_analyse_returns_score_error_and_residual(self):
+    def test_analyze_returns_score_error_and_residual(self):
         template = code_manipulation.text_to_program(TEMPLATE_TEXT)
         db = buffer.ExperienceBuffer(
             config.ExperienceBufferConfig(num_islands=2),
@@ -152,12 +152,16 @@ class EvaluatorAnalyseTest(unittest.TestCase):
         ev = evaluator.Evaluator(
             db, template, 'equation', 'run', make_inputs(),
             timeout_seconds=30, sandbox_class=LocalSandbox)
-        score, error_msg, res = ev.analyse(
+        score, error_msg, res = ev.analyze(
             SAMPLE_BODY, island_id=0, version_generated=None)
         self.assertIsInstance(score, float)
         self.assertLess(score, 0.0)
         self.assertEqual(error_msg, 'yes')
         self.assertEqual(res.shape, (100, 4))
+
+    def test_deprecated_analyse_alias_still_works(self):
+        """兼容别名：旧方法名 analyse 必须仍可调用（并指向同一函数）。"""
+        self.assertIs(evaluator.Evaluator.analyse, evaluator.Evaluator.analyze)
 
 
 if __name__ == '__main__':

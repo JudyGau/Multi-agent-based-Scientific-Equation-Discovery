@@ -152,7 +152,7 @@ def _run_initial_analysis(
     results_root = kwargs.get('results_root', None) or config.results_root
 
     initial = template.get_function(function_to_evolve).body
-    ini_score, error_msg, res = evaluators[0].analyse(
+    ini_score, error_msg, res = evaluators[0].analyze(
         initial, island_id=None, version_generated=None, profiler=profiler)
 
     # 创建 DataAnalyzerAgent 实例（也写入统一结果目录，直接使用 results_root）

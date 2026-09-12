@@ -14,8 +14,10 @@ import threading
 from drsr_420.console import StreamDeltaPrinter, print_block
 from drsr_420 import prompt_config as pc
 
+from drsr_420.agents.base import THREAD_PER_SAMPLER, AgentSpec, BaseAgent
 
-class ToolCallerAgent:
+
+class ToolCallerAgent(BaseAgent):
     """与 LLM 多轮对话：若模型返回 tool_calls 则执行工具并回传，直到模型给出最终答复。
 
     Args:
@@ -24,6 +26,21 @@ class ToolCallerAgent:
         tool_executor: 可调用对象 (name, args) -> str，默认使用 tool_runner.mcp_call_tool。
         max_tool_rounds: 单个样本内工具调用轮次上限，防止模型无限检索文献。
     """
+
+    SPEC = AgentSpec(
+        key="tool_caller",
+        role="工具调用者",
+        mission="与 LLM 多轮对话并执行其发起的 MCP 工具调用，直到给出最终答复",
+        entrypoints=("complete",),
+        upstream=("sampler",),
+        downstream=(),      # 下游是 knowledge 层的 MCP 工具，不是 Agent
+        consumes=("content: str", "repeat: int"),
+        produces=("responses: list[str]", "thinking: list[str]"),
+        artifacts=(),
+        thread_model=THREAD_PER_SAMPLER,
+        llm_task="sampling",
+        notes="complete() 恒返回 list（repeat==1 也返回长度为 1 的 list）。",
+    )
 
     def __init__(self, llm_client, tool_executor=None, max_tool_rounds: int = 4):
         self._llm_client = llm_client

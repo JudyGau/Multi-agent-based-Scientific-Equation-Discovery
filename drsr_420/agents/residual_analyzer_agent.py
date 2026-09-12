@@ -19,9 +19,25 @@ import numpy as np
 
 from drsr_420 import prompt_config as pc
 
+from drsr_420.agents.base import THREAD_PER_SAMPLER, AgentSpec, BaseAgent
 
-class ResidualAnalyzerAgent:
+
+class ResidualAnalyzerAgent(BaseAgent):
     """根据输入残差让 LLM 分析方程。"""
+
+    SPEC = AgentSpec(
+        key="residual_analyzer",
+        role="残差分析者",
+        mission="统计残差并结合上一次分析，让 LLM 输出结构化修正方向",
+        entrypoints=("analyze",),
+        upstream=("coordinator",),
+        downstream=(),
+        consumes=("sample: str", "residual: np.ndarray  # 最后一列为残差值"),
+        produces=("analysis: str",),
+        artifacts=("residual_analyze.json",),   # 由 CoordinatorAgent 落盘
+        thread_model=THREAD_PER_SAMPLER,
+        llm_task="residual",
+    )
 
     def __init__(self, llm_client, prompt_ctx=None, results_root='.'):
         self._llm_client = llm_client

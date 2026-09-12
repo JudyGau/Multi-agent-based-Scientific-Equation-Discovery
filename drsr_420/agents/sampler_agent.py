@@ -25,6 +25,7 @@ from drsr_420 import prompt_config as pc
 from llm import LLMClient
 
 from drsr_420.agents.tool_caller_agent import ToolCallerAgent
+from drsr_420.agents.base import THREAD_PER_SAMPLER, AgentSpec, BaseAgent
 
 # 骨架提取不到可执行代码时的最大重采样次数（避免无效骨架占用评估与经验配额）
 _MAX_BODY_RETRIES = 3
@@ -47,12 +48,27 @@ class LLM(ABC):
     # self._samples_per_prompt = 4 每一次prompt都生成四个相互独立的回答
 
 
-class SamplerAgent(LLM):
+class SamplerAgent(LLM, BaseAgent):
     """采样 Agent：调用 LLM 生成方程程序骨架。
 
     提示词构造（指令、任务头、历史经验/残差注入）与 MCP 工具循环都封装在此，
     工具循环委托给 ToolCallerAgent。
     """
+
+    SPEC = AgentSpec(
+        key="sampler",
+        role="采样者",
+        mission="拼提示词（指令+任务头+经验/残差注入）生成方程骨架，空骨架自动重采样",
+        entrypoints=("draw_samples",),
+        upstream=("coordinator",),
+        downstream=("tool_caller",),
+        consumes=("prompt.code: str", "config: config_lib.Config"),
+        produces=("samples: list[str]", "thinking_contents: list[str]"),
+        artifacts=(),
+        thread_model=THREAD_PER_SAMPLER,
+        llm_task="sampling",
+        notes="继承 LLM 抽象基类；抽不到可执行代码时最多重采样 _MAX_BODY_RETRIES 次。",
+    )
 
     def __init__(self, samples_per_prompt: int, batch_inference: bool = True, trim=True,
                  prompt_ctx: pc.PromptContext | None = None,

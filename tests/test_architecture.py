@@ -70,10 +70,19 @@ _LEGACY_SHIMS = {
 }
 
 
+def _is_type_checking_guard(test: ast.expr) -> bool:
+    """识别 `if TYPE_CHECKING:` / `if typing.TYPE_CHECKING:`——运行时不执行的守卫。"""
+    if isinstance(test, ast.Name):
+        return test.id == "TYPE_CHECKING"
+    if isinstance(test, ast.Attribute):
+        return test.attr == "TYPE_CHECKING"
+    return False
+
+
 def _module_level_imports(path: str) -> list[str]:
     """收集模块顶层会**真正执行**的 import 目标（函数体内的 import 视为惰性，不计入）。
 
-    类体（ClassDef）在导入时执行，因此计入；函数体不计入。
+    类体（ClassDef）在导入时执行，因此计入；函数体与 ``if TYPE_CHECKING:`` 块不计入。
     """
     with open(path, "r", encoding="utf-8") as f:
         tree = ast.parse(f.read(), filename=path)
@@ -84,6 +93,8 @@ def _module_level_imports(path: str) -> list[str]:
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue  # 函数体内的 import 是惰性的
+            if isinstance(child, ast.If) and _is_type_checking_guard(child.test):
+                continue  # if TYPE_CHECKING: 块运行时不执行
             if isinstance(child, ast.Import):
                 found.extend(alias.name for alias in child.names)
             elif isinstance(child, ast.ImportFrom) and child.module:
@@ -163,6 +174,97 @@ class LayerDirectionTest(unittest.TestCase):
                             imported == forbidden or imported.startswith(forbidden + "."),
                             f"agents/{filename} 反向依赖编排层 {imported}",
                         )
+
+
+def _agent_classes_by_key() -> dict[str, type]:
+    """{SPEC.key: Agent 类}——只收集声明了 SPEC 的类（LLM 抽象基类不算 Agent）。"""
+    classes: dict[str, type] = {}
+    for module_path in _CANONICAL_AGENTS:
+        module = importlib.import_module(module_path)
+        for name in _CANONICAL_AGENTS[module_path]:
+            cls = getattr(module, name)
+            spec = getattr(cls, "SPEC", None)
+            if spec is not None:
+                classes[spec.key] = cls
+    return classes
+
+
+class AgentContractTest(unittest.TestCase):
+    """阶段 1：7 个 Agent 必须都继承 BaseAgent，并声明自洽的角色卡。"""
+
+    def test_registry_matches_agent_order(self):
+        from drsr_420.agents import AGENT_ORDER, agent_specs
+
+        specs = agent_specs()
+        self.assertEqual(len(specs), 7, "系统应当恰好有 7 个 Agent 角色")
+        self.assertEqual(list(specs), list(AGENT_ORDER))
+
+    def test_every_agent_inherits_base_and_declares_spec(self):
+        from drsr_420.agents.base import AgentSpec, BaseAgent
+
+        classes = _agent_classes_by_key()
+        self.assertEqual(len(classes), 7, "应当恰好收集到 7 个 Agent 类")
+        for key, cls in classes.items():
+            with self.subTest(agent=key):
+                self.assertTrue(
+                    issubclass(cls, BaseAgent),
+                    f"{cls.__name__} 未继承 BaseAgent——多 Agent 契约不成立",
+                )
+                self.assertIsInstance(cls.SPEC, AgentSpec)
+
+    def test_declared_entrypoints_are_callable(self):
+        for key, cls in _agent_classes_by_key().items():
+            for entry in cls.SPEC.entrypoints:
+                with self.subTest(agent=key, entrypoint=entry):
+                    self.assertTrue(callable(getattr(cls, entry, None)),
+                                    f"{key}.SPEC 声明的入口 {entry} 不存在")
+
+    def test_canonical_entrypoint_uses_us_spelling(self):
+        """规范入口统一用 analyze（英式 analyse 只作为兼容别名存在）。"""
+        for key, cls in _agent_classes_by_key().items():
+            with self.subTest(agent=key):
+                self.assertFalse(
+                    cls.SPEC.canonical_entrypoint.startswith("analyse"),
+                    f"{key} 的规范入口不应使用英式拼写 analyse",
+                )
+
+    def test_contract_self_check_passes(self):
+        from drsr_420.agents import check_contracts
+
+        self.assertEqual(check_contracts(), [])
+
+    def test_architecture_renders_every_agent(self):
+        from drsr_420.agents import agent_specs, describe_architecture
+
+        rendered = describe_architecture()
+        for key, spec in agent_specs().items():
+            with self.subTest(agent=key):
+                self.assertIn(f"[{key}]", rendered)
+                self.assertIn(spec.role, rendered)
+
+
+class LazyImportTest(unittest.TestCase):
+    """`import drsr_420.agents` 不得顺带拉起任何 Agent 子模块。"""
+
+    def test_package_import_stays_lazy(self):
+        import subprocess
+        import sys
+
+        code = (
+            "import sys, drsr_420.agents; "
+            "loaded = sorted(m for m in sys.modules "
+            "if m.startswith('drsr_420.agents.') and m != 'drsr_420.agents.base'); "
+            "print(','.join(loaded))"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", code], cwd=_REPO_ROOT,
+            capture_output=True, text=True,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
+        self.assertEqual(
+            proc.stdout.strip(), "",
+            "import drsr_420.agents 触发了 eager 导入（可能引入循环导入与启动开销）",
+        )
 
 
 if __name__ == "__main__":

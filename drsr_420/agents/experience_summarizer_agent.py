@@ -12,9 +12,26 @@ from __future__ import annotations
 from drsr_420.console import StreamDeltaPrinter
 from drsr_420 import prompt_config as pc
 
+from drsr_420.agents.base import THREAD_PER_SAMPLER, AgentSpec, BaseAgent
 
-class ExperienceSummarizerAgent:
+
+class ExperienceSummarizerAgent(BaseAgent):
     """对一批方程样本及其质量标签做 LLM 经验总结。"""
+
+    SPEC = AgentSpec(
+        key="experience_summarizer",
+        role="经验总结者",
+        mission="对 Good/Bad/None 样本逐个做 LLM 分析，产出改进建议",
+        entrypoints=("analyze",),
+        upstream=("coordinator",),
+        downstream=(),
+        consumes=("samples: list[str]", "quality_for_sample: list[str]",
+                  "error_for_sample: list[str | None]", "prompt"),
+        produces=("analyses: list[str]",),
+        artifacts=("experiences.json",),   # 由 CoordinatorAgent 落盘
+        thread_model=THREAD_PER_SAMPLER,
+        llm_task="experience",
+    )
 
     def __init__(self, llm_client, prompt_ctx=None):
         self._llm_client = llm_client

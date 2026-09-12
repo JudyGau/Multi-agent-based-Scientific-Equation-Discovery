@@ -19,9 +19,32 @@ import pandas as pd
 from drsr_420.console import StreamDeltaPrinter, print_block
 from drsr_420 import prompt_config as pc
 
+from drsr_420.agents.base import (
+    PIPELINE,
+    THREAD_SINGLE_SHOT,
+    AgentSpec,
+    BaseAgent,
+)
 
-class DataAnalyzerAgent:
+
+class DataAnalyzerAgent(BaseAgent):
     """数据分析 Agent：使用本地大模型分析 CSV / 数据字典。"""
+
+    SPEC = AgentSpec(
+        key="data_analyzer",
+        role="数据分析者",
+        mission="实验开始时对数据集做初次分析，产出 sample_order=0 的残差分析基线",
+        entrypoints=("analyze",),
+        upstream=(PIPELINE,),
+        downstream=(),
+        consumes=("data_source: CSV 路径 或 {'data': {'inputs', 'outputs'}}",
+                  "custom_prompt: str | None"),
+        produces=("initial_analysis: str",),
+        artifacts=("residual_analyze.json",),   # 写 sample_order=0 的初始记录
+        thread_model=THREAD_SINGLE_SHOT,
+        llm_task="analysis",
+        notes="由 pipeline._run_initial_analysis 调用一次（含 RAG 文献注入）。",
+    )
 
     # 默认配置（实例级覆盖，不再写回类属性，避免多实例互相污染）
     DECIMAL_PLACES = 3  # 默认保留3位小数

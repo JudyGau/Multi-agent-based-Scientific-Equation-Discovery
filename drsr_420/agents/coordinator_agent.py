@@ -38,6 +38,12 @@ from drsr_420.agents.sampler_agent import LLM, SamplerAgent
 from drsr_420.agents.evaluator_agent import EvaluatorAgent
 from drsr_420.agents.experience_summarizer_agent import ExperienceSummarizerAgent
 from drsr_420.agents.residual_analyzer_agent import ResidualAnalyzerAgent
+from drsr_420.agents.base import (
+    PIPELINE,
+    THREAD_PER_SAMPLER,
+    AgentSpec,
+    BaseAgent,
+)
 
 # 多 sampler 并行时保护共享文件读写与全局采样计数。
 # 使用 RLock：内部方法 _get_global_sample_nums 会在 with _SAMPLER_LOCK 块内被再次调用，
@@ -97,8 +103,25 @@ class SampleBatch:
     best_score: float | None = None
 
 
-class CoordinatorAgent:
+class CoordinatorAgent(BaseAgent):
     """协调 Agent：连续采样方程、评估并写入经验缓冲，支持断点续跑与并行 sampler。"""
+
+    SPEC = AgentSpec(
+        key="coordinator",
+        role="协调者",
+        mission="每轮从共享记忆取 prompt，驱动「采样→评估→反思→持久化」主循环",
+        entrypoints=("sample",),
+        upstream=(PIPELINE,),
+        downstream=("sampler", "evaluator", "experience_summarizer", "residual_analyzer"),
+        consumes=("buffer.Prompt",),
+        produces=("SampleBatch",),
+        artifacts=("checkpoint.json", "round_progress.csv",
+                   "experiences.json", "residual_analyze.json"),
+        thread_model=THREAD_PER_SAMPLER,
+        llm_task="sampling",
+        notes="唯一持有全链路编排权的角色；多实例共享 ExperienceBuffer 与全局采样计数，"
+              "共享文件读写由可重入锁 _SAMPLER_LOCK 保护。",
+    )
 
     _global_samples_nums: int = 1
 
@@ -216,7 +239,7 @@ class CoordinatorAgent:
         )
 
     def _evaluate_batch(self, batch: SampleBatch, best_score: float, **kwargs) -> None:
-        """逐样本评估：全局计数 +1、随机选 evaluator 执行 analyse，追踪本轮最优样本。
+        """逐样本评估：全局计数 +1、随机选 evaluator 执行 analyze，追踪本轮最优样本。
 
         best 追踪用单标量 round_best（O(n)）替代原先的 temp_best_score 列表 + max()
         （O(n^2)）；语义保持一致：仅严格超过评估前 best_score 的样本参与本轮最优
@@ -230,7 +253,7 @@ class CoordinatorAgent:
             self._global_sample_nums_plus_one()
             cur_global_sample_nums = self._get_global_sample_nums()
             chosen_evaluator: EvaluatorAgent = np.random.choice(self._evaluators)
-            score, error_msg, residual = chosen_evaluator.analyse(
+            score, error_msg, residual = chosen_evaluator.analyze(
                 sample,
                 batch.prompt.island_id,
                 batch.prompt.version_generated,

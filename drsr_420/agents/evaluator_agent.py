@@ -20,7 +20,7 @@
 (score, error, residual) 三元组，供 CoordinatorAgent 分类 Good/Bad/None。
 
 协作：
-- 上游：CoordinatorAgent（通过 analyse() 提交单个样本）；
+- 上游：CoordinatorAgent（通过 analyze() 提交单个样本）；
 - 下游：LocalSandbox（常驻 worker 沙箱）→ evaluate_on_problems（参数优化）。
 """
 from __future__ import annotations
@@ -47,6 +47,12 @@ from drsr_420 import buffer
 from drsr_420 import code_manipulation
 from drsr_420 import evaluate_on_problems
 from drsr_420 import evaluator_accelerate
+from drsr_420.agents.base import (
+    PIPELINE,
+    THREAD_PER_SAMPLER,
+    AgentSpec,
+    BaseAgent,
+)
 
 class _FunctionLineVisitor(ast.NodeVisitor):
     """ Visitor that finds the last line number of a function with a given name."""
@@ -368,7 +374,7 @@ def _calls_ancestor(program: str, function_to_evolve: str) -> bool:
 
 
 
-class EvaluatorAgent:
+class EvaluatorAgent(BaseAgent):
     """评估 Agent：编译并执行 LLM 生成的方程样本，产出 (score, error, residual)。
 
     职责：
@@ -377,6 +383,22 @@ class EvaluatorAgent:
     - 成功时把程序与分数注册进 ExperienceBuffer（register_program），
       失败时经 Profiler 记录 score=None 样本。
     """
+
+    SPEC = AgentSpec(
+        key="evaluator",
+        role="评估者",
+        mission="编译骨架、在常驻沙箱中执行并多起点拟合打分，产出 (score, error, residual)",
+        entrypoints=("analyze", "analyse"),   # analyse 为兼容别名（deprecated）
+        upstream=("coordinator", PIPELINE),
+        downstream=(),      # 下游是 runtime 层的沙箱与拟合，不是 Agent
+        consumes=("sample: str", "island_id: int | None", "version_generated: int | None"),
+        produces=("score: float | None", "error_msg: str | None",
+                  "residual: np.ndarray | None"),
+        artifacts=("samples/samples_N.json",),   # 经 Profiler 落盘
+        thread_model=THREAD_PER_SAMPLER,
+        llm_task=None,
+        notes="每个 sampler 线程独享一份实例（避免 LocalSandbox._last_params 等实例状态竞态）。",
+    )
 
     def __init__(
             self,
@@ -398,7 +420,7 @@ class EvaluatorAgent:
         # sandbox_class() 实例化会直接 TypeError，等于"文档声明的默认值不可用"
         self._sandbox = (sandbox_class or LocalSandbox)()
 
-    def analyse(
+    def analyze(
             self,
             sample: str,
             island_id: int | None,
@@ -501,6 +523,9 @@ class EvaluatorAgent:
             res = None
 
         return test_output, error_msg, res
+
+    # 兼容别名（deprecated）：旧方法名 analyse → 已统一为 analyze
+    analyse = analyze
 
     def close(self) -> None:
         """释放沙箱资源（LocalSandbox 常驻 worker）；沙箱不支持则静默跳过。"""
