@@ -134,9 +134,18 @@ class ExperienceBuffer:
             program: code_manipulation.Function,
             island_id: int,
             scores_per_test: ScoresPerTest,
-            **kwargs 
+            *,
+            profiler: Profiler | None = None,
+            global_sample_nums: int | None = None,
+            sample_time: float | None = None,
+            evaluate_time: float | None = None,
     ) -> None:
-        """Registers `program` in the specified island."""
+        """Registers `program` in the specified island.
+
+        记录用的 4 个字段改为显式关键字参数：此前经 ``**kwargs`` 从
+        EvaluatorAgent 一路透传，字段名与"是否存在"只能靠读实现反推，
+        而且调用方拼错字段名不会报错、只会静默丢记录。
+        """
         self._islands[island_id].register_program(program, scores_per_test)
         score = _reduce_score(scores_per_test)
         if score > self._best_score_per_island[island_id]:
@@ -145,11 +154,7 @@ class ExperienceBuffer:
             self._best_score_per_island[island_id] = score
             logging.info('Best score of island %d increased to %s', island_id, score)
 
-        profiler: Profiler = kwargs.get('profiler', None)
         if profiler:
-            global_sample_nums = kwargs.get('global_sample_nums', None)
-            sample_time = kwargs.get('sample_time', None)
-            evaluate_time = kwargs.get('evaluate_time', None)
             program.score = score
             program.global_sample_nums = global_sample_nums
             program.sample_time = sample_time
@@ -162,15 +167,25 @@ class ExperienceBuffer:
             program: code_manipulation.Function,
             island_id: int | None,
             scores_per_test: ScoresPerTest,
-            **kwargs 
+            *,
+            profiler: Profiler | None = None,
+            global_sample_nums: int | None = None,
+            sample_time: float | None = None,
+            evaluate_time: float | None = None,
     ) -> None:
         """Registers new `program` skeleton hypotheses in the experience buffer."""
         with self._lock:
             if island_id is None:
                 for island_id in range(len(self._islands)):
-                    self._register_program_in_island(program, island_id, scores_per_test, **kwargs)
+                    self._register_program_in_island(
+                        program, island_id, scores_per_test, profiler=profiler,
+                        global_sample_nums=global_sample_nums,
+                        sample_time=sample_time, evaluate_time=evaluate_time)
             else:
-                self._register_program_in_island(program, island_id, scores_per_test, **kwargs)
+                self._register_program_in_island(
+                    program, island_id, scores_per_test, profiler=profiler,
+                    global_sample_nums=global_sample_nums,
+                    sample_time=sample_time, evaluate_time=evaluate_time)
 
             # Check island reset
             if time.time() - self._last_reset_time > self._config.reset_period:

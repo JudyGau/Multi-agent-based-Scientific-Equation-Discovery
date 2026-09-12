@@ -28,18 +28,11 @@ from __future__ import annotations
 import ast
 import copy
 import multiprocessing
-import queue
 import threading
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from typing import Any, TYPE_CHECKING, Type
-
-if TYPE_CHECKING:
-    # 仅用于类型注解（运行时不求值，文件已启用 from __future__ import annotations）。
-    # 此前误用 `import profile`（标准库性能分析模块）占用 profile 名字，已修正为
-    # 显式从项目 drsr_420.profile 导入 Profiler，避免命名冲突与误导。
-    from drsr_420.profile import Profiler
+from typing import Any, Type
 
 import numpy as np
 
@@ -53,6 +46,7 @@ from drsr_420.agents.base import (
     AgentSpec,
     BaseAgent,
 )
+from drsr_420.agents.messages import EvaluationOutcome, EvaluationRequest
 
 class _FunctionLineVisitor(ast.NodeVisitor):
     """ Visitor that finds the last line number of a function with a given name."""
@@ -140,8 +134,6 @@ class Sandbox(ABC):
             inputs: Any,
             test_input: str,
             timeout_seconds: int,
-            **kwargs
-
     ) -> tuple[tuple[Any, bool, str], Any]:
 
         """ Return `function_to_run(test_input)` and whether execution succeeded. """
@@ -299,24 +291,31 @@ class LocalSandbox(Sandbox):
     def _respawn_workers(self):
         """销毁并重建 worker 池：某条样本超时卡死后恢复调度能力。
 
-        同时清空任务队列中被超时任务之后的陈旧任务：这些任务的结果管道已被
-        关闭，新 worker 若继续消费只会白白执行（重任务可再占用数十秒），
-        造成后续所有样本评估连锁超时。
+        同时丢弃任务队列中陈旧的任务：这些任务的结果管道已被关闭，新 worker 若继续
+        消费只会白白执行（重任务可再占用数十秒），造成后续样本评估连锁超时。
+
+        实现要点（**换队列**而不是 get_nowait 清空）：``multiprocessing.Queue`` 的
+        投递由后台 feeder 线程异步完成，刚 put 进去的任务常常还没进管道，``get_nowait``
+        看不到它们——旧实现因此只是"尽力清空"，残留任务仍会被新 worker 消费。
+        换一条全新队列后，陈旧任务在结构上不可能再被任何 worker 取到。
         """
         for p in self._workers:
             if p.is_alive():
                 p.terminate()
                 p.join()
-        while True:
-            try:
-                self._task_queue.get_nowait()
-            except queue.Empty:
-                break
+        stale_queue = self._task_queue
+        # 先于 _spawn_workers() 换队：worker 在 spawn 时绑定 self._task_queue
+        self._task_queue = multiprocessing.Queue()
+        try:
+            stale_queue.cancel_join_thread()   # 不等 feeder 线程排空（其数据已无意义）
+            stale_queue.close()
+        except Exception:
+            pass
         self._workers = self._spawn_workers()
 
 
     def run(self, program: str, function_to_run: str, function_to_evolve: str,
-            inputs: Any, test_input: str, timeout_seconds: int, **kwargs
+            inputs: Any, test_input: str, timeout_seconds: int
             ) -> tuple[tuple[Any, bool, str], Any]:
         """
         执行给定样本，返回 (结果三元组, 残差采样)。
@@ -349,16 +348,22 @@ class LocalSandbox(Sandbox):
         self._last_params = params
         results = (grade, runs_ok, remark)
         if self._verbose:
-            self._print_evaluation_details(program, results, **kwargs)
+            self._print_evaluation_details(program, results, function_to_evolve)
         return results, res
 
 
 
 
-    def _print_evaluation_details(self, program, results, **kwargs):
+    def _print_evaluation_details(self, program, results, func_to_evolve: str = 'equation'):
+        """打印被评估的程序与分数（verbose 模式）。
+
+        旧实现从 ``**kwargs`` 里取 ``func_to_evolve``，而调用方从不传 kwargs，
+        因此永远回退成默认值 'equation'——verbose 输出对非 equation 任务名是错的。
+        现在由 ``run()`` 直接传入真实函数名。
+        """
         print('================= Evaluated Program =================')
         program = code_manipulation.sanitize_code_text(program)
-        function = code_manipulation.text_to_program(program).get_function(kwargs.get('func_to_evolve', 'equation'))
+        function = code_manipulation.text_to_program(program).get_function(func_to_evolve)
         print(f'{str(function).strip()}\n-----------------------------------------------------')
         print(f'Score: {results}\n=====================================================\n\n')
 
@@ -420,16 +425,15 @@ class EvaluatorAgent(BaseAgent):
         # sandbox_class() 实例化会直接 TypeError，等于"文档声明的默认值不可用"
         self._sandbox = (sandbox_class or LocalSandbox)()
 
-    def analyze(
-            self,
-            sample: str,
-            island_id: int | None,
-            version_generated: int | None,
-            **kwargs
-    ) -> tuple[float | None, str, Any]:
-        """ Compile the hypothesis sample into a program and executes it on test inputs. """
+    def analyze(self, request: EvaluationRequest) -> EvaluationOutcome:
+        """编译请求中的骨架样本并在沙箱中执行，返回评估结果。
+
+        Args:
+            request: 评估请求（样本、岛屿/版本号，以及记录用的归属信息）。
+        """
         new_function, program = _sample_to_program(
-            sample, version_generated, self._template, self._function_to_evolve)
+            request.sample, request.version_generated, self._template,
+            self._function_to_evolve)
         scores_per_test = {}
 
         # 循环外初始化：self._inputs 为空时循环不执行，避免末尾 return 触发 UnboundLocalError
@@ -492,20 +496,20 @@ class EvaluatorAgent(BaseAgent):
 
             self._database.register_program(
                 new_function,
-                island_id,
+                request.island_id,
                 scores_per_test,
-                **kwargs,
-                evaluate_time=evaluate_time
+                profiler=request.profiler,
+                global_sample_nums=request.global_sample_nums,
+                sample_time=request.sample_time,
+                evaluate_time=evaluate_time,
             )
 
         else:
-            profiler: Profiler = kwargs.get('profiler', None)
+            profiler = request.profiler
             if profiler:
-                global_sample_nums = kwargs.get('global_sample_nums', None)
-                sample_time = kwargs.get('sample_time', None)
-                new_function.global_sample_nums = global_sample_nums
+                new_function.global_sample_nums = request.global_sample_nums
                 new_function.score = None
-                new_function.sample_time = sample_time
+                new_function.sample_time = request.sample_time
                 new_function.evaluate_time = evaluate_time
                 try:
                     params = getattr(self._sandbox, '_last_params', None)
@@ -522,10 +526,29 @@ class EvaluatorAgent(BaseAgent):
             test_output = None
             res = None
 
-        return test_output, error_msg, res
+        return EvaluationOutcome(score=test_output, error=error_msg, residual=res)
 
-    # 兼容别名（deprecated）：旧方法名 analyse → 已统一为 analyze
-    analyse = analyze
+    def analyse(self, sample: str, island_id: int | None,
+                version_generated: int | None,
+                profiler: Any = None,
+                global_sample_nums: int | None = None,
+                sample_time: float | None = None
+                ) -> tuple[float | None, str | None, Any | None]:
+        """兼容入口（deprecated）：旧签名 ``analyse(...)`` → ``analyze(EvaluationRequest)``。
+
+        仅用于过渡期外部调用方，内部调用点已全部改用 :class:`EvaluationRequest`。
+        相比旧实现，这里不再用 ``**kwargs`` 收参数——参数名拼错会立刻 TypeError，
+        而不是静默丢掉 profiler 记录。
+        """
+        request = EvaluationRequest(
+            sample=sample,
+            island_id=island_id,
+            version_generated=version_generated,
+            global_sample_nums=global_sample_nums,
+            sample_time=sample_time,
+            profiler=profiler,
+        )
+        return self.analyze(request).to_legacy()
 
     def close(self) -> None:
         """释放沙箱资源（LocalSandbox 常驻 worker）；沙箱不支持则静默跳过。"""

@@ -41,6 +41,7 @@ from drsr_420.find_best_eq import find_best_eq
 from drsr_420.agents.coordinator_agent import CoordinatorAgent
 from drsr_420.agents.evaluator_agent import EvaluatorAgent
 from drsr_420.agents.data_analyzer_agent import DataAnalyzerAgent
+from drsr_420.agents.messages import EvaluationRequest
 
 
 def _extract_function_names(specification: str) -> Tuple[str, str]:
@@ -152,8 +153,10 @@ def _run_initial_analysis(
     results_root = kwargs.get('results_root', None) or config.results_root
 
     initial = template.get_function(function_to_evolve).body
-    ini_score, error_msg, res = evaluators[0].analyze(
-        initial, island_id=None, version_generated=None, profiler=profiler)
+    # 初始模板评估：结果不参与后续流程（只为确认模板可运行并写入样本记录），
+    # 因此不接收返回值——旧代码解包出的 ini_score/error_msg/res 从未被使用。
+    evaluators[0].analyze(EvaluationRequest(
+        sample=initial, island_id=None, version_generated=None, profiler=profiler))
 
     # 创建 DataAnalyzerAgent 实例（也写入统一结果目录，直接使用 results_root）
     analyzer = DataAnalyzerAgent(timeout=600, base_dir=results_root, llm_client=llm_client, seed=seed)

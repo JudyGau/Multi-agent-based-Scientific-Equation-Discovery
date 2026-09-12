@@ -135,22 +135,33 @@ class EmbedderSingletonTest(unittest.TestCase):
 
 
 class SandboxRespawnDrainTest(unittest.TestCase):
-    def test_stale_tasks_are_discarded_on_respawn(self):
-        """超时重建 worker 前必须清空队列：陈旧任务的结果管道已关闭，
-        若被新 worker 消费会白白执行重拟合，导致后续评估连锁超时。"""
+    def test_stale_queue_is_replaced_on_respawn(self):
+        """超时重建 worker 时必须丢弃陈旧任务队列。
+
+        旧实现用 ``get_nowait()`` 清空队列，但 ``multiprocessing.Queue`` 由后台
+        feeder 线程异步投递——刚 put 进去的任务往往还没进管道，``get_nowait`` 看不到，
+        于是"清空"只是尽力而为，残留任务仍会被新 worker 消费（其结果管道已关闭，
+        只会白白重拟合并造成后续连锁超时）。该缺陷在本套件里表现为**偶发失败**：
+        测试顺序/负载稍有变化就复现。
+
+        现在改为换一条全新队列，并断言"新 worker 绑定的队列已不是那条陈旧队列"。
+        """
         sb = object.__new__(LocalSandbox)
         sb._workers = []          # 没有存活进程可 terminate
         sb._pool_size = 0
-        q = multiprocessing.Queue()
+        stale_queue = multiprocessing.Queue()
         for i in range(3):
-            q.put(("stale-task", i))
-        sb._task_queue = q
+            stale_queue.put(("stale-task", i))
+        sb._task_queue = stale_queue
         sb._spawn_workers = lambda: []
 
         sb._respawn_workers()
 
+        self.assertIsNot(sb._task_queue, stale_queue,
+                         "重建后仍在用旧队列：陈旧任务会被新 worker 消费")
         with self.assertRaises(queue.Empty):
-            q.get_nowait()
+            sb._task_queue.get_nowait()   # 新队列必须是干净的
+        self.assertEqual(sb._workers, [])
 
 
 if __name__ == "__main__":

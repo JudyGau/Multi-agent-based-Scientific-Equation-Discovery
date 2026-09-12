@@ -112,6 +112,10 @@ head_template = (
 
 
 # 残差分析提示模板（包含固定格式与输出要求）
+#
+# 注意：本模板经 ``str.format()`` 渲染，因此"输出格式"里的 JSON 花括号必须写成
+# ``{{`` / ``}}`` 转义。此前未转义，导致 ``.format()`` 抛
+# ``KeyError: '\n    "analysis"'``——即"无 prompt_ctx 兜底模板"这条分支从未可用。
 residual_analysis_prompt = (
     "You are a data analysis expert.\n"
     "previous conclusions:{last_analysis}\n"
@@ -127,23 +131,23 @@ residual_analysis_prompt = (
     "Your response only needs to answer your analysis results in the form below, and you don't need to show your analysis process.\n\n"
     "2.##Output Format##:\n"
     "STRICTLY deliver results in the following structured format:\n\n"
-    "  \"output_format\": {\n"
-    "    \"analysis\": {\n"
-    "      \"independent_to_dependent_relationships\": {\n"
+    "  \"output_format\": {{\n"
+    "    \"analysis\": {{\n"
+    "      \"independent_to_dependent_relationships\": {{\n"
     "        \"x0 \": [\n"
     "          \"Hint: analyze the functional relationship between x0 and y in different intervals\"\n"
     "        ],\n"
     "        \"x1 \": [\n"
     "          \"Hint: analyze the functional relationship between x1 and y in different intervals\"\n"
     "        ]\n"
-    "      },\n"
-    "      \"inter_relationships_between_independents\": {\n"
+    "      }},\n"
+    "      \"inter_relationships_between_independents\": {{\n"
     "        \"x0 vs x1\": [\n"
     "          \"Hint: analyze the possible functional relationship between x0 and x1 in different intervals. If not, leave blank.\"\n"
     "        ]\n"
-    "      }\n"
-    "    }\n"
-    "  }\n"
+    "      }}\n"
+    "    }}\n"
+    "  }}\n"
 )
 
 

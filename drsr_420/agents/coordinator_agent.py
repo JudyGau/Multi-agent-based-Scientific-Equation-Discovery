@@ -44,6 +44,16 @@ from drsr_420.agents.base import (
     AgentSpec,
     BaseAgent,
 )
+from drsr_420.agents.messages import (
+    QUALITY_BAD,
+    QUALITY_GOOD,
+    QUALITY_NONE,
+    EvaluationOutcome,
+    EvaluationRequest,
+    ExperienceEntry,
+    ResidualInsight,
+    SampleBatch,
+)
 
 # 多 sampler 并行时保护共享文件读写与全局采样计数。
 # 使用 RLock：内部方法 _get_global_sample_nums 会在 with _SAMPLER_LOCK 块内被再次调用，
@@ -86,21 +96,8 @@ def clone_llm_client(client, task=None, **kwargs_overrides):
     return new_client
 
 
-@dataclasses.dataclass
-class SampleBatch:
-    """一轮采样产出的全部中间数据，在各子步骤（评估/分类/反思/持久化）间传递。"""
-    prompt: buffer.Prompt
-    samples: list[str]
-    thinking_contents: list[str]
-    sample_time: float
-    scores: list = dataclasses.field(default_factory=list)
-    errors: list = dataclasses.field(default_factory=list)
-    qualities: list = dataclasses.field(default_factory=list)
-    analyses: list = dataclasses.field(default_factory=list)
-    best_sample: str | None = None
-    best_residual: Any | None = None
-    best_id: int | None = None        # 1-based，用于 sample_order 计算
-    best_score: float | None = None
+# SampleBatch 已迁至 drsr_420.agents.messages，并在本模块 re-export
+# （保持 `from drsr_420.agents.coordinator_agent import SampleBatch` 可用）。
 
 
 class CoordinatorAgent(BaseAgent):
@@ -188,8 +185,13 @@ class CoordinatorAgent(BaseAgent):
     # ------------------------------------------------------------------
     # 主循环
     # ------------------------------------------------------------------
-    def sample(self, **kwargs) -> None:
-        """运行"采样→评估→反思→持久化"主循环，直至达到全局采样数上限或实验时长上限。"""
+    def sample(self, profiler: Any = None) -> None:
+        """运行"采样→评估→反思→持久化"主循环，直至达到全局采样数上限或实验时长上限。
+
+        Args:
+            profiler: ``profile.Profiler`` 实例（样本/进度记录）。参数原先是一个
+                ``**kwargs`` 袋，而袋里唯一的内容就是它——现在显式声明。
+        """
         start_time = time.time()
         while not self._should_stop(start_time):
             prompt = self._database.get_prompt()    # 从岛上拿一个可参考的方程框架 - 故可以独立反思
@@ -198,7 +200,7 @@ class CoordinatorAgent(BaseAgent):
             print(f"从岛屿 {island_id} 获取prompt，最佳分数: {best_score}")
 
             batch = self._sample_batch(prompt)
-            self._evaluate_batch(batch, best_score, **kwargs)
+            self._evaluate_batch(batch, best_score, profiler)
             self._classify_quality(batch, best_score)
             try:  # 分析失败不中断主循环（经验/残差分析均为增强项）
                 self._summarize_experience(batch)
@@ -238,7 +240,8 @@ class CoordinatorAgent(BaseAgent):
             sample_time=sample_time,
         )
 
-    def _evaluate_batch(self, batch: SampleBatch, best_score: float, **kwargs) -> None:
+    def _evaluate_batch(self, batch: SampleBatch, best_score: float,
+                        profiler: Any = None) -> None:
         """逐样本评估：全局计数 +1、随机选 evaluator 执行 analyze，追踪本轮最优样本。
 
         best 追踪用单标量 round_best（O(n)）替代原先的 temp_best_score 列表 + max()
@@ -253,14 +256,15 @@ class CoordinatorAgent(BaseAgent):
             self._global_sample_nums_plus_one()
             cur_global_sample_nums = self._get_global_sample_nums()
             chosen_evaluator: EvaluatorAgent = np.random.choice(self._evaluators)
-            score, error_msg, residual = chosen_evaluator.analyze(
-                sample,
-                batch.prompt.island_id,
-                batch.prompt.version_generated,
-                **kwargs,
+            outcome: EvaluationOutcome = chosen_evaluator.analyze(EvaluationRequest(
+                sample=sample,
+                island_id=batch.prompt.island_id,
+                version_generated=batch.prompt.version_generated,
                 global_sample_nums=cur_global_sample_nums,
                 sample_time=batch.sample_time,
-            )
+                profiler=profiler,
+            ))
+            score, error_msg, residual = outcome.score, outcome.error, outcome.residual
             batch.scores.append(score)
             batch.errors.append(error_msg)
             id += 1
@@ -284,39 +288,44 @@ class CoordinatorAgent(BaseAgent):
         """按评估前 best_score 将每样本分为 Good/Bad/None。"""
         for each_score in batch.scores:
             if each_score is None:
-                batch.qualities.append('None')
+                batch.qualities.append(QUALITY_NONE)
             elif each_score > best_score:
-                batch.qualities.append('Good')
+                batch.qualities.append(QUALITY_GOOD)
             else:
-                batch.qualities.append('Bad')
+                batch.qualities.append(QUALITY_BAD)
 
         # 质量分布摘要（替代原先的裸 print 噪声：quality_for_sample/if_best 等）
         print_block(
-            f"[质量] Good={batch.qualities.count('Good')} "
-            f"Bad={batch.qualities.count('Bad')} None={batch.qualities.count('None')}，"
+            f"[质量] Good={batch.qualities.count(QUALITY_GOOD)} "
+            f"Bad={batch.qualities.count(QUALITY_BAD)} "
+            f"None={batch.qualities.count(QUALITY_NONE)}，"
             f"本轮最优命中={batch.best_id is not None}")
 
     def _summarize_experience(self, batch: SampleBatch) -> None:
-        """委托 ExperienceSummarizerAgent 对整批样本做经验总结。"""
+        """委托 ExperienceSummarizerAgent 对整批样本做经验总结。
+
+        返回的是 :class:`ExperienceEntry` 列表（每条自带样本/质量/错误/分析文本），
+        取代原先"平行 list[str] + 靠 zip 对齐"的隐式契约。
+        """
         print_block("\n===== 方程和分数分析开始 =====")
-        batch.analyses = self._summarizer.analyze(
+        batch.experience_entries = self._summarizer.analyze(
             batch.samples, batch.qualities, batch.errors, batch.prompt)
         print_block("总的分析结果：---------")
-        print_block(batch.analyses)
+        print_block([entry.analysis for entry in batch.experience_entries])
         print_block("===== 方程和分数分析结束 =====\n")
 
     def _analyze_residual(self, batch: SampleBatch) -> None:
         """若本轮存在有效最优样本，委托 ResidualAnalyzerAgent 分析残差并持久化。"""
         print_block("\n===== 残差分析开始 =====")
         print_block(batch.best_residual)
-        print(batch.best_id is not None)
         if batch.best_residual is not None and batch.best_id is not None:
             # 只对有效样本进行残差分析
-            residual_result = self._analyzer.analyze(batch.best_sample, batch.best_residual)
-            print_block(f"样本残差分析结果: {residual_result}")
-            self._persist_residual(batch, residual_result)
+            insight: ResidualInsight = self._analyzer.analyze(
+                batch.best_sample, batch.best_residual)
+            print_block(f"样本残差分析结果: {insight.analysis}")
+            self._persist_residual(batch, insight)
 
-    def _persist_residual(self, batch: SampleBatch, residual_result: str) -> None:
+    def _persist_residual(self, batch: SampleBatch, insight: ResidualInsight) -> None:
         """锁内读-改-写 residual_analyze.json，追加本轮最优样本的残差分析记录。"""
         with _SAMPLER_LOCK:
             # 创建目录存放残差分析结果
@@ -335,17 +344,15 @@ class CoordinatorAgent(BaseAgent):
                 except Exception as e:
                     print(f"读取现有残差分析文件时出错: {e}")
 
-            # 当前样本顺序号：全局计数 - 本轮样本数 + 最优样本下标（1-based）
-            current_sample_order = self._get_global_sample_nums() - len(batch.samples) + batch.best_id
-
-            residual_record = {
-                "sample_order": current_sample_order,
-                "island_id": batch.prompt.island_id,
-                "equation": batch.best_sample,
-                "analysis": residual_result,
-                "best_score": batch.best_score,
-            }
-            residual_data_list.append(residual_record)
+            # 归属字段在此补齐：样本顺序号 = 全局计数 - 本轮样本数 + 最优样本下标（1-based）
+            record = dataclasses.replace(
+                insight,
+                island_id=batch.prompt.island_id,
+                sample_order=(self._get_global_sample_nums()
+                              - len(batch.samples) + batch.best_id),
+                best_score=batch.best_score,
+            )
+            residual_data_list.append(record.to_json())
 
             try:
                 atomic_write_json(json_residual_file, residual_data_list)
@@ -359,13 +366,13 @@ class CoordinatorAgent(BaseAgent):
             json_experience_file = os.path.join(self.config.results_root or ".", "experiences.json")
 
             # 加载现有的经验（如果文件存在）
-            experiences_data = {"None": [], "Good": [], "Bad": []}
+            experiences_data = {QUALITY_NONE: [], QUALITY_GOOD: [], QUALITY_BAD: []}
             if os.path.exists(json_experience_file):
                 try:
                     with open(json_experience_file, "r", encoding="utf-8") as f:
                         existing_data = json.load(f)
                         # 确保键存在
-                        for key in ["None", "Good", "Bad"]:
+                        for key in (QUALITY_NONE, QUALITY_GOOD, QUALITY_BAD):
                             if key in existing_data:
                                 experiences_data[key] = existing_data[key]
                 except json.JSONDecodeError:
@@ -373,34 +380,19 @@ class CoordinatorAgent(BaseAgent):
                 except Exception as e:
                     print(f"读取现有经验文件时出错: {e}")
 
-            # 添加新经验
-            for i, (sample_text, quality, analysis, error_msg, thinking_content) in enumerate(zip(
-                    batch.samples, batch.qualities, batch.analyses, batch.errors, batch.thinking_contents)):
-                current_sample_order = self._get_global_sample_nums() - len(batch.samples) + i + 1
-
-                # 确定分类
-                if quality == 'Good':
-                    category = "Good"
-                elif quality == 'Bad':
-                    category = "Bad"
-                else:  # 'None'
-                    category = "None"
-
-                experience = {
-                    "island_id": batch.prompt.island_id,
-                    "analysis": analysis,
-                    "sample_order": current_sample_order,  # 添加样本顺序号
-                    "sample_time": batch.sample_time,
-                    "equation": sample_text,
-                    "score": batch.scores[i],
-                    "thinking_content": thinking_content,
-                }
-
-                # 对于 None 类型，添加错误信息
-                if category == "None" and error_msg:
-                    experience["error"] = error_msg
-
-                experiences_data[category].append(experience)
+            # 每条经验自带样本/质量/分析文本（ExperienceEntry），不再 zip 5 个平行列表：
+            # 历史实现里任一处顺序错位，都会把经验静默配到别的样本上。
+            for i, entry in enumerate(batch.experience_entries):
+                record = dataclasses.replace(
+                    entry,
+                    island_id=batch.prompt.island_id,
+                    sample_order=self._get_global_sample_nums() - len(batch.samples) + i + 1,
+                    sample_time=batch.sample_time,
+                    score=batch.scores[i] if i < len(batch.scores) else None,
+                    thinking_content=(batch.thinking_contents[i]
+                                      if i < len(batch.thinking_contents) else ""),
+                )
+                experiences_data[record.quality].append(record.to_json())
 
             try:
                 atomic_write_json(json_experience_file, experiences_data)

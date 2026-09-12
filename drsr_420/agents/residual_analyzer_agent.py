@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import os
-import threading
 from drsr_420.console import StreamDeltaPrinter, print_block
 import traceback
 
@@ -20,6 +19,7 @@ import numpy as np
 from drsr_420 import prompt_config as pc
 
 from drsr_420.agents.base import THREAD_PER_SAMPLER, AgentSpec, BaseAgent
+from drsr_420.agents.messages import ResidualInsight
 
 
 class ResidualAnalyzerAgent(BaseAgent):
@@ -33,7 +33,7 @@ class ResidualAnalyzerAgent(BaseAgent):
         upstream=("coordinator",),
         downstream=(),
         consumes=("sample: str", "residual: np.ndarray  # 最后一列为残差值"),
-        produces=("analysis: str",),
+        produces=("insight: ResidualInsight",),
         artifacts=("residual_analyze.json",),   # 由 CoordinatorAgent 落盘
         thread_model=THREAD_PER_SAMPLER,
         llm_task="residual",
@@ -44,8 +44,12 @@ class ResidualAnalyzerAgent(BaseAgent):
         self._prompt_ctx = prompt_ctx
         self._results_root = results_root or '.'
 
-    def analyze(self, sample, residual) -> str:
-        """构造残差分析提示并调用 LLM，返回分析结果字符串。"""
+    def analyze(self, sample, residual) -> ResidualInsight:
+        """构造残差分析提示并调用 LLM，返回残差洞察（样本 + 分析文本）。
+
+        归属字段（``island_id`` / ``sample_order`` / ``best_score``）由
+        CoordinatorAgent 在落盘前补齐——本 Agent 不掌握这些信息。
+        """
         print("========================进入了残差分析函数========================")
         # 计算残差的统计信息
         res_values = residual[:, -1]  # 最后一列是残差值
@@ -92,10 +96,10 @@ class ResidualAnalyzerAgent(BaseAgent):
             print()  # 流式结束后换行
             # 兜底：推理模型可能把完整分析输出在 reasoning_content 而 content 为空
             analysis_result = resp.get('content', '') or resp.get('reasoning_content', '')
-            return analysis_result
+            return ResidualInsight(sample=sample, analysis=analysis_result)
         except Exception as e:
             print(f"残差分析请求发生错误: {str(e)}")
-            return f"分析请求发生错误: {str(e)}"
+            return ResidualInsight(sample=sample, analysis=f"分析请求发生错误: {str(e)}")
 
 
 # 兼容别名：旧模块名 drsr_420.residual_analyzer.ResidualAnalyzer 指向本类
