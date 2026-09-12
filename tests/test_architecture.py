@@ -36,8 +36,8 @@ _LAYERS = ("core", "llm", "evaluation", "knowledge", "agents", "analysis",
 #: 每一层允许 import 的层（含自身）；其余一律视为越界/倒置。
 _ALLOWED_LAYER_DEPS = {
     "core": set(),                                    # 最底层
-    "llm": {"core"},                                  # 只依赖 core（token 统计下沉到 core.llm_stats）
-    "evaluation": set(),                              # 纯机制：拟合/沙箱/numba
+    "llm": {"core"},                                  # token 统计下沉到 core.llm_stats
+    "evaluation": {"core"},                           # 机制层：借 core 的 AST 与程序拼装
     "knowledge": {"llm"},                             # RAG 与 MCP 工具只依赖 LLM 接入
     "agents": {"core", "llm", "evaluation", "knowledge"},
     "analysis": {"core", "llm", "knowledge"},
@@ -328,17 +328,30 @@ _STANDALONE_SCRIPTS = (
 
 
 def _all_imports(path: str) -> list[str]:
-    """收集文件里**全部** import 目标（含嵌套在函数/if/TYPE_CHECKING 里的）。"""
+    """收集文件里**运行时会执行**的 import 目标。
+
+    计入函数体内的 import（延迟导入也会形成真实依赖）；跳过 ``if TYPE_CHECKING:``
+    块——它在运行时不执行，只是类型注解引用（例如 core/config 注解 agents 与
+    evaluation 的类型），不构成依赖倒置。
+    """
     with open(path, "r", encoding="utf-8") as f:
         tree = ast.parse(f.read(), filename=path)
-    names: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            names.extend(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            names.append(node.module)
-            names.extend(f"{node.module}.{alias.name}" for alias in node.names)
-    return names
+
+    found: list[str] = []
+
+    def walk(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.If) and _is_type_checking_guard(child.test):
+                continue
+            if isinstance(child, ast.Import):
+                found.extend(alias.name for alias in child.names)
+            elif isinstance(child, ast.ImportFrom) and child.module:
+                found.append(child.module)
+                found.extend(f"{child.module}.{alias.name}" for alias in child.names)
+            walk(child)
+
+    walk(tree)
+    return found
 
 
 def _layer_of(module_name: str) -> str | None:
@@ -491,6 +504,37 @@ class PathAnchorTest(unittest.TestCase):
                                      f"{rel} 独立加载失败（__file__ 兜底级数不对？）:\n"
                                      f"{proc.stderr[-1200:]}")
                     self.assertIn("IMPORTED-OK", proc.stdout)
+
+
+class EvaluationSubsystemTest(unittest.TestCase):
+    """阶段 4：评估执行机制归 evaluation 层，角色文件只留编排。"""
+
+    def test_agent_module_holds_no_execution_mechanism(self):
+        src = (Path(_PKG_DIR) / "agents" / "evaluator_agent.py").read_text(encoding="utf-8")
+        for forbidden in ("multiprocessing", "Pipe(", "Process(", "exec(program"):
+            with self.subTest(token=forbidden):
+                self.assertNotIn(
+                    forbidden, src,
+                    f"agents/evaluator_agent.py 不应再含执行机制痕迹 {forbidden!r}"
+                    "（应放在 evaluation/sandbox.py）")
+
+    def test_mechanism_lives_in_evaluation_layer(self):
+        from drsr_420.agents import evaluator_agent
+        from drsr_420.evaluation import sandbox
+
+        self.assertIs(evaluator_agent.LocalSandbox, sandbox.LocalSandbox)
+        self.assertIs(evaluator_agent.Sandbox, sandbox.Sandbox)
+
+    def test_mechanism_symbols_remain_importable_from_agent_module(self):
+        """历史导入路径必须继续可用（测试与外部脚本直接用这些名字）。"""
+        import drsr_420.agents.evaluator_agent as ea
+        import drsr_420.evaluator as legacy
+
+        for name in ("LocalSandbox", "Sandbox", "_run_evaluation_task",
+                     "_sample_residuals", "_sample_to_program", "_calls_ancestor"):
+            with self.subTest(name=name):
+                self.assertTrue(hasattr(ea, name), f"evaluator_agent 缺少 {name}")
+                self.assertIs(getattr(legacy, name), getattr(ea, name))
 
 
 if __name__ == "__main__":

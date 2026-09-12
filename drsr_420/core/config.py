@@ -23,10 +23,12 @@ from typing import TYPE_CHECKING, Type
 import os
 
 if TYPE_CHECKING:
-    # 仅用于类型注解（ClassConfig）。运行时延迟解析，避免
-    # config -> sampler(shim) -> agents.sampler_agent -> config 循环导入。
-    from drsr_420 import sampler
-    from drsr_420 import evaluator
+    # 仅用于类型注解（ClassConfig）。运行时不求值（本文件启用
+    # from __future__ import annotations），因此不构成 core → agents/evaluation
+    # 的运行时依赖，也就不违反分层规则（见 tests/test_architecture.py）。
+    # 此前引用的是兼容层 drsr_420.sampler / drsr_420.evaluator，已改为规范路径。
+    from drsr_420.agents.sampler_agent import LLM
+    from drsr_420.evaluation.sandbox import Sandbox
 
 
 @dataclasses.dataclass(frozen=True)
@@ -98,5 +100,5 @@ class Config:
 
 @dataclasses.dataclass()
 class ClassConfig:
-    llm_class: Type[sampler.LLM]
-    sandbox_class: Type[evaluator.Sandbox]
+    llm_class: Type[LLM]              # 采样器类（默认 agents.sampler_agent.SamplerAgent）
+    sandbox_class: Type[Sandbox]      # 沙箱类（默认 evaluation.sandbox.LocalSandbox）

@@ -15,8 +15,11 @@
 
 """评估器兼容层（re-export 至 agents 子包）。
 
-原实现已迁移到 drsr_420/agents/evaluator_agent.py：
-- Evaluator / Sandbox / LocalSandbox / _eval_worker / _run_evaluation_task 等均在新模块。
+原实现已迁移并进一步拆分：
+- ``EvaluatorAgent``（角色）在 ``drsr_420/agents/evaluator_agent.py``；
+- 执行机制（``Sandbox`` / ``LocalSandbox`` / ``_eval_worker`` /
+  ``_run_evaluation_task`` / ``_sample_to_program`` 等）已拆到
+  ``drsr_420/evaluation/sandbox.py``，并由 evaluator_agent 一并 re-export。
 
 本模块仅保留旧模块名，供 config.py / pipeline.py / tests/test_evaluator.py 无缝引用。
 """
