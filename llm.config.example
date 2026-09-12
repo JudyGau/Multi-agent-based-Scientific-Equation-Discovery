@@ -1,0 +1,8 @@
+{
+  "host": "open.bigmodel.cn",
+  "api_key": "<在此填入你的 API Key>",
+  "model": "glm/glm-5.3-flash",
+  "max_tokens": 65536,
+  "temperature": 0.7,
+  "top_p": 0.95
+}

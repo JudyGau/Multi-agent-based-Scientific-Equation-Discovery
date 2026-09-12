@@ -14,7 +14,7 @@
     <option name="ADD_SOURCE_ROOTS" value="true" />
     <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
     <option name="SCRIPT_NAME" value="$PROJECT_DIR$/main.py" />
-    <option name="PARAMETERS" value="--problem_name MRFShear-Ellipsoid --data_csv ./data/MRFShear-Ellipsoid/train.csv --llm_config llm.config --niterations 8 --samples_per_iteration 4 --background &quot;Find the mathematical function skeleton that represents magnetorheological effect in shear mode, given data on lambda12(L1/L2), and lambda23(L2/L3). L1, L2, and L3 are the long axis, medium axis, and short axis of the ellipsoid particle.&quot;" />
+    <option name="PARAMETERS" value="--problem_name MRFShear-Ellipsoid --data_csv ./data/MRFShear-Ellipsoid/train.csv --num_samplers 4 --llm_config llm.config --niterations 8 --samples_per_iteration 4 --background &quot;Find the mathematical function skeleton that represents magnetorheological effect in shear mode, given data on lambda12(L1/L2), and lambda23(L2/L3). L1, L2, and L3 are the long axis, medium axis, and short axis of the ellipsoid particle.&quot;" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="false" />
