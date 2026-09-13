@@ -1,8 +1,8 @@
 """RAG 文献知识库命令行工具。
 
 用法：
-    python -m drsr_420.rag_build --ingest [--dir pdf_downloads] [--limit N] [--rebuild]
-    python -m drsr_420.rag_build --query "磁流变 屈服应力 压缩" [--k 5]
+    python -m drsr_420.knowledge.rag_build --ingest [--dir pdf_downloads] [--limit N] [--rebuild]
+    python -m drsr_420.knowledge.rag_build --query "磁流变 屈服应力 压缩" [--k 5]
 """
 import argparse
 import json

@@ -2,17 +2,21 @@
 
 本文件随 `docs/REFACTOR_PLAN.md` 的分阶段重构逐步收紧。
 
-阶段 0：旧路径与规范模块必须是**同一对象**（防 shim 分叉）、包内模块可单独导入、
-`agents/__init__.py` 顶层不 eager import、Agent 层不反向依赖编排层。
+阶段 0：包内模块可单独导入、`agents/__init__.py` 顶层不 eager import、
+Agent 层不反向依赖编排层。
 
 阶段 1：7 个 Agent 都继承 `BaseAgent` 并声明自洽的 `SPEC`（角色卡）。
 
-阶段 3：8 层目录结构、**依赖方向**硬约束、`__file__` 路径锚点、
-顶层文件只能是兼容层。
+阶段 3：8 层目录结构、**依赖方向**硬约束、`__file__` 路径锚点。
 
-基线（阶段 0 记录，阶段 5 对照）：
-    测试数 217 ｜ drsr_420+tests 源码 9,375 行 ｜ drsr_420/ 顶层 .py 21 个
-    （15 实现 + 6 兼容 shim）｜ 子包 2 个 ｜ 最长文件 llm.py 773 行 ｜ Agent 7 个
+阶段 4：评估机制归 `evaluation` 层，角色文件只留编排。
+
+阶段 6：兼容层清退——旧路径必须导入失败、顶层只留 `__init__.py`、
+库代码与测试都不得再 import 旧路径。
+
+基线（阶段 0 记录）：测试数 217 ｜ drsr_420+tests 源码 9,375 行 ｜
+drsr_420/ 顶层 .py 21 个（15 实现 + 6 兼容 shim）｜ 子包 2 个 ｜
+最长文件 llm.py 773 行 ｜ Agent 7 个
 """
 from __future__ import annotations
 
@@ -45,9 +49,8 @@ _ALLOWED_LAYER_DEPS = {
     "cli": {"core", "llm", "evaluation", "agents", "runtime"},
 }
 
-#: 顶层仍属"实现"而非兼容层的文件。阶段 5 已清空（原例外的死模块
-#: parallel_bfgs.py 已删除）——新代码一律进分层子包，不要再往这里加名字。
-_TOP_LEVEL_IMPLEMENTATIONS: set[str] = set()
+#: 顶层不再有任何实现模块，也不再有实现例外白名单（阶段 6 清退后只剩 __init__.py）。
+#: 新代码一律进分层子包；确需新增一层请同时更新 _LAYERS 与 _ALLOWED_LAYER_DEPS。
 
 # 规范模块 → 该模块内的公开类
 _CANONICAL_AGENTS = {
@@ -61,35 +64,39 @@ _CANONICAL_AGENTS = {
 }
 
 # 旧路径模块 → {旧名字: (规范模块, 规范名字)}
-_LEGACY_SHIMS = {
-    "drsr_420.sampler": {
-        "Sampler": ("drsr_420.agents.sampler_agent", "SamplerAgent"),
-        "SamplingOrchestrator": ("drsr_420.agents.coordinator_agent", "CoordinatorAgent"),
-        "LLM": ("drsr_420.agents.sampler_agent", "LLM"),
-    },
-    "drsr_420.evaluator": {
-        "Evaluator": ("drsr_420.agents.evaluator_agent", "EvaluatorAgent"),
-        "Sandbox": ("drsr_420.agents.evaluator_agent", "Sandbox"),
-        "LocalSandbox": ("drsr_420.agents.evaluator_agent", "LocalSandbox"),
-    },
-    "drsr_420.tool_caller": {
-        "ToolCaller": ("drsr_420.agents.tool_caller_agent", "ToolCallerAgent"),
-    },
-    "drsr_420.experience_summarizer": {
-        "ExperienceSummarizer": (
-            "drsr_420.agents.experience_summarizer_agent",
-            "ExperienceSummarizerAgent",
-        ),
-    },
-    "drsr_420.residual_analyzer": {
-        "ResidualAnalyzer": (
-            "drsr_420.agents.residual_analyzer_agent",
-            "ResidualAnalyzerAgent",
-        ),
-    },
-    "drsr_420.data_analyse_real": {
-        "DataAnalyzer": ("drsr_420.agents.data_analyzer_agent", "DataAnalyzerAgent"),
-    },
+# 阶段 6 已删除全部兼容层，此处只保留"旧路径不得复活"的清单（见 LegacyPathRemovalTest）。
+_REMOVED_LEGACY_PATHS: dict[str, str] = {
+    # core
+    "drsr_420.buffer": "drsr_420.core.buffer",
+    "drsr_420.code_manipulation": "drsr_420.core.code_manipulation",
+    "drsr_420.config": "drsr_420.core.config",
+    "drsr_420.console": "drsr_420.core.console",
+    "drsr_420.profile": "drsr_420.core.profile",
+    "drsr_420.prompt_config": "drsr_420.core.prompt_config",
+    # evaluation
+    "drsr_420.evaluate_on_problems": "drsr_420.evaluation.problems",
+    "drsr_420.evaluator_accelerate": "drsr_420.evaluation.accelerate",
+    # knowledge
+    "drsr_420.rag_kb": "drsr_420.knowledge.rag_kb",
+    "drsr_420.rag_build": "drsr_420.knowledge.rag_build",
+    "drsr_420.tool_runner": "drsr_420.knowledge.tool_runner",
+    "drsr_420.tools": "drsr_420.knowledge.tools",
+    "drsr_420.tools.mcp_server": "drsr_420.knowledge.tools.mcp_server",
+    "drsr_420.tools.search_paper": "drsr_420.knowledge.tools.search_paper",
+    "drsr_420.tools.read_paper": "drsr_420.knowledge.tools.read_paper",
+    "drsr_420.tools.tools_description": "drsr_420.llm.tools_schema",
+    # analysis
+    "drsr_420.find_best_eq": "drsr_420.analysis.find_best_eq",
+    "drsr_420.sensitivity_prune": "drsr_420.analysis.sensitivity_prune",
+    # runtime
+    "drsr_420.pipeline": "drsr_420.runtime.pipeline",
+    # agents
+    "drsr_420.sampler": "drsr_420.agents.sampler_agent",
+    "drsr_420.evaluator": "drsr_420.agents.evaluator_agent",
+    "drsr_420.tool_caller": "drsr_420.agents.tool_caller_agent",
+    "drsr_420.experience_summarizer": "drsr_420.agents.experience_summarizer_agent",
+    "drsr_420.residual_analyzer": "drsr_420.agents.residual_analyzer_agent",
+    "drsr_420.data_analyse_real": "drsr_420.agents.data_analyzer_agent",
 }
 
 
@@ -129,25 +136,45 @@ def _module_level_imports(path: str) -> list[str]:
     return found
 
 
-class LegacyShimIdentityTest(unittest.TestCase):
-    """旧路径必须是同一对象的别名，不能是复制出来的副本。"""
+class LegacyPathRemovalTest(unittest.TestCase):
+    """阶段 6：兼容层已按 docs/ARCHITECTURE.md §8 清退，旧路径不得复活。
 
-    def test_legacy_shims_alias_canonical_classes(self):
-        for legacy_module, names in _LEGACY_SHIMS.items():
-            legacy = importlib.import_module(legacy_module)
-            for legacy_name, (canonical_module, canonical_name) in names.items():
-                canonical = importlib.import_module(canonical_module)
-                with self.subTest(shim=legacy_module, name=legacy_name):
-                    self.assertTrue(
-                        hasattr(legacy, legacy_name),
-                        f"{legacy_module}.{legacy_name} 缺失（兼容层被破坏）",
-                    )
-                    self.assertIs(
-                        getattr(legacy, legacy_name),
-                        getattr(canonical, canonical_name),
-                        f"{legacy_module}.{legacy_name} 与 "
-                        f"{canonical_module}.{canonical_name} 不是同一对象",
-                    )
+    三层保证：旧路径导入必须失败、规范路径必须仍然可用、源码里（含测试）不得
+    再出现旧路径的 import——最后一条是关键：只要有人重新 import 旧路径而 shim
+    已删除，运行期就会 ImportError，这里让它在提交前就失败。
+    """
+
+    def test_removed_paths_are_not_importable(self):
+        for legacy, canonical in _REMOVED_LEGACY_PATHS.items():
+            with self.subTest(legacy=legacy):
+                with self.assertRaises(ModuleNotFoundError):
+                    importlib.import_module(legacy)
+                importlib.import_module(canonical)   # 功能仍在，只是搬了家
+
+    def test_top_level_holds_only_package_init(self):
+        leftovers = sorted(
+            path.name for path in Path(_PKG_DIR).glob("*.py")
+            if path.name != "__init__.py")
+        self.assertEqual(
+            leftovers, [],
+            "drsr_420/ 顶层只应剩 __init__.py：实现进分层子包，历史路径不再保留转发层")
+
+    def test_no_module_imports_removed_paths(self):
+        offenders: list[str] = []
+        targets = (list(Path(_PKG_DIR).rglob("*.py"))
+                   + list(Path(_REPO_ROOT, "tests").rglob("*.py")))
+        for path in targets:
+            if "__pycache__" in path.parts:
+                continue
+            for module_name in _all_imports(str(path)):
+                for legacy in _REMOVED_LEGACY_PATHS:
+                    if module_name == legacy or module_name.startswith(legacy + "."):
+                        offenders.append(
+                            f"{path.relative_to(_REPO_ROOT)} -> {module_name}")
+        self.assertEqual(
+            sorted(set(offenders)), [],
+            "这些 import 指向已删除的旧路径（打包/运行时会 ImportError）:\n"
+            + "\n".join(sorted(set(offenders))))
 
 
 class ModuleImportabilityTest(unittest.TestCase):
@@ -178,8 +205,8 @@ class LayerDirectionTest(unittest.TestCase):
     """Agent 角色层不得反向依赖编排层。"""
 
     FORBIDDEN_TARGETS = (
-        "drsr_420.pipeline",
-        "drsr_420.find_best_eq",
+        "drsr_420.runtime",
+        "drsr_420.analysis",
         "drsr_420.cli",
         "main",
     )
@@ -290,41 +317,10 @@ class LazyImportTest(unittest.TestCase):
         )
 
 
-# ── 阶段 3：兼容层对照表（旧模块 → 规范模块 → 抽检名字）─────────────────
-_LAYER_SHIMS: dict[str, tuple[str, tuple[str, ...]]] = {
-    "drsr_420.buffer": ("drsr_420.core.buffer", ("ExperienceBuffer", "Prompt")),
-    "drsr_420.code_manipulation": (
-        "drsr_420.core.code_manipulation", ("Program", "text_to_program")),
-    "drsr_420.config": ("drsr_420.core.config", ("Config", "ClassConfig")),
-    "drsr_420.console": ("drsr_420.core.console", ("print_block",)),
-    "drsr_420.profile": ("drsr_420.core.profile", ("Profiler",)),
-    "drsr_420.prompt_config": ("drsr_420.core.prompt_config", ("PromptContext",)),
-    "drsr_420.rag_kb": ("drsr_420.knowledge.rag_kb", ("get_kb", "chunk_text")),
-    "drsr_420.rag_build": ("drsr_420.knowledge.rag_build", ("main",)),
-    "drsr_420.tool_runner": ("drsr_420.knowledge.tool_runner", ("mcp_call_tool",)),
-    "drsr_420.tools.mcp_server": (
-        "drsr_420.knowledge.tools.mcp_server", ("mcp", "main", "search_paper")),
-    "drsr_420.tools.search_paper": (
-        "drsr_420.knowledge.tools.search_paper", ("search_paper",)),
-    "drsr_420.tools.read_paper": (
-        "drsr_420.knowledge.tools.read_paper", ("read_paper",)),
-    "drsr_420.tools.tools_description": ("drsr_420.llm.tools_schema", ("tools",)),
-    "drsr_420.find_best_eq": ("drsr_420.analysis.find_best_eq", ("find_best_eq",)),
-    "drsr_420.sensitivity_prune": (
-        "drsr_420.analysis.sensitivity_prune", ("sensitivity_prune",)),
-    "drsr_420.pipeline": ("drsr_420.runtime.pipeline", ("main",)),
-    "drsr_420.evaluate_on_problems": (
-        "drsr_420.evaluation.problems", ("evaluate", "MAX_NPARAMS")),
-    "drsr_420.evaluator_accelerate": (
-        "drsr_420.evaluation.accelerate", ("try_add_numba_decorator",)),
-    "llm": ("drsr_420.llm", ("LLMClient", "ClientFactory", "tools")),
-    "main": ("drsr_420.cli.main", ("main",)),
-}
-
+# ── 阶段 3：分层结构（兼容层已于阶段 6 清退，见 LegacyPathRemovalTest）──
 #: 独立运行时需要 `__file__` 兜底插入仓库根的脚本（搬迁后深度必须同步修正）
 _STANDALONE_SCRIPTS = (
-    "drsr_420/knowledge/tools/read_paper.py",   # 新位置：deepest，parents[3]
-    "drsr_420/tools/read_paper.py",             # 兼容层：parents[2]
+    "drsr_420/knowledge/tools/read_paper.py",   # 最深层：parents[3]
 )
 
 
@@ -363,23 +359,8 @@ def _layer_of(module_name: str) -> str | None:
     return None
 
 
-class LayerShimIdentityTest(unittest.TestCase):
-    """19 个分层兼容层（+ 根 main/llm）必须都是同一对象的转发，而非副本。"""
-
-    def test_layer_shims_alias_canonical_objects(self):
-        for legacy_module, (canonical_module, names) in _LAYER_SHIMS.items():
-            legacy = importlib.import_module(legacy_module)
-            canonical = importlib.import_module(canonical_module)
-            for name in names:
-                with self.subTest(shim=legacy_module, name=name):
-                    self.assertTrue(hasattr(legacy, name),
-                                    f"{legacy_module}.{name} 缺失（兼容层被破坏）")
-                    self.assertIs(getattr(legacy, name), getattr(canonical, name),
-                                  f"{legacy_module}.{name} 与 {canonical_module}.{name} 不是同一对象")
-
-
 class LayerLayoutTest(unittest.TestCase):
-    """drsr_420/ 顶层只应剩兼容层；实现都在分层子包里。"""
+    """drsr_420/ 顶层只剩 `__init__.py`；实现都在分层子包里。"""
 
     def test_all_layers_exist_with_init(self):
         for layer in _LAYERS:
@@ -392,25 +373,13 @@ class LayerLayoutTest(unittest.TestCase):
         self.assertTrue(getattr(drsr_420, "__version__", None),
                         "drsr_420 应声明 __version__")
 
-    def test_top_level_modules_are_compat_shims(self):
-        offenders = []
-        for path in sorted(Path(_PKG_DIR).glob("*.py")):
-            if path.name == "__init__.py" or path.name in _TOP_LEVEL_IMPLEMENTATIONS:
-                continue
-            text = path.read_text(encoding="utf-8")
-            is_shim = ("兼容层" in text) or ("__getattr__" in text and "_impl" in text)
-            if not is_shim:
-                offenders.append(path.name)
-        self.assertEqual(
-            offenders, [],
-            "实现文件不应留在 drsr_420/ 顶层（应放进分层子包；确需保留请加入 "
-            f"_TOP_LEVEL_IMPLEMENTATIONS 并说明原因）: {offenders}")
-
-    def test_top_level_implementation_whitelist_is_empty(self):
-        """阶段 5 之后不应再有顶层实现例外（死模块 parallel_bfgs.py 已删除）。"""
-        self.assertEqual(
-            _TOP_LEVEL_IMPLEMENTATIONS, set(),
-            "新增顶层实现例外需要理由：请优先把实现放进分层子包")
+    def test_no_subpackage_stays_empty(self):
+        """每个分层子包都应有实现（空的层目录是"分层被掏空"的信号）。"""
+        for layer in _LAYERS:
+            files = [p.name for p in (Path(_PKG_DIR) / layer).glob("*.py")
+                     if p.name != "__init__.py"]
+            with self.subTest(layer=layer):
+                self.assertTrue(files, f"{layer}/ 下没有任何实现模块")
 
 
 class LayerDependencyTest(unittest.TestCase):
@@ -527,15 +496,15 @@ class EvaluationSubsystemTest(unittest.TestCase):
         self.assertIs(evaluator_agent.Sandbox, sandbox.Sandbox)
 
     def test_mechanism_symbols_remain_importable_from_agent_module(self):
-        """历史导入路径必须继续可用（测试与外部脚本直接用这些名字）。"""
-        import drsr_420.agents.evaluator_agent as ea
-        import drsr_420.evaluator as legacy
+        """机制符号仍可从角色模块导入（同对象），方便只关心评估流程的调用方。"""
+        from drsr_420.agents import evaluator_agent as ea
+        from drsr_420.evaluation import sandbox
 
         for name in ("LocalSandbox", "Sandbox", "_run_evaluation_task",
                      "_sample_residuals", "_sample_to_program", "_calls_ancestor"):
             with self.subTest(name=name):
                 self.assertTrue(hasattr(ea, name), f"evaluator_agent 缺少 {name}")
-                self.assertIs(getattr(legacy, name), getattr(ea, name))
+                self.assertIs(getattr(ea, name), getattr(sandbox, name))
 
 
 if __name__ == "__main__":

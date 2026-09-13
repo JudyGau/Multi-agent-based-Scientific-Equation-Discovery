@@ -115,7 +115,3 @@ class ExperienceSummarizerAgent(BaseAgent):
                 ),
             )
         return ''
-
-
-# 兼容别名：旧模块名 drsr_420.experience_summarizer.ExperienceSummarizer 指向本类
-ExperienceSummarizer = ExperienceSummarizerAgent

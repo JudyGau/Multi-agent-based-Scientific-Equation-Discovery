@@ -15,11 +15,11 @@ import sys
 import unittest
 from unittest import mock
 
-import drsr_420.rag_build as rag_build
-from drsr_420.rag_kb import chunk_text, DEFAULT_CONFIG
-from drsr_420.tools import read_paper as rp
-from drsr_420.tools import mcp_server as ms
-from drsr_420 import tool_runner as tr
+from drsr_420.knowledge import rag_build
+from drsr_420.knowledge.rag_kb import chunk_text, DEFAULT_CONFIG
+from drsr_420.knowledge.tools import read_paper as rp
+from drsr_420.knowledge.tools import mcp_server as ms
+from drsr_420.knowledge import tool_runner as tr
 
 
 class ChunkTextTest(unittest.TestCase):

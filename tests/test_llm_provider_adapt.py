@@ -12,7 +12,7 @@
 """
 import unittest
 
-import llm
+from drsr_420 import llm
 
 
 def _mk_client(provider='glm', **kwargs):

@@ -14,8 +14,8 @@ from unittest import mock
 
 import requests
 
-from drsr_420.tools import read_paper as rp
-from drsr_420.tools import search_paper as sp
+from drsr_420.knowledge.tools import read_paper as rp
+from drsr_420.knowledge.tools import search_paper as sp
 
 
 class _FakeResp:

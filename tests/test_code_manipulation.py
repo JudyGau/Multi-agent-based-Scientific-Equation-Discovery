@@ -1,7 +1,7 @@
 """code_manipulation 单元测试：AST 解析、函数/程序构造、调用重命名、装饰器识别。"""
 import unittest
 
-from drsr_420 import code_manipulation as cm
+from drsr_420.core import code_manipulation as cm
 
 
 SPEC = (

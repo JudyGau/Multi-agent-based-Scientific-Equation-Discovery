@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     # 仅用于类型注解（ClassConfig）。运行时不求值（本文件启用
     # from __future__ import annotations），因此不构成 core → agents/evaluation
     # 的运行时依赖，也就不违反分层规则（见 tests/test_architecture.py）。
-    # 此前引用的是兼容层 drsr_420.sampler / drsr_420.evaluator，已改为规范路径。
+    # 注解类型一律用规范路径（历史实现曾从兼容层 drsr_420.sampler / drsr_420.evaluator 取）。
     from drsr_420.agents.sampler_agent import LLM
     from drsr_420.evaluation.sandbox import Sandbox
 

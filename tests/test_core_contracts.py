@@ -18,12 +18,12 @@ import unittest
 
 import numpy as np
 
-import llm
-from drsr_420 import code_manipulation as cm
-from drsr_420 import config as config_lib
-from drsr_420 import evaluate_on_problems as eop
+from drsr_420 import llm
+from drsr_420.core import code_manipulation as cm
+from drsr_420.core import config as config_lib
+from drsr_420.evaluation import problems as eop
 from drsr_420.agents.tool_caller_agent import ToolCallerAgent
-from drsr_420.buffer import ExperienceBuffer
+from drsr_420.core.buffer import ExperienceBuffer
 
 
 class CompleteContractTest(unittest.TestCase):

@@ -101,7 +101,6 @@ python -m drsr_420.knowledge.rag_build --query "磁流变 屈服应力 压缩" [
 ```
 
 > 切换嵌入模型后维度会变化，需带 `--rebuild` 重建集合。嵌入 API 按 token 计费。
-> 旧路径 `python -m drsr_420.rag_build ...` 仍然可用（兼容层转发）。
 
 ## 文献工具与 MCP
 
@@ -111,7 +110,6 @@ python -m drsr_420.knowledge.rag_build --query "磁流变 屈服应力 压缩" [
 - `drsr_420/knowledge/tool_runner.py`：agent 通过 MCP 调用工具的统一入口
 
 程序运行时会经 MCP 拉起工具服务器并复用；`read_paper` 的总结模型由对应模型配置文件（如 `glm_glm-5.3-flash.config`）配置。
-（旧路径 `drsr_420/tools/*`、`drsr_420/tool_runner.py` 仍可用，均为转发兼容层。）
 
 ## 结果产物
 
@@ -157,8 +155,8 @@ python -m drsr_420.agents --check    # 契约自检：上下游引用 / 可达�
 ## 仓库结构
 
 ```
-main.py                       # 兼容 shim → drsr_420/cli/main.py
-llm.py                        # 兼容 shim → drsr_420/llm
+main.py                       # 命令行入口（一行委托到 drsr_420/cli/main.py）
+llm.py                        # 旧根模块名再导出公开 API（实现见 drsr_420/llm）
 glm_glm-5.3-flash.config / deepseek_deepseek-v4-flash.config / rag.config   # 配置文件（不入库）
 example.sh                    # 批量运行示例
 drsr_420/                     # 单一顶层包（8 层，依赖方向自底向上）
@@ -187,23 +185,33 @@ drsr_420/                     # 单一顶层包（8 层，依赖方向自底向�
     base.py                   #   AgentSpec（角色卡）+ BaseAgent
     messages.py               #   Agent 间消息与落盘条目类型
     coordinator_agent.py      #   协调者：采样→评估→反思→持久化主循环（多线程）
-    sampler_agent.py          #   采样者：骨架生成 + 提示词注入 + 空骨架重采样
+    sampler_agent.py          #   采样者：采样编排 + 空骨架重采样
+    prompt_injection.py       #     └ 提示词装配（经验/残差注入策略，非 Agent）
+    skeleton.py               #     └ 骨架提取（从混合文本切出可执行体）
     tool_caller_agent.py      #   工具调用者：多轮 MCP 工具调用循环
     evaluator_agent.py        #   评估者：编译 + 委托沙箱 + 打分 + 注册经验
     experience_summarizer_agent.py  # 经验总结者
     residual_analyzer_agent.py      # 残差分析者
     data_analyzer_agent.py    #   数据分析者：初次数据分析 + RAG 注入
   analysis/                   # 收尾分析
-    find_best_eq.py           #   最优方程参数拟合与物理解释
-    sensitivity_prune.py      #   敏感度剪枝，降低公式复杂度
+    find_best_eq.py           #   收尾编排：最佳样本 → 解释 → 剪枝与可视化
+    expr_parse.py             #   骨架字符串 → SymPy 表达式（where/Eq/中间变量）
+    explain.py                #   物理解释（ReAct + RAG）→ explain.txt
+    sensitivity_prune.py      #   敏感度剪枝（遍历与决策）
+    expr_evaluation.py        #     └ 采样网格 / 求值 / 敏感度度量
+    prune_stats.py            #     └ 剪枝记录与统计
+    expr_viz.py               #   预览图与表达式树（可选依赖，失败仅告警）
+    prune_demo.py             #   剪枝行为演示（python -m …prune_demo）
   runtime/
     pipeline.py               #   实验主流程编排
   cli/
     main.py                   #   命令行入口（拆分为可测函数）
-  <顶层 *.py>                 # 兼容 shim：转发到上述分层子包（见 docs/ARCHITECTURE.md §8）
 specs/                        # 历史静态 spec（动态模式已不使用，保留备查）
 experiments/{problem}_{timestamp}/   # 本次运行产物
 ```
+
+> `drsr_420/` 顶层只有 `__init__.py`：实现全部分层，历史的一层平铺路径已清退
+> （见 `docs/ARCHITECTURE.md` §8）。
 
 ## 测试
 
@@ -212,5 +220,5 @@ experiments/{problem}_{timestamp}/   # 本次运行产物
 python tests/run_tests.py
 ```
 
-测试包含功能回归与**架构护栏**（分层目录、依赖方向、兼容层对象同一性、`__file__`
-路径锚点、Agent 契约完整性），见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §9。
+测试包含功能回归、**Agent 行为测试**与**架构护栏**（分层目录、依赖方向、旧路径不得复活、
+`__file__` 路径锚点、Agent 契约完整性），见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §9。

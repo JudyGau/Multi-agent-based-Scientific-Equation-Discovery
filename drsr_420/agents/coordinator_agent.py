@@ -454,7 +454,3 @@ class CoordinatorAgent(BaseAgent):
                     ])
         except Exception as e:
             print(f"[WARN] 写入 progress.csv 失败: {e}")
-
-
-# 兼容别名：旧模块名 drsr_420.sampler.SamplingOrchestrator 指向本类
-SamplingOrchestrator = CoordinatorAgent

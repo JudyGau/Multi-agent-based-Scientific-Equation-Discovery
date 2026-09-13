@@ -13,9 +13,9 @@ import unittest
 
 import numpy as np
 
-import drsr_420.rag_kb as rk
+from drsr_420.knowledge import rag_kb as rk
 from drsr_420.agents.evaluator_agent import LocalSandbox
-from drsr_420.profile import Profiler
+from drsr_420.core.profile import Profiler
 
 
 class _FuncStub:

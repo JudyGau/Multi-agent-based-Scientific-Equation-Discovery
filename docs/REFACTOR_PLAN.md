@@ -827,9 +827,64 @@ $env:ZHIPU_API_KEY='dummy-test-key'
 7. **`mcp_server` 把启动逻辑写在 `__main__` 里**：兼容层只能转发名字，
    `python -m 旧路径` 静默起不来——MCP 客户端要等 120s 超时才发现。
 
-### 11.4 可选后续（未做，需要时再评估）
+### 11.4 可选后续（已在阶段 6 全部完成，见 §12）
 
-- 拆分剩余大文件：`analysis/find_best_eq.py`(557)、`agents/sampler_agent.py`(538)、
-  `analysis/sensitivity_prune.py`(515)。
-- 为 Agent 层补行为测试（当前主要靠结构护栏 + 既有功能测试）。
-- 兼容层按 [`ARCHITECTURE.md`](./ARCHITECTURE.md) §8 的时机逐层删除。
+- ~~拆分剩余大文件：`analysis/find_best_eq.py`(557)、`agents/sampler_agent.py`(538)、
+  `analysis/sensitivity_prune.py`(515)。~~
+- ~~为 Agent 层补行为测试（当前主要靠结构护栏 + 既有功能测试）。~~
+- ~~兼容层按 [`ARCHITECTURE.md`](./ARCHITECTURE.md) §8 的时机逐层删除。~~
+
+---
+
+## 12. 执行记录（阶段 6：收尾三件事）
+
+阶段 5 之后剩下的三项"可选后续"一次性做完：拆大文件、补 Agent 行为测试、清退兼容层。
+
+### 12.1 拆分三个大文件
+
+| 原文件 | 现在 | 切出的模块（各自单一职责） |
+|---|---|---|
+| `agents/sampler_agent.py` 538 | **181** | `agents/skeleton.py`（骨架提取）、`agents/prompt_injection.py`（经验/残差注入策略） |
+| `analysis/find_best_eq.py` 557 | **116** | `analysis/expr_parse.py`（表达式解析）、`analysis/explain.py`（物理解释）、`analysis/expr_viz.py`（可视化） |
+| `analysis/sensitivity_prune.py` 515 | **265** | `analysis/expr_evaluation.py`（求值内核）、`analysis/prune_stats.py`（统计）、`analysis/prune_demo.py`（演示） |
+
+拆分后的收益不止"文件变短"：注入策略、表达式改写规则、求值内核现在都能**单独测试**，
+不必再借道一个 500 行的文件（见 §12.2）。顺手删掉两处死代码：`SamplerAgent._draw_samples_api`
+（无调用点的第二条采样路径）与 `_conversation_ids`（只写不读的状态）。
+
+### 12.2 Agent 层行为测试（+102 项）
+
+| 文件 | 项数 | 覆盖 |
+|---|---|---|
+| `tests/test_sampler_agent.py` | 51 | 骨架提取三种回退、注入策略（配额/概率/新鲜度/排序/噪声过滤/预算提示/截断/mtime 缓存）、采样编排（批量与逐条、重采样上界、有界重试、注入失败不拖垮采样） |
+| `tests/test_agent_behavior.py` | 51 | 工具循环收敛与参数兜底、反思异常降级、残差上下文与归属字段、初次分析落盘、协调者的质量判定/最优追踪/落盘字段/停止条件/失败容忍 |
+
+全部用替身（假 LLM 客户端、假评估器、假缓冲），不触网、不依赖真实模型。
+
+### 12.3 兼容层清退
+
+删掉 24 个转发模块（顶层 20 + `tools/` 下 4），`drsr_420/` 顶层只剩 `__init__.py`；
+`tests/` 与库代码内所有旧路径 import 迁移到规范路径；新护栏
+`LegacyPathRemovalTest` 反向锁定"旧路径不得复活"。根目录 `main.py` 由转发 shim 降级为
+4 行真入口（IDE 运行配置与两个 `.sh` 都靠它），`llm.py` 只再导出公开 API。
+判据、保留理由与迁移期踩过的坑见 [`ARCHITECTURE.md`](./ARCHITECTURE.md) §8。
+
+### 12.4 顺带修掉的缺陷
+
+1. **GBK 控制台崩溃 ×3**（同类缺陷第三次出现）：剪枝演示的 `x²`、剪枝 verbose 日志的 `✂`、
+   `read_paper` 试运行输出的 emoji——在 Windows 默认代码页下 `print` 直接抛
+   `UnicodeEncodeError` 打断流程。新增 `tests/test_console_encoding.py`：以
+   `PYTHONIOENCODING=gbk` 跑 5 个典型入口，把这类问题钉在提交前。
+2. **`ResidualAnalyzerAgent` 的三个残差统计量（mean/max/std）算了但从未使用**
+   （提示词模板只吃残差矩阵）。为避免改变 LLM 输入与产物结构，**保留计算并加注释说明**，
+   不做行为改动。
+
+### 12.5 阶段 6 指标
+
+| 指标 | 阶段 5 结束时 | 现在 |
+|---|---|---|
+| 测试数 | 262 | **372** |
+| 最长文件 | 557（`find_best_eq.py`） | 482（`llm/client.py`，本次未拆分） |
+| `drsr_420/` 顶层 `.py` | 21（1 `__init__` + 20 shim） | **1** |
+| 包内实现行数 | 未统计 | 9,477（8 层） |
+| 兼容转发模块 | 24 | **0** |

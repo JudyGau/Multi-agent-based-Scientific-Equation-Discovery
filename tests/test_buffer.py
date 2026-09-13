@@ -4,9 +4,9 @@ import os
 import tempfile
 import unittest
 
-from drsr_420 import code_manipulation as cm
-from drsr_420 import config as config_lib
-from drsr_420.buffer import (
+from drsr_420.core import code_manipulation as cm
+from drsr_420.core import config as config_lib
+from drsr_420.core.buffer import (
     Cluster,
     ExperienceBuffer,
     Island,

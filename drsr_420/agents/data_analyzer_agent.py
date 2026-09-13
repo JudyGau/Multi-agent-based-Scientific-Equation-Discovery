@@ -347,7 +347,3 @@ STRICTLY deliver results in the following structured format:
             print(f"保存初次分析JSON文件时出错: {e}")
 
         return result
-
-
-# 兼容别名：旧模块名 drsr_420.data_analyse_real.DataAnalyzer 指向本类
-DataAnalyzer = DataAnalyzerAgent

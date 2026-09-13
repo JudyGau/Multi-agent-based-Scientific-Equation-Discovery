@@ -94,16 +94,19 @@ threading.Thread(target=coordinator.sample, kwargs={'profiler': profiler},
 ## 2. SamplerAgent —— 采样者
 
 **文件**：[sampler_agent.py](./sampler_agent.py)
+（层内部件：[prompt_injection.py](./prompt_injection.py) 提示词装配、
+[skeleton.py](./skeleton.py) 骨架提取——两者不是 Agent，不参与组织图）
 
 **职责**
 
 - 把"指令 + 任务头 + 历史经验/残差注入"拼成最终提示词，交给 `ToolCallerAgent`
   与 LLM 多轮对话，拿到候选方程骨架。
 - 骨架后处理：从 LLM 混合输出（文字 + 代码）中抽取可执行函数体
-  （`_extract_body` / `_extract_code_fragment`）；抽不到时自动重采样
-  （最多 `_MAX_BODY_RETRIES = 3` 次），仍无效则丢弃该样本。
-- 经验注入规则：None（失败教训）始终注入；Good/Bad 按概率参与；超过新鲜度阈值后
-  只注入近期经验；Good 按 score 降序、Bad 按 score 升序截断。
+  （`skeleton.extract_body` / `extract_code_fragment`）；抽不到时自动重采样
+  （最多 `skeleton.MAX_BODY_RETRIES = 3` 次），仍无效则丢弃该样本。
+- 经验/残差注入规则（`PromptInjector`）：None（失败教训）始终注入；Good/Bad 按概率参与；
+  超过新鲜度阈值后只注入近期经验；Good 按 score 降序、Bad 按 score 升序截断；
+  失败经验额外附"参数预算"提示。
 - 继承 `LLM` 抽象基类（`samples_per_prompt` 决定每批数量）。
 
 **关键接口**

@@ -1,13 +1,13 @@
-"""evaluator.py（LocalSandbox 沙箱）单元测试：常驻 worker、超时重建、统一结果契约。"""
+"""evaluation/sandbox.py（LocalSandbox 沙箱）单元测试：常驻 worker、超时重建、统一结果契约。"""
 import unittest
 
 import numpy as np
 
-from drsr_420 import code_manipulation
-from drsr_420 import config
-from drsr_420 import buffer
-from drsr_420 import evaluator
-from drsr_420.evaluator import LocalSandbox, _run_evaluation_task, _sample_residuals
+from drsr_420.core import code_manipulation
+from drsr_420.core import config
+from drsr_420.core import buffer
+from drsr_420.agents import evaluator_agent
+from drsr_420.evaluation.sandbox import LocalSandbox, _run_evaluation_task, _sample_residuals
 from drsr_420.agents.messages import EvaluationRequest
 
 PROGRAM = (
@@ -150,7 +150,7 @@ class EvaluatorAnalyzeTest(unittest.TestCase):
             template,
             'equation',
         )
-        return evaluator.Evaluator(
+        return evaluator_agent.EvaluatorAgent(
             db, template, 'equation', 'run', make_inputs(),
             timeout_seconds=30, sandbox_class=LocalSandbox)
 

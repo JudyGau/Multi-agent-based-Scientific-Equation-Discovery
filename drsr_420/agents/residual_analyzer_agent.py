@@ -101,7 +101,3 @@ class ResidualAnalyzerAgent(BaseAgent):
         except Exception as e:
             print(f"残差分析请求发生错误: {str(e)}")
             return ResidualInsight(sample=sample, analysis=f"分析请求发生错误: {str(e)}")
-
-
-# 兼容别名：旧模块名 drsr_420.residual_analyzer.ResidualAnalyzer 指向本类
-ResidualAnalyzer = ResidualAnalyzerAgent

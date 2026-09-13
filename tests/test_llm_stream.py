@@ -1,17 +1,19 @@
 """LLM 客户端流式输出单元测试。
 
-覆盖 llm.LLMClient 的 SSE 流式路径：
+覆盖 drsr_420.llm.client.LLMClient 的 SSE 流式路径：
 - chat_stream 增量累积（content / reasoning_content / tool_calls）
 - chat() 默认流式且返回结构与非流式一致
 - stream=False 显式回退非流式
 - 网关忽略 stream 参数直接返回完整 JSON 时的单块兜底
 
-全部通过 mock _post_with_retry 完成，不发起真实网络请求。
+全部通过 mock 定义处的 ``_post_with_retry`` 完成，不发起真实网络请求。
+（打桩必须落在定义该名字的 ``drsr_420.llm.client`` 上：``LLMClient.chat`` 在
+``client`` 模块的全局命名空间里查找它，打在门面 ``drsr_420.llm`` 上等于没打。）
 """
 import unittest
 from unittest import mock
 
-import llm
+from drsr_420 import llm
 
 
 class _FakeResponse:
@@ -48,7 +50,7 @@ class ChatStreamTest(unittest.TestCase):
         self.client = llm.LLMClient(api_key='test-key', model='test/model',
                                     base_url='http://test-host/v1')
 
-    @mock.patch('llm._post_with_retry')
+    @mock.patch('drsr_420.llm.client._post_with_retry')
     def test_stream_accumulates_content(self, mock_post):
         chunks = [
             '{"choices":[{"delta":{"content":"Hello "}}]}',
@@ -73,7 +75,7 @@ class ChatStreamTest(unittest.TestCase):
         self.assertTrue(args[2]['stream'])
         self.assertIs(mock_post.call_args.kwargs.get('stream'), True)
 
-    @mock.patch('llm._post_with_retry')
+    @mock.patch('drsr_420.llm.client._post_with_retry')
     def test_stream_accumulates_reasoning(self, mock_post):
         chunks = [
             '{"choices":[{"delta":{"reasoning_content":"Think"}}]}',
@@ -89,7 +91,7 @@ class ChatStreamTest(unittest.TestCase):
         self.assertEqual(out[-1]['content'], 'Answer')
         self.assertEqual(out[-1]['tokens']['reasoning'], 1)
 
-    @mock.patch('llm._post_with_retry')
+    @mock.patch('drsr_420.llm.client._post_with_retry')
     def test_stream_accumulates_tool_calls(self, mock_post):
         # 工具调用 arguments 跨多个 chunk 增量返回
         chunks = [
@@ -109,7 +111,7 @@ class ChatStreamTest(unittest.TestCase):
         self.assertEqual(calls[0]['function']['name'], 'search_paper')
         self.assertEqual(calls[0]['function']['arguments'], '{"query":"MR"}')
 
-    @mock.patch('llm._post_with_retry')
+    @mock.patch('drsr_420.llm.client._post_with_retry')
     def test_chat_default_streams_and_returns_full_dict(self, mock_post):
         chunks = [
             '{"choices":[{"delta":{"reasoning_content":"r"}}]}',
@@ -125,7 +127,7 @@ class ChatStreamTest(unittest.TestCase):
         self.assertEqual(resp['tool_calls'], [])
         self.assertEqual(resp['tokens']['total'], 5)
 
-    @mock.patch('llm._post_with_retry')
+    @mock.patch('drsr_420.llm.client._post_with_retry')
     def test_chat_on_delta_receives_accumulated_chunks(self, mock_post):
         chunks = [
             '{"choices":[{"delta":{"reasoning_content":"r1"}}]}',
@@ -147,7 +149,7 @@ class ChatStreamTest(unittest.TestCase):
         self.assertEqual(resp['content'], 'hi')
         self.assertEqual(resp['reasoning_content'], 'r1')
 
-    @mock.patch('llm._post_with_retry')
+    @mock.patch('drsr_420.llm.client._post_with_retry')
     def test_chat_on_delta_exception_ignored(self, mock_post):
         chunks = [
             '{"choices":[{"delta":{"content":"hi"}}]}',
@@ -162,7 +164,7 @@ class ChatStreamTest(unittest.TestCase):
         resp = self.client.chat([{'role': 'user', 'content': 'hi'}], on_delta=_bad_delta)
         self.assertEqual(resp['content'], 'hi')
 
-    @mock.patch('llm._post_with_retry')
+    @mock.patch('drsr_420.llm.client._post_with_retry')
     def test_chat_non_stream_fallback(self, mock_post):
         # config 显式设置 stream=False 时回退非流式路径
         self.client.kwargs['stream'] = False
@@ -180,7 +182,7 @@ class ChatStreamTest(unittest.TestCase):
         self.assertEqual(len(args), 3)
         self.assertIs(args[2]['stream'], False)
 
-    @mock.patch('llm._post_with_retry')
+    @mock.patch('drsr_420.llm.client._post_with_retry')
     def test_stream_falls_back_to_full_json(self, mock_post):
         # 个别网关忽略 stream 参数、直接返回完整 JSON：按单块处理
         json_data = {

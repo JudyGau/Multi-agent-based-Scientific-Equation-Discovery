@@ -1,10 +1,10 @@
-"""evaluate_on_problems 单元测试：least_squares 优化、统一返回契约、配置项。"""
+"""evaluation/problems.py 单元测试：least_squares 优化、统一返回契约、配置项。"""
 import unittest
 from unittest import mock
 
 import numpy as np
 
-from drsr_420 import evaluate_on_problems as eop
+from drsr_420.evaluation import problems as eop
 
 
 def make_dataset(n=200, seed=0, noise=0.01):

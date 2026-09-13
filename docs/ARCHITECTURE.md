@@ -52,13 +52,14 @@ CoordinatorAgent.run()  while 未达采样上限/时长上限:
 | `llm` | `drsr_420/llm/` | LLM 接入：客户端（重试/流式/参数适配/记账）、提供商子类、客户端工厂与配置、工具调用 schema |
 | `evaluation` | `drsr_420/evaluation/` | 评估执行**机制**：多起点拟合打分、常驻子进程沙箱（超时重建）、可选 numba 加速 |
 | `knowledge` | `drsr_420/knowledge/` | 外部知识：Chroma RAG 知识库与入库 CLI、MCP 工具（文献检索/阅读）与其 stdio 服务器 |
-| `agents` | `drsr_420/agents/` | ★ **多 Agent 角色层**：7 个 Agent + 契约（`base.py`）+ 消息（`messages.py`） |
-| `analysis` | `drsr_420/analysis/` | 收尾分析：最优方程的参数拟合与物理解释、敏感度剪枝 |
+| `agents` | `drsr_420/agents/` | ★ **多 Agent 角色层**：7 个 Agent + 契约（`base.py`）+ 消息（`messages.py`）+ 层内部件（`skeleton.py` / `prompt_injection.py`） |
+| `analysis` | `drsr_420/analysis/` | 收尾分析：最优方程的解析/解释/剪枝/可视化（`find_best_eq` 只做编排） |
 | `runtime` | `drsr_420/runtime/` | 编排：实验主流程（初始化 → 并行采样 → 收尾） |
 | `cli` | `drsr_420/cli/` | 命令行入口：参数解析、输出归档、数据集加载、spec 渲染、产物快照 |
 
-顶层 `drsr_420/*.py`（除 `__init__.py`）**只剩兼容层**：转发到分层子包，供历史脚本与
-旧导入路径使用（见 §8）。
+`drsr_420/` 顶层只有 `__init__.py`：**实现全部在分层子包里**，历史的一层平铺路径已清退
+（见 §8）；根目录的 `main.py`（命令行入口）与 `llm.py`（旧根模块名的公开 API 再导出）
+是仅有的两个例外，它们不是分层的一部分。
 
 ### 实测规模
 
@@ -67,13 +68,13 @@ CoordinatorAgent.run()  while 未达采样上限/时长上限:
 | `core/` | 8 | 1857 | —（最底层） |
 | `llm/` | 6 | 965 | `core` |
 | `evaluation/` | 4 | 615 | `core` |
-| `knowledge/` | 8 | 1344 | `llm` |
-| `agents/` | 11 | 2585 | `core`, `evaluation`, `knowledge`, `llm` |
-| `analysis/` | 3 | 1073 | `core`, `knowledge`, `llm` |
+| `knowledge/` | 8 | 1343 | `llm` |
+| `agents/` | 13 | 2663 | `core`, `evaluation`, `knowledge`, `llm` |
+| `analysis/` | 9 | 1286 | `core`, `knowledge`, `llm` |
 | `runtime/` | 2 | 292 | `agents`, `analysis`, `core`, `knowledge` |
 | `cli/` | 2 | 456 | `agents`, `core`, `evaluation`, `llm`, `runtime` |
 
-包内实现共约 10,300 行；顶层兼容层 20 个文件。
+包内实现共 9,477 行；顶层只剩 `__init__.py`（0 行实现）。
 
 ---
 
@@ -249,12 +250,12 @@ python -c "from drsr_420.agents import agent_specs; print(agent_specs())"
 
 ---
 
-## 8. 兼容层
+## 8. 兼容层（已清退）
 
-历史导入路径全部保留为**转发层**（20 个顶层 shim + 6 个 Agent shim），旧脚本与旧测试
-无需改动：
+分层迁移期间曾在 `drsr_420/` 顶层保留 24 个转发模块（20 个顶层 shim + `tools/` 下 4 个），
+让旧导入路径继续可用。**这些转发层已按本节的时机全部删除**，现在只有规范路径：
 
-| 旧路径 | 新路径 |
+| 曾经的旧路径 | 现在的规范路径 |
 |---|---|
 | `drsr_420.buffer` / `code_manipulation` / `config` / `console` / `profile` / `prompt_config` | `drsr_420.core.*` |
 | `drsr_420.evaluate_on_problems` / `evaluator_accelerate` | `drsr_420.evaluation.problems` / `.accelerate` |
@@ -263,22 +264,31 @@ python -c "from drsr_420.agents import agent_specs; print(agent_specs())"
 | `drsr_420.find_best_eq` / `sensitivity_prune` | `drsr_420.analysis.*` |
 | `drsr_420.pipeline` | `drsr_420.runtime.pipeline` |
 | `drsr_420.sampler` / `evaluator` / `tool_caller` / `experience_summarizer` / `residual_analyzer` / `data_analyse_real` | `drsr_420.agents.*` |
-| `llm`（根模块） | `drsr_420.llm` |
-| `main`（根脚本） | `drsr_420.cli.main` |
 
-兼容层的行为约定（`tests/test_architecture.py` 逐条断言）：
+**删除时机（当初写下的判据，现已满足）**：外部脚本与历史测试全部改到新路径。
+具体是：`.idea/runConfigurations/*.xml`（4 个运行配置）、`example.sh`、`MRFCompress-3.sh`
+都只依赖 `python main.py`（入口本身保留），`tests/` 下的旧路径 import 全部迁移完毕，
+`_POST_WRITE`（写/删转发）只在兼容层内部被用到——于是转发层成为纯负债。
 
-* **读**：模块级 `__getattr__` 转发所有名字，含私有名（`llm._post_with_retry` 等）；
-* **写 / 删**：转发到**定义该名字的子模块**而不是门面——否则
-  `mock.patch('llm._post_with_retry')` 的打桩会落在门面上，而 `LLMClient.chat` 在
-  `client` 模块的全局命名空间里查找，桩等于没打（这是重构中实测踩到的坑）；
-* `-m` 可执行的模块（`mcp_server` / `rag_build` / `main`）额外转发 `main()`，
-  保证 `python -m 旧路径` 仍能启动；
-* 每个 shim 的模块名与规范模块指向**同一对象**（`is` 比较），不允许复制成副本。
+**根目录两个文件不在删除范围内**，它们是项目的对外接口而非历史包袱：
 
-删除时机：当外部脚本（`.idea/runConfigurations/*.xml`、`example.sh`、
-`MRFCompress-3.sh`）与历史测试全部改到新路径后，可逐层删除；删除前请确认没有
-"用户尚未察觉的依赖"。
+| 文件 | 现状 | 为什么保留 |
+|---|---|---|
+| `main.py` | 4 行委托：`from drsr_420.cli.main import main` | 4 个 IDE 运行配置与两个 `.sh` 脚本都以 `python main.py` 启动实验 |
+| `llm.py` | 再导出 `drsr_420.llm.__all__` | 外部脚本/notebook 仍在 `import llm`；私有名不再转发，打桩请打定义处 |
+
+**迁移期间踩过、值得记住的坑**（都不再需要，但改回"门面转发"就会重新踩）：
+
+* **只做读转发的 shim 会让 `mock.patch` 静默失效**：桩落在门面上，而
+  `LLMClient.chat` 在 `drsr_420/llm/client.py` 的全局命名空间里查找 `_post_with_retry`
+  ——所以现在测试直接打 `drsr_420.llm.client._post_with_retry`；
+* **`-m` 可执行的模块必须转发 `main()`**，否则 `python -m 旧路径` 静默起不来
+  （MCP 客户端要等 120s 超时才会发现）；
+* **新旧路径必须是同一对象**（`is` 比较），复制成副本会让"改一处生效另一处不生效"。
+
+`tests/test_architecture.py::LegacyPathRemovalTest` 现在反向守护这件事：旧路径
+导入必须失败、`drsr_420/` 顶层只允许 `__init__.py`、库代码与测试都不得再
+`import` 已删除的路径。
 
 ---
 
@@ -293,20 +303,28 @@ $env:ZHIPU_API_KEY='dummy-test-key'
 python -m drsr_420.agents --check
 python -m drsr_420.agents
 
-# 命令行入口（旧路径 shim 与规范路径都应可用）
+# 命令行入口（三者等价）
 python main.py --help
-python -m drsr_420.cli.main --help          # 等价
-python -m drsr_420.knowledge.rag_build --help   # 新路径
-python -m drsr_420.rag_build --help             # 旧路径（兼容层）
+python -m drsr_420.cli.main --help
+drsr420 --help                              # 安装后（pyproject.toml 的 console script）
+
+# 知识库 CLI 与语义剪枝演示
+python -m drsr_420.knowledge.rag_build --help
+python -m drsr_420.analysis.prune_demo
 ```
 
 架构护栏（`tests/test_architecture.py`）覆盖：
 
 | 检查 | 说明 |
 |---|---|
-| 兼容层对象同一性 | 旧路径与规范路径必须 `is` 同一对象（防 shim 分叉成副本） |
-| 分层目录 | 8 层子包都存在且带 `__init__.py`；顶层只允许兼容层 |
+| 旧路径已清退 | 已删除的路径导入必须失败、顶层只留 `__init__.py`、源码不得再 import 旧路径 |
+| 分层目录 | 8 层子包都存在且带 `__init__.py`，且每层都有实现（空层是"分层被掏空"的信号） |
 | 依赖方向 | 禁止越界/倒置/库代码依赖 `cli`（AST 扫描全部运行时 import） |
 | `__file__` 路径锚点 | 仓库根锚点与独立运行的 `sys.path` 兜底必须指对（用子进程实测） |
 | Agent 契约 | 7 个 Agent 都继承 `BaseAgent`、`SPEC` 自洽、规范入口不用英式拼写 |
-| 评估子系统边界 | 角色文件不得再含进程池痕迹；机制符号仍可从历史路径导入 |
+| 评估子系统边界 | 角色文件不得再含进程池痕迹；机制符号仍可从角色模块导入（同对象） |
+| 控制台编码 | 以 `PYTHONIOENCODING=gbk` 跑典型入口，打印内容必须能被 GBK 编码 |
+
+行为测试（`tests/test_sampler_agent.py`、`tests/test_agent_behavior.py`）覆盖各 Agent
+的**行为**而非结构：骨架提取与重采样上界、经验/残差注入策略、工具循环收敛、
+反思失败兜底、协调者的质量判定与归属字段计算。

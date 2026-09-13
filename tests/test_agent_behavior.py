@@ -14,7 +14,6 @@ import unittest
 
 import numpy as np
 
-from drsr_420.agents import coordinator_agent as coord_mod
 from drsr_420.agents.coordinator_agent import CoordinatorAgent
 from drsr_420.agents.data_analyzer_agent import DataAnalyzerAgent
 from drsr_420.agents.experience_summarizer_agent import ExperienceSummarizerAgent
@@ -710,7 +709,9 @@ class CoordinatorBehaviorTest(unittest.TestCase):
         self.assertTrue(coord._database.checkpoints, "主循环应在反思失败后继续落 checkpoint")
 
     def test_sampling_orchestrator_alias_points_to_coordinator(self):
-        self.assertIs(coord_mod.SamplingOrchestrator, CoordinatorAgent)
+        """协议入口：SPEC.entrypoints 里声明的 sample 必须可调用（编排入口唯一）。"""
+        self.assertTrue(callable(CoordinatorAgent.sample))
+        self.assertEqual(CoordinatorAgent.SPEC.entrypoints, ("sample",))
 
 
 if __name__ == "__main__":

@@ -1,12 +1,12 @@
 # ── 共享 MCP client：让业务程序通过 stdio 调用 MCP 服务器上的工具 ──
 # 用法：
-#   from drsr_420.tool_runner import mcp_call_tool
+#   from drsr_420.knowledge.tool_runner import mcp_call_tool
 #   result = mcp_call_tool("search_paper", {"query": "磁流变液", "num": 3})
 #
 # 说明：
 #   - 底层用 mcp 官方 SDK 的 stdio client 拉起并复用单个服务器子进程（懒连接），
 #     避免每次都新建 python 进程。
-#   - 服务器端对应脚本 drsr_420/tools/mcp_server.py，cwd 固定为项目根目录，
+#   - 服务器端对应脚本 drsr_420/knowledge/tools/mcp_server.py，cwd 固定为项目根目录，
 #     确保 read_paper 内的 './glm_glm-5.3-flash.config' 等相对路径可用。
 #   - 依赖：mcp>=1.0（见 requirements.txt）。
 import concurrent.futures
@@ -23,8 +23,7 @@ from mcp.client.stdio import stdio_client
 _ROOT = Path(__file__).resolve().parents[2]
 
 # stdio 服务器命令（需在项目根目录下执行）。
-# 用**规范路径**：内部代码不应依赖兼容层（旧路径 drsr_420.tools.mcp_server 仍可用，
-# 但它只是转发，多一层无谓的中间模块）。
+# 用规范路径启动：子进程按 -m 解析模块名，兼容层已于阶段 6 清退。
 _SERVER_ARGS = ["-m", "drsr_420.knowledge.tools.mcp_server"]
 
 # mcp SDK 为子进程构造环境时只透传系统级白名单（PATH/TEMP/...），提供商 API key

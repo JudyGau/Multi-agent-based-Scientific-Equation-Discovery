@@ -1,10 +1,10 @@
-"""evaluator_accelerate 单元测试：numba 装饰器注入与编译失败降级。"""
+"""evaluation/accelerate.py 单元测试：numba 装饰器注入与编译失败降级。"""
 import ast
 import unittest
 
 import numpy as np
 
-from drsr_420 import evaluator_accelerate as ea
+from drsr_420.evaluation import accelerate as ea
 
 PROGRAM = (
     "import numpy as np\n"

@@ -24,9 +24,8 @@ from drsr_420.agents.messages import EvaluationOutcome, EvaluationRequest
 from drsr_420.core import buffer
 from drsr_420.core import code_manipulation
 
-# 执行机制从 evaluation/sandbox.py 引入；同时构成对该模块全部名字的 re-export
-# （历史导入路径 `from drsr_420.agents.evaluator_agent import LocalSandbox, ...`
-# 与 `drsr_420.evaluator` 兼容层都依赖这一点，故此处一次性列全）。
+# 执行机制从 evaluation/sandbox.py 引入；同时构成对该模块全部名字的 re-export，
+# 便于"只关心评估流程"的调用方从角色模块直接取到沙箱实现（对象同一，不是副本）。
 from drsr_420.evaluation.sandbox import (  # noqa: F401
     LocalSandbox,
     Sandbox,
@@ -218,6 +217,3 @@ class EvaluatorAgent(BaseAgent):
                 close()
         except Exception:
             pass
-
-
-Evaluator = EvaluatorAgent

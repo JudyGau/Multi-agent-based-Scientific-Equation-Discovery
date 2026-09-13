@@ -20,10 +20,10 @@ import unittest
 
 import numpy as np
 
-from drsr_420 import buffer as buffer_lib
-from drsr_420 import code_manipulation as cm
-from drsr_420 import config as config_lib
-from drsr_420 import profile as profile_lib
+from drsr_420.core import buffer as buffer_lib
+from drsr_420.core import code_manipulation as cm
+from drsr_420.core import config as config_lib
+from drsr_420.core import profile as profile_lib
 from drsr_420.agents.coordinator_agent import CoordinatorAgent
 from drsr_420.agents.experience_summarizer_agent import ExperienceSummarizerAgent
 from drsr_420.agents.messages import (

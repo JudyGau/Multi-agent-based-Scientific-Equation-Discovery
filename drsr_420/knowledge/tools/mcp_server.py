@@ -1,7 +1,7 @@
-# ── MCP 服务器：将 drsr_420/tools 下的工具暴露为 MCP 工具 ───────
-# 运行方式（需在项目根目录 c:\ResearchCode\drsr-main 下）：
-#   python -m drsr_420.tools.mcp_server          # stdio 传输（MCP 协议默认）
-#   python -m drsr_420.tools.mcp_server --http   # 单 streamable HTTP 端点，127.0.0.1:8000/mcp
+# ── MCP 服务器：把 knowledge/tools 下的文献工具暴露为 MCP 工具 ───────
+# 运行方式（需在项目根目录下）：
+#   python -m drsr_420.knowledge.tools.mcp_server          # stdio 传输（MCP 协议默认）
+#   python -m drsr_420.knowledge.tools.mcp_server --http   # 单 streamable HTTP 端点，127.0.0.1:8000/mcp
 import json
 import sys
 import traceback
@@ -95,9 +95,9 @@ def main(argv: list[str] | None = None) -> int:
     """启动 MCP 服务器；``--http`` 时暴露为单 Streamable HTTP 端点。
 
     独立成函数（而不是把逻辑写在 ``if __name__ == "__main__"`` 里）的原因：
-    兼容层 ``drsr_420/tools/mcp_server.py`` 需要转发**启动**，而不是只 re-export 名字，
-    否则 `python -m drsr_420.tools.mcp_server`（以及 tool_runner 的默认启动命令）
-    会静默起不来——MCP 客户端只能等到 120s 超时。
+    ``tool_runner`` 会以 ``python -m drsr_420.knowledge.tools.mcp_server`` 拉起它，
+    启动逻辑必须可被显式调用；写在 ``__main__`` 里会让这条命令静默起不来
+    ——MCP 客户端只能等到 120s 超时。
     """
     args = list(sys.argv[1:] if argv is None else argv)
     if "--http" in args:

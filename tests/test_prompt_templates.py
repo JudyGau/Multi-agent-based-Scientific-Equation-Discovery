@@ -15,7 +15,7 @@ from __future__ import annotations
 import string
 import unittest
 
-from drsr_420 import prompt_config as pc
+from drsr_420.core import prompt_config as pc
 
 
 #: 模板名 → 该模板调用点允许提供的字段（模板可只用其中一部分）

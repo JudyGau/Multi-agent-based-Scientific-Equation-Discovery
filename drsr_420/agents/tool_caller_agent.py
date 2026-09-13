@@ -119,7 +119,3 @@ class ToolCallerAgent(BaseAgent):
                 responses.append("")
                 think_responses.append("")
         return responses, think_responses
-
-
-# 兼容别名：旧模块名 drsr_420.tool_caller.ToolCaller 指向本类
-ToolCaller = ToolCallerAgent

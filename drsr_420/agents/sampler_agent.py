@@ -195,7 +195,3 @@ class SamplerAgent(LLM, BaseAgent):
         """
         return self._prompt_injector.build_request_content(
             content, getattr(config, "experience_injection", None))
-
-
-# 兼容别名：旧模块名 drsr_420.sampler.Sampler 指向本类
-Sampler = SamplerAgent
