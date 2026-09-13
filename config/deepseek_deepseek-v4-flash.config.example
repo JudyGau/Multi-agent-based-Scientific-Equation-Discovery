@@ -1,0 +1,9 @@
+{
+  "host": "api.deepseek.com",
+  "api_key": "",
+  "model": "deepseek/deepseek-v4-flash",
+  "max_completion_tokens": 65536,
+  "temperature": 0.1,
+  "top_p": 1.0,
+  "frequency_penalty": 0.0
+}
