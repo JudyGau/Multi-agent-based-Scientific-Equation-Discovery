@@ -67,7 +67,7 @@ CoordinatorAgent.run()  while 未达采样上限/时长上限:
 | 层 | 文件 | 行数 | 实际依赖 |
 |---|---|---|---|
 | `core/` | 8 | 1857 | —（最底层） |
-| `llm/` | 10 | 2001 | `core` |
+| `llm/` | 10 | 2027 | `core` |
 | `evaluation/` | 4 | 615 | `core` |
 | `knowledge/` | 8 | 1359 | `llm` |
 | `agents/` | 13 | 2656 | `core`, `evaluation`, `knowledge`, `llm` |
@@ -75,7 +75,7 @@ CoordinatorAgent.run()  while 未达采样上限/时长上限:
 | `runtime/` | 2 | 299 | `agents`, `analysis`, `core`, `knowledge` |
 | `cli/` | 3 | 542 | `agents`, `core`, `evaluation`, `llm`, `runtime` |
 
-包内实现共 10,654 行；顶层只剩 `__init__.py`（0 行实现）。全局最长文件 `llm/client.py` 472 行。
+包内实现共 10,733 行；顶层只剩 `__init__.py`（0 行实现）。全局最长文件 `llm/client.py` 491 行。
 
 ---
 
@@ -361,9 +361,12 @@ python -m drsr_420.analysis.prune_demo
 
 **扩展名本身就是保密边界**：`.json` 可入库、`.config` 不入库、`.config.example` 是模板。
 
-键名同样定死：**端点统一叫 `base_url`**（RAG 档案里是 `api_base_url`）。旧拼写 `host` /
-`api_host` 已下线——出现即报错并提示改名，不做静默兼容：内置提供商自带默认端点，
-忽略旧键会让请求悄悄打到默认地址而不是用户写的那一个。
+键名同样定死：**端点统一叫 `base_url`**（RAG 档案里是 `api_base_url`），且必须是
+**完整 URL**（`https://<主机>/<路径>`）——**不接受裸主机域名**，也不会再替你补
+`https://`。旧拼写 `host` / `api_host` 已下线，出现即报错并提示改名，不做静默兼容：
+内置提供商自带默认端点，忽略旧键会让请求悄悄打到默认地址而不是用户写的那一个。
+这条规则只在客户端构造处守一次（`llm/client.require_absolute_url`），因此配置、
+内置默认值、环境变量兜底（如 `ZHIPU_API_BASE`）三条通道都覆盖到了。
 
 ### 10.1 六个角色
 
@@ -436,7 +439,7 @@ provider 段**不在**这张表里时不再报错，而是走**自定义提供�
 
 | 字段 | 作用 | 缺省 |
 |---|---|---|
-| `base_url` | 端点；自定义提供商**必填**（旧拼写 `host` 已下线，写了报错） | 内置提供商用自己的默认值 |
+| `base_url` | 端点；自定义提供商**必填**。必须是完整 URL（`https://<主机>/<路径>`，不接受裸主机域名）；旧拼写 `host` 已下线，写了报错 | 内置提供商用自己的默认值 |
 | `api_key_env` | 密钥环境变量名 | 按 provider 段派生（`ustc` → `USTC_API_KEY`） |
 | `api_key_required` | 是否强制要求密钥 | 内置表的约定；自定义提供商默认 `true`（本地免鉴权写 `false`） |
 | `dialect` | 请求体方言：`openai` / `glm` / `deepseek` / `ollama` | `openai`（不认识的一律不发） |

@@ -69,12 +69,36 @@ def _reject_renamed_keys(loaded: dict, source) -> None:
                 f"（收到 {old}={loaded[old]!r}）。端点统一用 base_url 命名。")
 
 
+def _validate_endpoint(loaded: dict, source) -> None:
+    """校验 API 后端的端点：必须是**完整 URL**，不接受裸主机域名。
+
+    与 LLM 档案同一条规则（见 ``llm/client.require_absolute_url``）：统一写成
+    ``https://<主机>/v1`` 这种带路径的完整端点。
+
+    只在 ``backend == "api"`` 时检查——local 后端根本不用端点，写了也不该被拦。
+    空端点尤其要拦：拼接出的 URL 会变成 ``/embeddings``，报一个与"键名/取值写错"
+    毫无关系的 ``MissingSchema``。
+    """
+    if loaded.get("backend", DEFAULT_CONFIG["backend"]) != "api":
+        return
+    url = str(loaded.get("api_base_url") or "").strip()
+    if not url:
+        raise ValueError(
+            f"{source}: backend=\"api\" 时必须给出 api_base_url"
+            f"（完整 URL，如 https://api.siliconflow.cn/v1）")
+    if not url.startswith(("http://", "https://")):
+        raise ValueError(
+            f"{source}: api_base_url 必须是完整 URL（以 http:// 或 https:// 开头），"
+            f"收到 {url!r}；不要写裸主机域名")
+
+
 def load_config(path: str | None = None) -> dict:
     """读取配置档案，缺失时使用内置默认值。
 
     Raises:
-        ValueError: 档案里用了已废弃的键名（见 :data:`_RENAMED_KEYS`）。静默忽略旧键
-            会让嵌入请求打到一个空地址，所以这里必须响亮地失败并给出改名方法。
+        ValueError: 档案里用了已废弃的键名（见 :data:`_RENAMED_KEYS`），或 ``backend="api"``
+            却没给出合法的端点。静默忽略旧键会让嵌入请求打到一个空地址，所以这里必须
+            响亮地失败并给出改法。
     """
     cfg = dict(DEFAULT_CONFIG)
     resolved = _resolve_config_path(path)
@@ -88,6 +112,7 @@ def load_config(path: str | None = None) -> dict:
         print(f"[RAG] 读取 {path} 失败，使用默认配置: {e}")
         return cfg
     _reject_renamed_keys(loaded, resolved)
+    _validate_endpoint(loaded, resolved)
     cfg.update(loaded)
     return cfg
 

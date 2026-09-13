@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Dict, Tuple, Type
 
 from drsr_420.llm.adapt import DIALECTS, resolve_dialect
-from drsr_420.llm.client import LLMClient
+from drsr_420.llm.client import LLMClient, require_absolute_url
 from drsr_420.llm.providers import (
     BltClient,
     CSTCloudClient,
@@ -136,13 +136,15 @@ def parse_provider_model(model_str: str) -> Tuple[str, str]:
 
 
 def normalize_llm_config(config: dict) -> dict:
-    """统一规范化 LLM 配置：拒绝已废弃的 ``host``、补齐 scheme、校验 ``model``。
+    """统一规范化 LLM 配置：拒绝已废弃的 ``host``、校验端点 URL 与 ``model``。
 
     - ``host`` 曾是 ``base_url`` 的**同一字段的另一种拼写**，现已统一为 ``base_url``：
       出现 ``host`` 即报错并给出改名提示。刻意不做静默兼容——内置提供商自带默认端点，
       忽略 ``host`` 会让请求悄悄打到默认地址，而不是用户写的那一个（自建/代理端点
       尤其致命，且完全没有信号）；
-    - 无 scheme 的地址自动补 ``https://``，避免 requests 报 "No scheme supplied"；
+    - ``base_url`` 必须是**完整 URL**（``http(s)://`` 开头）：空串表示"用内置默认端点"，
+      非空则交给 :func:`client.require_absolute_url` 校验。曾经会替用户补 ``https://``，
+      那让"裸主机域名"与完整 URL 两种写法长期并存，现已取消；
     - 校验 ``model`` 必须是 'provider/model' 格式，配置错误尽早暴露。
 
     返回规范化后的新 dict，不改动入参。
@@ -153,8 +155,8 @@ def normalize_llm_config(config: dict) -> dict:
             f'配置键 "host" 已废弃，请改名为 "base_url"（收到 host={cfg["host"]!r}）。'
             f'两者只是同一字段的两种拼写，现已统一为 base_url。')
     base_url = cfg.get('base_url')
-    if isinstance(base_url, str) and base_url.strip() and '://' not in base_url:
-        cfg['base_url'] = 'https://' + base_url.strip()
+    if isinstance(base_url, str) and base_url.strip():
+        cfg['base_url'] = require_absolute_url(base_url)
     if 'model' in cfg:
         parse_provider_model(cfg['model'])  # 校验 provider 前缀，无效则抛出
     return cfg
@@ -173,7 +175,7 @@ class ClientFactory:
     #   env_var 为 None 表示不强制要求 key（如 ollama 本地部署）。
     #   default_base_url 为 None 表示由客户端类自行从环境变量兜底（如 blt）。
     _PROVIDER_SPECS = {
-        'deepseek':   (DeepSeekClient,    'DEEPSEEK_API_KEY',   'https://api.deepseek.com'),
+        'deepseek':   (DeepSeekClient,    'DEEPSEEK_API_KEY',   'https://api.deepseek.com/v1'),
         'siliconflow':(SiliconflowClient, 'SILICONFLOW_API_KEY','https://api.siliconflow.cn/v1'),
         'deepinfra':  (DeepInfraClient,   'DEEPINFRA_API_KEY',  'https://api.deepinfra.com/v1/openai'),
         'ollama':     (OllamaClient,      None,                 'http://localhost:11111/v1'),

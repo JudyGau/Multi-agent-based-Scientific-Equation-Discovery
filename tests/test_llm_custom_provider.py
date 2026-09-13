@@ -17,8 +17,9 @@
 2. 未知 provider 段 + 无 ``base_url`` ⇒ 报错必须**教人怎么接进来**，而不是只列内置表；
 3. 密钥解析要有确定规则：``api_key`` > ``api_key_env`` > 按 provider 段派生的
    环境变量（``ustc`` -> ``USTC_API_KEY``），且报错信息里必须是**具体变量名**；
-4. 端点键名统一为 ``base_url``：``host`` 已下线，出现即报错并给出改名提示
-   （静默忽略它比报错危险得多——内置提供商有默认端点，请求会悄悄打到别处）；
+4. 端点键名与写法统一：键名是 ``base_url``（``host`` 已下线，出现即报错并给出改名
+   提示），取值是**完整 URL**（``http(s)://…``，不再替用户补 scheme）——静默容忍
+   两种写法会让请求打到别处（内置提供商有默认端点），或报出与写法无关的底层错误；
 5. 内置提供商的行为逐位不变（这轮只加了一条新路径，没动老路径）。
 
 全部断言不依赖本机凭据，也不发起网络请求。
@@ -33,8 +34,9 @@ from unittest import mock
 
 from drsr_420.llm import factory as factory_mod
 from drsr_420.llm.adapt import DIALECTS
+from drsr_420.llm.client import LLMClient
 from drsr_420.llm.factory import ClientFactory
-from drsr_420.llm.providers import OpenAICompatClient
+from drsr_420.llm.providers import OpenAICompatClient, ZhipuClient
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _CONFIG_DIR = _REPO_ROOT / "config"
@@ -191,27 +193,55 @@ class CustomProviderDialectTest(unittest.TestCase):
 
 
 class BaseUrlNamingTest(unittest.TestCase):
-    """端点键名统一为 ``base_url``：``host`` 这条旧拼写已下线。
+    """端点键名与写法都要统一：键名是 ``base_url``（``host`` 已下线），
+    取值是**完整 URL**（带 ``http(s)://`` 与路径），不接受裸主机域名。
 
     统一的是**同一个字段的两种拼写**（不是两个字段），所以"两个都写"也算残留配置，
     一样报错——否则迁移会停在半路，而 `host` 从此没人再看一眼。
     """
 
-    def test_scheme_is_added_when_missing(self):
+    def test_complete_url_is_accepted_as_is(self):
         client = ClientFactory.from_config(
-            {"model": "glm/x", "base_url": "open.bigmodel.cn", "api_key": "k"})
-        self.assertEqual(client.base_url, "https://open.bigmodel.cn")
+            {"model": "ustc/x", "base_url": "https://api.llm.ustc.edu.cn/v1",
+             "api_key": "k"})
+        self.assertEqual(client.base_url, "https://api.llm.ustc.edu.cn/v1")
 
-    def test_whitespace_is_stripped_before_scheme_completion(self):
+    def test_bare_hostname_is_rejected(self):
+        """曾经会替用户补 https://，于是"裸主机域名"与完整 URL 两种写法长期并存。"""
+        with self.assertRaises(ValueError) as ctx:
+            ClientFactory.from_config(
+                {"model": "deepseek/x", "base_url": "api.deepseek.com", "api_key": "k"})
+        message = str(ctx.exception)
+        self.assertIn("api.deepseek.com", message)
+        self.assertIn("https://api.deepseek.com/v1", message)   # 报错给出该写成什么样
+
+    def test_whitespace_is_stripped(self):
         client = ClientFactory.from_config(
-            {"model": "glm/x", "base_url": "  open.bigmodel.cn  ", "api_key": "k"})
-        self.assertEqual(client.base_url, "https://open.bigmodel.cn")
+            {"model": "glm/x", "base_url": "  https://open.bigmodel.cn/api/paas/v4  ",
+             "api_key": "k"})
+        self.assertEqual(client.base_url, "https://open.bigmodel.cn/api/paas/v4")
 
-    def test_existing_scheme_is_preserved(self):
+    def test_existing_http_scheme_is_preserved(self):
         client = ClientFactory.from_config(
             {"model": "local/x", "base_url": "http://localhost:8000/v1",
              "api_key_required": False})
         self.assertEqual(client.base_url, "http://localhost:8000/v1")
+
+    def test_empty_base_url_falls_back_to_the_builtin_endpoint(self):
+        """空串是"用内置默认端点"的老写法，不能被当成非法 URL 拦掉。"""
+        client = ClientFactory.from_config({"model": "glm/x", "api_key": "k",
+                                            "base_url": ""})
+        self.assertEqual(client.base_url, "https://open.bigmodel.cn/api/paas/v4")
+
+    def test_client_constructor_is_the_backstop_for_every_channel(self):
+        """配置之外还有环境变量兜底通道（如 ``ZHIPU_API_BASE``），同样不许裸主机。"""
+        with mock.patch.dict(os.environ, {"ZHIPU_API_BASE": "open.bigmodel.cn"}):
+            with self.assertRaises(ValueError):
+                ZhipuClient(api_key="k", model="glm-5.3-flash", base_url=None)
+
+    def test_direct_client_construction_rejects_bare_hostname(self):
+        with self.assertRaises(ValueError):
+            LLMClient(api_key="k", model="m", base_url="api.example.com")
 
     def test_host_is_rejected_even_when_base_url_is_also_present(self):
         with self.assertRaises(ValueError) as ctx:
@@ -221,7 +251,7 @@ class BaseUrlNamingTest(unittest.TestCase):
         self.assertIn("base_url", str(ctx.exception))
 
     def test_normalize_does_not_mutate_the_input_dict(self):
-        original = {"model": "glm/x", "base_url": "open.bigmodel.cn"}
+        original = {"model": "glm/x", "base_url": "https://api.deepseek.com/v1"}
         snapshot = dict(original)
         factory_mod.normalize_llm_config(original)
         self.assertEqual(original, snapshot)

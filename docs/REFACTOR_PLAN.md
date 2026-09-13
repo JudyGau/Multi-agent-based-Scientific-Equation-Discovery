@@ -1005,18 +1005,21 @@ Q1（连接谁 / 用哪把钥匙），按 §14 的三层分红本就归档案。
 **最后并入请求体**的显式出口；`--check` 的密钥问题不再误导性地提示 `cp`；角色表列宽
 改为按内容算（26 字符的档案名会把来源列挤成连字）；端点键名统一为 `base_url`
 （LLM 侧去掉 `host` 别名、RAG 侧 `api_host` → `api_base_url`，旧拼写**报错**而非静默
-忽略——忽略会让请求打到默认端点，或报出与键名无关的 `MissingSchema`）。
+忽略——忽略会让请求打到默认端点，或报出与键名无关的 `MissingSchema`）；端点取值也统一
+为**完整 URL**（取消"缺 scheme 自动补 `https://`"，`require_absolute_url` 在客户端构造处
+一次守住配置/内置默认值/环境变量三条通道），`deepseek` 档案从裸主机 `api.deepseek.com`
+改为 `https://api.deepseek.com/v1`，spec 默认值同步。
 
 ### 15.1 阶段 9 指标
 
 | 指标 | 阶段 8 结束时 | 现在 |
 |---|---|---|
-| 测试数 | 418 | **455**（`tests/test_llm_custom_provider.py` 23 项 + 模板可构造/密钥报错/列宽/键名迁移等） |
-| 全局最长文件 | 482（`llm/client.py`） | **472**（`llm/client.py`） |
-| `llm/` 层 | 9 文件 / 1818 行 | 10 文件 / 2001 行（新增 `adapt.py`） |
+| 测试数 | 418 | **463**（`tests/test_llm_custom_provider.py` 27 项 + 模板可构造/密钥报错/列宽/键名与端点格式等） |
+| 全局最长文件 | 482（`llm/client.py`） | **491**（`llm/client.py`，新增 `require_absolute_url`） |
+| `llm/` 层 | 9 文件 / 1818 行 | 10 文件 / 2027 行（新增 `adapt.py`） |
 | 入库的配置模板 | 4 | **5** |
 | 建档即可接入的端点 | 7 个内置 | **任意 OpenAI Chat Completions 兼容端点** |
-| 端点的键名拼写 | `host` / `base_url` / `api_host` | **统一为 base_url 系** |
+| 端点的键名/写法 | `host` / `base_url` / `api_host`，且允许裸主机 | **`base_url` / `api_base_url`，必须完整 URL** |
 
 完整设计与取舍见 [`CONFIG_PLAN.md`](./CONFIG_PLAN.md) §10，架构摘要见
 [`ARCHITECTURE.md`](./ARCHITECTURE.md) §10.5。

@@ -5,7 +5,7 @@ from drsr_420.llm.client import LLMClient
 
 
 class DeepSeekClient(LLMClient):
-    def __init__(self, api_key: str, model: str, base_url: str = "https://api.deepseek.com"):
+    def __init__(self, api_key: str, model: str, base_url: str = "https://api.deepseek.com/v1"):
         super().__init__(api_key=api_key, model=model, base_url=base_url)
 
 class SiliconflowClient(LLMClient):

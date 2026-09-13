@@ -1,9 +1,10 @@
 {
   "_comment": [
-    "端点统一用 base_url（旧拼写 host 已废弃，写了会直接报错并提示改名）。",
-    "base_url 不带 scheme 时会自动补 https://，所以下面这样写是合法的。"
+    "端点必须写成完整 URL（http:// 或 https:// 开头），不接受裸主机域名：",
+    "配置里看得出到底打到哪个端点，不靠代码去猜缺失的 scheme。",
+    "DeepSeek 官方 https://api.deepseek.com 与 .../v1 都收，本项目统一用带 /v1 的形式。"
   ],
-  "base_url": "api.deepseek.com",
+  "base_url": "https://api.deepseek.com/v1",
   "api_key": "",
   "model": "deepseek/deepseek-v4-flash",
   "max_completion_tokens": 65536,

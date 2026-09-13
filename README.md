@@ -95,7 +95,7 @@ python -m drsr_420.llm.roles --check    # 自检：档案存在、model 合法�
 
 ```json
 {
-  "base_url": "open.bigmodel.cn",
+  "base_url": "https://open.bigmodel.cn/api/paas/v4",
   "api_key": "xxx",
   "model": "glm/glm-5.3-flash",
   "max_tokens": 65536,
@@ -104,8 +104,10 @@ python -m drsr_420.llm.roles --check    # 自检：档案存在、model 合法�
 }
 ```
 
-端点键名统一为 `base_url`（不带 scheme 会自动补 `https://`）；旧拼写 `host` 已下线——
-写了会直接报错并提示改名，而不是被静默忽略（忽略会让请求打到内置默认端点）。
+端点必须写成**完整 URL**（`https://<主机>/<路径>`，通常以 `/v1` 结尾）；**不写裸主机域名**，
+也不会再替你补 `https://`——`api.deepseek.com` 这种写法会直接报错并提示该写成什么样。
+键名统一为 `base_url`（旧拼写 `host` 已下线，写了同样报错），而不是被静默忽略：
+忽略会让请求打到内置默认端点。
 
 首次使用：`cp config/glm_glm-5.3-flash.config.example config/glm_glm-5.3-flash.config` 并填入密钥。
 注册表里单独绑定过档案的角色还需各自的档案，例如
@@ -135,7 +137,9 @@ python -m drsr_420.llm.roles --check    # 自检：档案存在、model 合法�
 - 配置：`config/rag.config`（嵌入后端 `local`/`api`、API 端点/密钥/模型、分块大小、检索 `k` 等）。
   首次使用：`cp config/rag.config.example config/rag.config`。
 - 默认 `backend=api` 走 OpenAI 兼容嵌入接口（如智谱 `embedding-3`、SiliconFlow `BAAI/bge-m3`）；`api_key` 留空时按端点回退环境变量。
-- 端点键名与 LLM 档案**统一为 `base_url` 系**：RAG 侧是 `api_base_url`，旧的 `api_host` 已下线（写了会报错并提示改名）。
+- 端点键名与写法两端统一：LLM 档案是 `base_url`，RAG 档案是 `api_base_url`，都必须是
+  **完整 URL**（`https://…`，不接受裸主机域名）；旧拼写 `host` / `api_host` 已下线——
+  写了会报错并提示改名。`backend=api` 时 RAG 端点缺失同样报错。
 
 入库文献：
 

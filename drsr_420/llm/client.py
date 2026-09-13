@@ -22,6 +22,25 @@ LLM_REQUEST_MAX_RETRIES = 4
 LLM_REQUEST_BACKOFF_BASE = 2.0
 
 
+def require_absolute_url(value: str, what: str = "base_url") -> str:
+    """校验并返回绝对端点 URL（``http://`` 或 ``https://`` 开头），并去掉首尾空白。
+
+    刻意**不再猜**缺失的 scheme（曾自动补 ``https://``）：那种"宽容"让
+    ``api.deepseek.com`` 与 ``https://api.deepseek.com/v1`` 两种写法长期并存，
+    而前者既没有 scheme 也没有路径，从配置上看不出到底会打到哪个端点。
+    现在统一要求写完整 URL，报错里直接给出该写成什么样。
+
+    这是所有客户端构造的必经之路（配置、内置默认值、环境变量兜底都汇聚到
+    ``LLMClient.__init__``），因此"不许写裸主机域名"这条规则只需在这里守一次。
+    """
+    url = (value or "").strip()
+    if not url.startswith(("http://", "https://")):
+        raise ValueError(
+            f"{what} 必须是完整 URL（以 http:// 或 https:// 开头），收到 {value!r}；"
+            f"不要写裸主机域名——例如应写 https://api.deepseek.com/v1")
+    return url
+
+
 def _post_with_retry(url, headers, payload,
                      max_retries=LLM_REQUEST_MAX_RETRIES,
                      backoff_base=LLM_REQUEST_BACKOFF_BASE,
@@ -85,12 +104,12 @@ class LLMClient:
 
         :param api_key: API 密钥
         :param model: 模型名称
-        :param base_url: API 的基础 URL
+        :param base_url: API 的完整基础 URL（须带 http(s)://，见 :func:`require_absolute_url`）
         :param provider: 提供商标识（如 'glm'）；缺省时由 base_url 推断
         """
         self.api_key = api_key
         self.model = model
-        self.base_url = base_url
+        self.base_url = require_absolute_url(base_url)
         self.provider = (provider or '').lower()
         # 请求体方言（见 adapt.py）：由 ClientFactory 按档案的 ``dialect`` 字段设置。
         # 留空表示"按 provider 名推断"——直接构造客户端的调用方（含单测）行为不变。

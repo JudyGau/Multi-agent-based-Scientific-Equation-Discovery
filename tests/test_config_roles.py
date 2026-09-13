@@ -196,6 +196,26 @@ class ShippedRegistryTest(unittest.TestCase):
             checked += 1
         self.assertGreaterEqual(checked, 2, "至少要检查到默认档案与自定义提供商档案")
 
+    def test_shipped_endpoints_are_complete_urls(self):
+        """随仓库分发的端点必须是**完整 URL**（带 scheme 且带路径），不接受裸主机域名。
+
+        运行时只强制"带 scheme"（``llm.client.require_absolute_url``）——根路径挂载的
+        自建网关是合法的；但**我们分发出去的**档案统一成 ``https://<主机>/v1`` 这种形状，
+        否则下一个人照抄模板又把主机域名带了回来（``api.deepseek.com`` 就是这么来的）。
+        """
+        pattern = re.compile(r"^https?://[^/\s]+/.+")
+        checked = 0
+        for path in sorted(_CONFIG_DIR.glob("*.config.example")):
+            data = json.loads(path.read_text(encoding="utf-8"))
+            endpoint = data.get("base_url") or data.get("api_base_url")
+            if not endpoint:
+                continue
+            with self.subTest(config=path.name):
+                self.assertRegex(endpoint, pattern,
+                                 f"{path.name} 的端点 {endpoint!r} 不是完整 URL")
+            checked += 1
+        self.assertGreaterEqual(checked, 3, "至少要检查到 LLM 与 RAG 两侧的端点")
+
     def test_shipped_configs_use_the_unified_base_url_key(self):
         """端点键名统一：随仓库分发的档案里不得再出现 ``host`` / ``api_host``。
 

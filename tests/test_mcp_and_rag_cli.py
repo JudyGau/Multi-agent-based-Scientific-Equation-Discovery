@@ -2,7 +2,8 @@
 
 覆盖：
 - rag_build CLI：--ingest 方向不再反转（只 --query 不得触发入库）；--dir 按项目根解析；
-- rag_kb 配置键名：端点统一为 ``api_base_url``，旧的 ``api_host`` 写了就报错（含改名提示）；
+- rag_kb 配置键名与端点写法：端点统一为 ``api_base_url``，旧的 ``api_host`` 写了就报错
+  （含改名提示）；``backend="api"`` 时必须给**完整 URL**，裸主机域名/空值同样报错；
 - rag_kb.chunk_text：超长段硬切不再重复当前块、硬切片段之间保留 overlap；
 - read_paper._doi_filename：DOI 路径穿越/绝对路径净化，且常见 DOI 文件名向后兼容；
 - read_paper._summarize_text：max_tokens 回退、工具调用/空内容显式报错；
@@ -221,6 +222,26 @@ class RagConfigNamingTest(unittest.TestCase):
         message = str(ctx.exception)
         self.assertIn("api_host", message)
         self.assertIn("api_base_url", message)      # 报错要自带改名方法
+
+    def test_api_backend_requires_a_complete_base_url(self):
+        """空端点拼出的 URL 是 ``/embeddings``，报错会与"配置写错"毫无关系——在这里拦住。"""
+        path = self._write({"backend": "api"})
+        with self.assertRaises(ValueError) as ctx:
+            rag_kb.load_config(path)
+        self.assertIn("api_base_url", str(ctx.exception))
+
+    def test_api_backend_rejects_bare_hostname(self):
+        """与 LLM 侧同一条规则：端点必须是完整 URL，不写裸主机域名。"""
+        path = self._write({"backend": "api",
+                            "api_base_url": "api.siliconflow.cn/v1"})
+        with self.assertRaises(ValueError) as ctx:
+            rag_kb.load_config(path)
+        self.assertIn("https://", str(ctx.exception))
+
+    def test_local_backend_ignores_the_endpoint(self):
+        """local 后端根本不用端点，缺它/写它都不该被拦。"""
+        path = self._write({"backend": "local"})
+        self.assertEqual(rag_kb.load_config(path)["backend"], "local")
 
     def test_env_key_inference_follows_the_renamed_field(self):
         with mock.patch.dict(os.environ, {"SILICONFLOW_API_KEY": "env-key"}):
