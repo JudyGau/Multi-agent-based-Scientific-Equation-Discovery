@@ -1,15 +1,15 @@
-"""find_best_eq.expr_substitution 单元测试：参数代入、变量替换、中间变量消解与边界。"""
+"""expr_parse.expr_substitution 单元测试：参数代入、变量替换、中间变量消解与边界。"""
 import unittest
 
 import sympy as sp
 
-from drsr_420.find_best_eq import (
+from drsr_420.analysis.expr_parse import (
     WhereArityError,
-    _find_matching_paren,
-    _normalize_condition,
-    _rewrite_where_calls,
-    _split_top_level,
     expr_substitution,
+    find_matching_paren,
+    normalize_condition,
+    rewrite_where_calls,
+    split_top_level,
 )
 
 X1 = sp.Symbol("x1")
@@ -124,69 +124,69 @@ class WherePiecewiseHelpersTest(_ExprTestCase):
 
     def test_split_top_level_ignores_nested_commas(self):
         self.assertEqual(
-            _split_top_level("a, Max(b, c), d"),
+            split_top_level("a, Max(b, c), d"),
             ["a", " Max(b, c)", " d"],
         )
 
     def test_split_top_level_ignores_deeply_nested(self):
         self.assertEqual(
-            _split_top_level("Max(a, Min(b, c)), d"),
+            split_top_level("Max(a, Min(b, c)), d"),
             ["Max(a, Min(b, c))", " d"],
         )
 
     def test_split_top_level_ignores_brackets_and_strings(self):
-        self.assertEqual(_split_top_level("a, [1, 2], 'x,y'"), ["a", " [1, 2]", " 'x,y'"])
+        self.assertEqual(split_top_level("a, [1, 2], 'x,y'"), ["a", " [1, 2]", " 'x,y'"])
 
     def test_split_top_level_empty(self):
-        self.assertEqual(_split_top_level(""), [""])
+        self.assertEqual(split_top_level(""), [""])
 
     def test_find_matching_paren_skips_inner_parens(self):
-        self.assertEqual(_find_matching_paren("f(a, g(b), c)", 1), 12)
+        self.assertEqual(find_matching_paren("f(a, g(b), c)", 1), 12)
 
     def test_find_matching_paren_unbalanced_returns_minus_one(self):
-        self.assertEqual(_find_matching_paren("f(a, g(b)", 1), -1)
+        self.assertEqual(find_matching_paren("f(a, g(b)", 1), -1)
 
     def test_rewrite_simple_call(self):
         self.assertEqual(
-            _rewrite_where_calls("where(c, a, b)"),
+            rewrite_where_calls("where(c, a, b)"),
             "Piecewise((a, c), (b, True))",
         )
 
     def test_rewrite_keeps_nested_commas_intact(self):
         self.assertEqual(
-            _rewrite_where_calls("where(c, Max(a, b), d)"),
+            rewrite_where_calls("where(c, Max(a, b), d)"),
             "Piecewise((Max(a, b), c), (d, True))",
         )
 
     def test_rewrite_recurses_into_nested_where(self):
         self.assertEqual(
-            _rewrite_where_calls("where(c1, where(c2, a, b), d)"),
+            rewrite_where_calls("where(c1, where(c2, a, b), d)"),
             "Piecewise((Piecewise((a, c2), (b, True)), c1), (d, True))",
         )
 
     def test_rewrite_does_not_touch_longer_identifier(self):
         """`somewhere(...)` 不是 where 调用，不应被改名（旧实现是全局 str.replace）。"""
-        self.assertEqual(_rewrite_where_calls("somewhere(x, y)"), "somewhere(x, y)")
+        self.assertEqual(rewrite_where_calls("somewhere(x, y)"), "somewhere(x, y)")
 
     def test_rewrite_does_not_touch_prefixed_call(self):
         """`np.where(...)` 由上游先剥掉 np. 前缀再进入本函数，此处不应命中。"""
-        self.assertEqual(_rewrite_where_calls("np.where(a, b, c)"), "np.where(a, b, c)")
+        self.assertEqual(rewrite_where_calls("np.where(a, b, c)"), "np.where(a, b, c)")
 
     def test_rewrite_wrong_arity_raises(self):
         """参数个数不是 3 时显式报错；`Piecewise(x1 > 0)` 会被 SymPy 静默求成 nan。"""
         with self.assertRaises(WhereArityError):
-            _rewrite_where_calls("where(c, a)")
+            rewrite_where_calls("where(c, a)")
         with self.assertRaises(WhereArityError):
-            _rewrite_where_calls("where(c)")
+            rewrite_where_calls("where(c)")
 
     def test_rewrite_tolerates_trailing_comma(self):
         self.assertEqual(
-            _rewrite_where_calls("where(c, a, b,)"),
+            rewrite_where_calls("where(c, a, b,)"),
             "Piecewise((a, c), (b, True))",
         )
 
     def test_rewrite_unbalanced_keeps_text(self):
-        self.assertEqual(_rewrite_where_calls("where(c, a"), "where(c, a")
+        self.assertEqual(rewrite_where_calls("where(c, a"), "where(c, a")
 
 
 class WherePiecewiseTest(_ExprTestCase):
@@ -294,22 +294,22 @@ class ConditionNormalizationTest(_ExprTestCase):
     """`==` / `!=` -> Eq / Ne：SymPy 不重载 ==，会退化成 Python 的 False。"""
 
     def test_eq_becomes_eq(self):
-        self.assertEqual(_normalize_condition("x1 == 0"), "Eq(x1, 0)")
+        self.assertEqual(normalize_condition("x1 == 0"), "Eq(x1, 0)")
 
     def test_ne_becomes_ne(self):
-        self.assertEqual(_normalize_condition("x1 != 0"), "Ne(x1, 0)")
+        self.assertEqual(normalize_condition("x1 != 0"), "Ne(x1, 0)")
 
     def test_plain_comparison_untouched(self):
         for cond in ("x1 > 0", "x1 >= 0", "x1 < 1", "x1 <= 1"):
             with self.subTest(cond=cond):
-                self.assertEqual(_normalize_condition(cond), cond)
+                self.assertEqual(normalize_condition(cond), cond)
 
     def test_eq_inside_parens_is_not_top_level(self):
         # 顶层没有 == 时不动括号里的内容
-        self.assertEqual(_normalize_condition("(x1 == 0)"), "(x1 == 0)")
+        self.assertEqual(normalize_condition("(x1 == 0)"), "(x1 == 0)")
 
     def test_chained_eq(self):
-        self.assertEqual(_normalize_condition("x1 == x2 == 0"), "Eq(x1, Eq(x2, 0))")
+        self.assertEqual(normalize_condition("x1 == x2 == 0"), "Eq(x1, Eq(x2, 0))")
 
     def test_where_with_eq_condition_keeps_true_branch(self):
         """回归：`where(x1 == 0, a, b)` 曾被 SymPy 静默求成 b（条件塌缩）。"""

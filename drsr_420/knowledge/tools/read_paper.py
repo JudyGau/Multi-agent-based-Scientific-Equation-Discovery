@@ -453,7 +453,7 @@ def agent_run(user_query: str, model: str = "deepseek-v4-pro"):
 if __name__ == "__main__":
     q = "MRF"
     answer = agent_run(q)
-    print("\n🧠 DeepSeek 回答：\n")
+    print("\n[DeepSeek 回答]\n")
     print(answer)
 
 

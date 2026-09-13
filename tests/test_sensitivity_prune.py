@@ -1,15 +1,12 @@
-"""sensitivity_prune 单元测试：敏感度指标、聚合方式、阈值行为、可复现性与边界。"""
+"""敏感度剪枝单元测试：求值器（采样/指标/聚合/缓存）与剪枝器（阈值、可复现性、边界）。"""
 import unittest
 
 import numpy as np
 import sympy as sp
 
-from drsr_420.sensitivity_prune import (
-    PruneRecord,
-    PruneStats,
-    SensitivityPruner,
-    sensitivity_prune,
-)
+from drsr_420.analysis.expr_evaluation import ExpressionEvaluator
+from drsr_420.analysis.prune_stats import PruneRecord, PruneStats
+from drsr_420.analysis.sensitivity_prune import SensitivityPruner, sensitivity_prune
 
 x, y, z = sp.symbols("x y z", real=True)
 eps = sp.Rational(1, 1000)
@@ -46,58 +43,76 @@ class InitValidationTest(unittest.TestCase):
             SensitivityPruner([x], reduction="nope")
 
     def test_samples_shape(self):
-        p = SensitivityPruner([x, y], num_samples=37, seed=1)
-        self.assertEqual(p._samples.shape, (37, 2))
-        self.assertEqual(len(p._pts), 2)
-        self.assertEqual(p._pts[0].shape, (37,))
+        ev = ExpressionEvaluator([x, y], num_samples=37, seed=1)
+        self.assertEqual(ev.samples.shape, (37, 2))
+        self.assertEqual(len(ev.points), 2)
+        self.assertEqual(ev.points[0].shape, (37,))
+
+
+class EvaluatorValidationTest(unittest.TestCase):
+    def test_empty_symbols_raises(self):
+        with self.assertRaises(ValueError):
+            ExpressionEvaluator([])
+
+    def test_bad_metric_raises(self):
+        with self.assertRaises(ValueError):
+            ExpressionEvaluator([x], metric="nope")
+
+    def test_bad_reduction_raises(self):
+        with self.assertRaises(ValueError):
+            ExpressionEvaluator([x], reduction="nope")
+
+    def test_points_are_columns_of_samples(self):
+        ev = ExpressionEvaluator([x, y], num_samples=11, seed=3)
+        np.testing.assert_array_equal(ev.points[1], ev.samples[:, 1])
 
 
 class ReproducibilityTest(unittest.TestCase):
     def test_same_seed_same_samples_and_result(self):
         p1 = SensitivityPruner([x, y], seed=42)
         p2 = SensitivityPruner([x, y], seed=42)
-        np.testing.assert_array_equal(p1._samples, p2._samples)
+        np.testing.assert_array_equal(p1.evaluator.samples, p2.evaluator.samples)
         expr = x**2 + y**2 + eps * x * y
         self.assertEqual(str(p1.prune(expr)), str(p2.prune(expr)))
 
     def test_different_seed_differs(self):
-        p1 = SensitivityPruner([x, y], seed=1)
-        p2 = SensitivityPruner([x, y], seed=2)
-        self.assertFalse(np.array_equal(p1._samples, p2._samples))
+        e1 = ExpressionEvaluator([x, y], seed=1)
+        e2 = ExpressionEvaluator([x, y], seed=2)
+        self.assertFalse(np.array_equal(e1.samples, e2.samples))
 
 
 class SensitivityMetricTest(unittest.TestCase):
     def test_absolute_max(self):
-        p = SensitivityPruner([x], metric="absolute", reduction="max")
+        ev = ExpressionEvaluator([x], metric="absolute", reduction="max")
         # diff = [0, 2] -> max = 2
-        s = p._sensitivity(np.array([1.0, 2.0]), np.array([1.0, 4.0]))
+        s = ev.sensitivity(np.array([1.0, 2.0]), np.array([1.0, 4.0]))
         self.assertAlmostEqual(s, 2.0)
 
     def test_relative_max(self):
-        p = SensitivityPruner([x], metric="relative", reduction="max")
+        ev = ExpressionEvaluator([x], metric="relative", reduction="max")
         # diff=[1,2], denom=[1,2] -> [1,1] -> max=1
-        s = p._sensitivity(np.array([1.0, 2.0]), np.array([2.0, 4.0]))
+        s = ev.sensitivity(np.array([1.0, 2.0]), np.array([2.0, 4.0]))
         self.assertAlmostEqual(s, 1.0)
 
     def test_reduction_variants(self):
         orig = np.array([1.0, 1.0, 1.0, 1.0])
         pruned = np.array([1.0, 1.0, 1.0, 5.0])  # diff=[0,0,0,4]
         self.assertAlmostEqual(
-            SensitivityPruner([x], metric="absolute", reduction="mean")
-            ._sensitivity(orig, pruned), 1.0)
+            ExpressionEvaluator([x], metric="absolute", reduction="mean")
+            .sensitivity(orig, pruned), 1.0)
         self.assertAlmostEqual(
-            SensitivityPruner([x], metric="absolute", reduction="median")
-            ._sensitivity(orig, pruned), 0.0)
+            ExpressionEvaluator([x], metric="absolute", reduction="median")
+            .sensitivity(orig, pruned), 0.0)
         self.assertAlmostEqual(
-            SensitivityPruner([x], metric="absolute", reduction="p95")
-            ._sensitivity(orig, pruned), 3.4, places=6)  # 线性插值：0.95*(4-1)=2.85 -> 3.4
+            ExpressionEvaluator([x], metric="absolute", reduction="p95")
+            .sensitivity(orig, pruned), 3.4, places=6)  # 线性插值：0.95*(4-1)=2.85 -> 3.4
         self.assertAlmostEqual(
-            SensitivityPruner([x], metric="absolute", reduction="max")
-            ._sensitivity(orig, pruned), 4.0)
+            ExpressionEvaluator([x], metric="absolute", reduction="max")
+            .sensitivity(orig, pruned), 4.0)
 
     def test_all_nan_returns_zero(self):
-        p = SensitivityPruner([x])
-        s = p._sensitivity(np.array([np.nan]), np.array([np.nan]))
+        ev = ExpressionEvaluator([x])
+        s = ev.sensitivity(np.array([np.nan]), np.array([np.nan]))
         self.assertEqual(s, 0.0)
 
 
@@ -152,20 +167,32 @@ class PruneBehaviorTest(unittest.TestCase):
 
 class EvaluateCacheTest(unittest.TestCase):
     def test_repeated_evaluate_hits_cache(self):
-        p = SensitivityPruner([x], num_samples=10, seed=42)
+        ev = ExpressionEvaluator([x], num_samples=10, seed=42)
         expr = x + 1
-        r1 = p._evaluate(expr)
-        r2 = p._evaluate(expr)
+        r1 = ev.evaluate(expr)
+        r2 = ev.evaluate(expr)
         self.assertIs(r1, r2)  # 同一对象：命中 repr 缓存
 
+    def test_clear_cache_forces_recompute(self):
+        ev = ExpressionEvaluator([x], num_samples=10, seed=42)
+        r1 = ev.evaluate(x + 1)
+        ev.clear_cache()
+        r2 = ev.evaluate(x + 1)
+        self.assertIsNot(r1, r2)
+        np.testing.assert_array_equal(r1, r2)
+
     def test_evaluate_shapes(self):
-        p = SensitivityPruner([x, y], num_samples=15, seed=42)
-        self.assertEqual(p._evaluate(x + y).shape, (15,))
+        ev = ExpressionEvaluator([x, y], num_samples=15, seed=42)
+        self.assertEqual(ev.evaluate(x + y).shape, (15,))
+
+    def test_scalar_expression_broadcasts_to_samples(self):
+        ev = ExpressionEvaluator([x], num_samples=7, seed=42)
+        self.assertEqual(ev.evaluate(sp.Integer(3)).shape, (7,))
 
     def test_eval_fallback_slow_path(self):
         # 构造 lambdify 无法处理的形式（sp.zeta 无 numpy 对应）时走 subs 备用路径
-        p = SensitivityPruner([x], num_samples=5, seed=42)
-        vals = p._evaluate(sp.zeta(x))
+        ev = ExpressionEvaluator([x], num_samples=5, seed=42)
+        vals = ev.evaluate(sp.zeta(x))
         self.assertEqual(vals.shape, (5,))
 
 

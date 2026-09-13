@@ -17,64 +17,26 @@ sensitivity_prune.py
 
 贪心策略：在每个 Add/Mul 层，按平均绝对贡献从小到大依次判断，
 优先尝试移除最不重要的项，避免因高敏感项的存在掩盖低敏感项。
+
+模块分工（本文件只负责"遍历与决策"）
+------------------------------------
+* 求值与敏感度度量 → :mod:`drsr_420.analysis.expr_evaluation`（``ExpressionEvaluator``）；
+* 剪枝记录与统计   → :mod:`drsr_420.analysis.prune_stats`（``PruneStats``）；
+* 可视化演示       → ``python -m drsr_420.analysis.prune_demo``。
 """
 
 from __future__ import annotations
 
-import warnings
-from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 import numpy as np
 import sympy as sp
 
+from drsr_420.analysis.expr_evaluation import ExpressionEvaluator
+from drsr_420.analysis.prune_stats import PruneRecord, PruneStats
 
-# ─────────────────────────────────────────────────────────────
-# 数据类：记录与统计
-# ─────────────────────────────────────────────────────────────
+__all__ = ["SensitivityPruner", "sensitivity_prune", "PruneRecord", "PruneStats"]
 
-@dataclass
-class PruneRecord:
-    """单次剪枝操作的详细记录。"""
-    node_type: str      # 'term_of_Add' 或 'factor_of_Mul'
-    removed: sp.Expr    # 被移除的子表达式
-    sensitivity: float  # 该次剪枝时的敏感度值
-    depth: int          # 节点在树中的深度
-
-
-@dataclass
-class PruneStats:
-    """剪枝过程的统计汇总。"""
-    nodes_visited: int = 0
-    nodes_pruned: int = 0
-    records: List[PruneRecord] = field(default_factory=list)
-
-    @property
-    def prune_rate(self) -> float:
-        return self.nodes_pruned / self.nodes_visited if self.nodes_visited else 0.0
-
-    def summary(self) -> str:
-        bar = "─" * 58
-        lines = [
-            bar,
-            f"  节点访问数 : {self.nodes_visited}",
-            f"  节点剪枝数 : {self.nodes_pruned}",
-            f"  剪枝率     : {self.prune_rate:.1%}",
-        ]
-        if self.records:
-            lines += ["", "  已剪枝节点："]
-            for r in self.records:
-                lines.append(
-                    f"    [depth={r.depth:2d}] {r.node_type:20s} "
-                    f"sens={r.sensitivity:.2e}  removed: {r.removed}"
-                )
-        lines.append(bar)
-        return "\n".join(lines)
-
-
-# ─────────────────────────────────────────────────────────────
-# 核心类
-# ─────────────────────────────────────────────────────────────
 
 class SensitivityPruner:
     """
@@ -84,7 +46,7 @@ class SensitivityPruner:
     ----------
     symbols      : 表达式中的自由变量列表，决定采样维度。
     threshold    : 敏感度阈值，≤ 该值时执行剪枝（默认 0.05）。
-    num_samples  : 随机采样点数（默认 500）。
+    num_samples  : 随机采样点数（默认 100）。
     sample_range : 各变量的均匀采样区间（默认 [-3, 3]）。
     metric       : 敏感度指标，'relative'（相对）或 'absolute'（绝对）。
     reduction    : 采样点上的聚合方式，'max'/'mean'/'median'/'p95'。
@@ -108,32 +70,17 @@ class SensitivityPruner:
         reduction: str = "max",
         seed: Optional[int] = 42,
     ) -> None:
-        if not symbols:
-            raise ValueError("symbols 不能为空")
-        if metric not in ("relative", "absolute"):
-            raise ValueError("metric 须为 'relative' 或 'absolute'")
-        if reduction not in ("max", "mean", "median", "p95"):
-            raise ValueError("reduction 须为 'max'/'mean'/'median'/'p95'")
-
+        # 参数校验与采样网格都在求值器里（metric/reduction 只在这里被使用）
+        self.evaluator = ExpressionEvaluator(
+            symbols,
+            num_samples=num_samples,
+            sample_range=sample_range,
+            metric=metric,
+            reduction=reduction,
+            seed=seed,
+        )
         self.symbols = list(symbols)
         self.threshold = threshold
-        self.num_samples = num_samples
-        self.sample_range = sample_range
-        self.metric = metric
-        self.reduction = reduction
-        self.seed = seed
-
-        rng = np.random.default_rng(seed)
-        # shape: (num_samples, n_symbols)
-        self._samples: np.ndarray = rng.uniform(
-            sample_range[0], sample_range[1],
-            size=(num_samples, len(symbols)),
-        )
-        # 各列单独切片，供 lambdify 调用
-        self._pts: List[np.ndarray] = [
-            self._samples[:, i] for i in range(len(symbols))
-        ]
-        self._cache: dict = {}       # lambdify 缓存
         self.stats: PruneStats = PruneStats()
         self._verbose: bool = False
 
@@ -154,7 +101,7 @@ class SensitivityPruner:
         """
         self.stats = PruneStats()
         self._verbose = verbose
-        self._cache.clear()
+        self.evaluator.clear_cache()
 
         result = self._prune_node(expr, depth=0)
         result = sp.simplify(result)
@@ -262,7 +209,7 @@ class SensitivityPruner:
         # 按各项在采样点上的贡献排序（贡献小的优先尝试）。
         # 用 nanmedian 抗离群点；若全部无效则视为 0 贡献（最后再尝试移除）。
         def contrib(e):
-            v = self._evaluate(e)
+            v = self.evaluator.evaluate(e)
             valid = np.abs(v)[np.isfinite(v)]
             if len(valid) == 0:
                 return 0.0
@@ -296,9 +243,9 @@ class SensitivityPruner:
             parent_orig = build(kept)
             parent_pruned = build(others)
 
-            orig_vals = self._evaluate(parent_orig)
-            pruned_vals = self._evaluate(parent_pruned)
-            s = self._sensitivity(orig_vals, pruned_vals)
+            orig_vals = self.evaluator.evaluate(parent_orig)
+            pruned_vals = self.evaluator.evaluate(parent_pruned)
+            s = self.evaluator.sensitivity(orig_vals, pruned_vals)
             self.stats.nodes_visited += 1
 
             if s <= self.threshold:
@@ -312,88 +259,15 @@ class SensitivityPruner:
             else:
                 i += 1
 
-    # ── 求值 ─────────────────────────────────────────────────
-
-    def _evaluate(self, expr: sp.Expr) -> np.ndarray:
-        """
-        在所有采样点批量求值表达式。
-        优先 lambdify（NumPy 向量化），失败时逐点 subs 备用。
-        结果缓存以避免重复编译同一表达式。
-        """
-        # 以规范化字符串为缓存键：结构等价（repr 相同）的表达式可复用求值结果，
-        # 比 id(expr) 命中率更高（贪心循环中反复构造同类父节点）。
-        key = repr(expr)
-        if key in self._cache:
-            return self._cache[key]
-
-        result = self._eval_lambdify(expr)
-        self._cache[key] = result
-        return result
-
-    def _eval_lambdify(self, expr: sp.Expr) -> np.ndarray:
-        try:
-            f = sp.lambdify(self.symbols, expr, modules="numpy")
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                out = f(*self._pts)
-            if np.ndim(out) == 0:
-                return np.full(self.num_samples, float(out))
-            return np.asarray(out, dtype=float)
-        except Exception:
-            return self._eval_slow(expr)
-
-    def _eval_slow(self, expr: sp.Expr) -> np.ndarray:
-        """逐点 subs 求值（备用，适用于 lambdify 无法处理的情形）。"""
-        vals = []
-        for pt in self._samples:
-            sub = {sym: float(v) for sym, v in zip(self.symbols, pt)}
-            try:
-                v = complex(expr.subs(sub).evalf())
-                vals.append(v.real if abs(v.imag) < 1e-9 else np.nan)
-            except Exception:
-                vals.append(np.nan)
-        return np.array(vals, dtype=float)
-
-    # ── 敏感度计算 ───────────────────────────────────────────
-
-    def _sensitivity(self, orig: np.ndarray, pruned: np.ndarray) -> float:
-        """
-        计算 orig 与 pruned 之间的变化量作为敏感度。
-
-        metric     : 'relative' → 逐点相对变化 |Δ|/(|orig|+1e-12)；
-                     'absolute' → 逐点绝对变化 |Δ|。
-        reduction  : 采样点上的聚合方式。
-            max    : max_k |Δ_k|        （默认，最保守）
-            mean   : mean_k |Δ_k|
-            median : median_k |Δ_k|     （抗离群点）
-            p95    : 95% 分位 |Δ_k|     （忽略罕见尖峰）
-        """
-        diff = np.abs(orig - pruned)
-        if self.metric == "relative":
-            denom = np.abs(orig) + 1e-12
-            diff = diff / denom
-        valid = diff[np.isfinite(diff)]
-        if len(valid) == 0:
-            return 0.0
-        if self.reduction == "mean":
-            return float(np.mean(valid))
-        if self.reduction == "median":
-            return float(np.median(valid))
-        if self.reduction == "p95":
-            return float(np.percentile(valid, 95))
-        return float(np.max(valid))
-
     # ── 日志 ─────────────────────────────────────────────────
 
     def _log(self, depth: int, kind: str, expr: sp.Expr, s: float) -> None:
         if self._verbose:
             indent = "  " * depth
-            print(f"{indent}✂ [{kind}] {expr}  (sensitivity={s:.2e})")
+            # 不用剪刀等符号：GBK 控制台（Windows 默认代码页）编码不了，会直接抛
+            # UnicodeEncodeError 打断剪枝流程。
+            print(f"{indent}剪枝 [{kind}] {expr}  (sensitivity={s:.2e})")
 
-
-# ─────────────────────────────────────────────────────────────
-# 顶层便捷函数
-# ─────────────────────────────────────────────────────────────
 
 def sensitivity_prune(
     expr: sp.Expr,
@@ -448,68 +322,7 @@ def sensitivity_prune(
     return pruned, pruner.stats
 
 
-# ─────────────────────────────────────────────────────────────
-# 演示
-# ─────────────────────────────────────────────────────────────
-
-def _run_demo() -> None:
-    x, y, z = sp.symbols("x y z", real=True)
-    eps = sp.Rational(1, 1000)
-    SEP = "═" * 65
-
-    cases = [
-        (
-            "案例 1 · 多项式：含极小系数项",
-            x**3 + 2*x**2 + eps * x + eps**2,
-            [x], 0.01,
-            "预期：eps·x 和 eps²  被剪枝，保留 x³ + 2x²",
-        ),
-        (
-            "案例 2 · 三角函数：含微小高频项",
-            sp.sin(x) + sp.cos(x) + eps * sp.sin(50*x),
-            [x], 0.05,
-            "预期：eps·sin(50x) 被剪枝，保留 sin(x)+cos(x)",
-        ),
-        (
-            "案例 3 · 多变量：含可忽略交叉项",
-            x**2 + y**2 + z**2 + eps * x*y + eps**2 * x*y*z,
-            [x, y, z], 0.02,
-            "预期：两个交叉项被剪枝，保留 x²+y²+z²",
-        ),
-        (
-            "案例 4 · 乘积：含接近 1 的小扰动因子",
-            (1 + eps * x) * (x**2 + y**2) * sp.exp(-eps * y),
-            [x, y], 0.05,
-            "预期：(1+eps·x) 和 exp(-eps·y) 被剪枝，保留 x²+y²",
-        ),
-        (
-            "案例 5 · 嵌套：sin 内部含小扰动",
-            sp.sin(x + eps * y) + x**2 + eps**2 * z,
-            [x, y, z], 0.01,
-            "预期：eps²·z 被剪枝；sin 内部的 eps·y 视阈值可能被剪",
-        ),
-        (
-            "案例 6 · 负面：所有项均重要，不应剪枝",
-            x**2 + 2*x + 1,
-            [x], 0.01,
-            "预期：无项被剪枝",
-        ),
-    ]
-
-    for title, expr, syms, thr, hint in cases:
-        print(f"\n{SEP}\n  {title}\n{SEP}")
-        print(f"  表达式 : {expr}")
-        print(f"  阈值   : {thr}   ← {hint}\n")
-
-        pruned, stats = sensitivity_prune(
-            expr, syms, threshold=thr, verbose=True,
-        )
-
-        print(f"\n  原始 : {expr}")
-        print(f"  剪枝 : {pruned}")
-        print(f"  节点 : {stats.nodes_pruned} 已剪 / {stats.nodes_visited} 已访问  "
-              f"({stats.prune_rate:.0%})\n")
-
-
 if __name__ == "__main__":
-    _run_demo()
+    from drsr_420.analysis.prune_demo import main
+
+    main()

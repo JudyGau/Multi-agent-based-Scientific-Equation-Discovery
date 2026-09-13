@@ -20,9 +20,11 @@ MAX_TOKENS = None
 from drsr_420.agents.sampler_agent import (  # noqa: E402
     LLM,
     SamplerAgent as Sampler,
-    _extract_body,
-    _extract_code_fragment,
-    _MAX_BODY_RETRIES,
+)
+from drsr_420.agents.skeleton import (  # noqa: E402
+    MAX_BODY_RETRIES as _MAX_BODY_RETRIES,
+    extract_body as _extract_body,
+    extract_code_fragment as _extract_code_fragment,
 )
 from drsr_420.agents.coordinator_agent import (  # noqa: E402
     CoordinatorAgent as SamplingOrchestrator,
