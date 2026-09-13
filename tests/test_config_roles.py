@@ -4,7 +4,7 @@
 ==================
 重构前这套信息**在代码里没有任何一处声明**，只能靠 grep 反推；由此产生过两个
 真实故障：``analysis/explain.py`` 硬编码了一个不存在的档案文件名，异常被
-``try/except`` 吞掉后长期静默写出空的 ``explain.txt``；而 ``llm_explain.config`` /
+``try/except`` 吞掉后长期静默写出空的 ``explain.md``；而 ``llm_explain.config`` /
 ``llm_summary.config`` 这两个"想给特定角色换模型"的档案，因为旧结构**在原理上**
 无法表达该意图，一直无人读取。
 
@@ -90,7 +90,7 @@ class NoHardcodedProfileFilenameTest(unittest.TestCase):
             "drsr_420.llm.roles（角色 → 档案 的解析）：\n" + "\n".join(offenders))
 
     def test_explain_module_no_longer_loads_a_fixed_profile(self):
-        """回归：explain 曾硬编码一个**不存在**的档案，导致 explain.txt 恒为空。"""
+        """回归：explain 曾硬编码一个**不存在**的档案，导致 explain.md 恒为空。"""
         source = (_PKG_DIR / "analysis" / "explain.py").read_text(encoding="utf-8")
         self.assertNotIn("load_llm_config(", source,
                          "analysis/explain.py 不应自己加载固定档案，应经角色解析取客户端")
@@ -657,7 +657,7 @@ class ExplainRoleWiringTest(unittest.TestCase):
     """回归：物理解释必须用 ``explain`` 角色解析出的客户端。
 
     旧实现自建客户端并硬编码档案名，既绕过了 ``--llm_config`` / ``--role-config``，
-    也在档案不存在时静默产出空的 ``explain.txt``。
+    也在档案不存在时静默产出空的 ``explain.md``。
     """
 
     def _run(self, role_clients):
@@ -680,7 +680,7 @@ class ExplainRoleWiringTest(unittest.TestCase):
                  mock.patch("builtins.print"):
                 explain_mod.explain_best_sample(
                     str(results_root), "func", "7", role_clients=role_clients)
-            written = (results_root / "explain.txt").read_text(encoding="utf-8")
+            written = (results_root / "explain.md").read_text(encoding="utf-8")
 
         return captured, written
 

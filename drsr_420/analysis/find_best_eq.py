@@ -11,7 +11,7 @@
 
     find_best_eq(results_root)
       ├── find_best_sample()      扫描 samples/*.json 取最高分样本
-      ├── explain.explain_best_sample()      物理解释 → explain.txt（可失败，仅告警）
+      ├── explain.explain_best_sample()      物理解释 → explain.md（可失败，仅告警）
       └── prune_and_visualize()
             ├── expr_parse.expr_substitution()   骨架字符串 → SymPy 表达式
             ├── sensitivity_prune.SensitivityPruner.prune()  敏感度剪枝

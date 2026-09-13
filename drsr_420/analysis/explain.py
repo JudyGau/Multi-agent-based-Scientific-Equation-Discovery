@@ -1,4 +1,4 @@
-"""物理解释：让 LLM 对最优公式做逐项力学解释，并落盘 ``explain.txt``。
+"""物理解释：让 LLM 对最优公式做逐项力学解释，并落盘 ``explain.md``。
 
 角色归属
 --------
@@ -9,7 +9,7 @@
 * 输入：``experiences.json`` 里该样本的 Good 条目（含模型的思考过程与含参公式）；
 * LLM：通过 ReAct 循环（``explain_re_act``）调用，模型可自行发起 MCP 检索工具；
 * 增强：RAG 知识库注入相关文献摘要（库为空或检索失败则静默跳过）；
-* 产物：``<results_root>/explain.txt``。
+* 产物：``<results_root>/explain.md``。
 
 失败策略：任一环节（无经验文件 / 无匹配条目 / 提示词构造失败 / LLM 初始化失败 /
 保存失败）都只告警并返回，绝不抛出——收尾流程后面还有剪枝与可视化要做。
@@ -134,7 +134,7 @@ def build_explain_content(func: str, exp: dict) -> str | None:
 
 def explain_best_sample(results_root: str, func: str, sample_order: str,
                         role_clients=None) -> None:
-    """按 sample_order 匹配 Good 经验条目，调用 LLM 生成物理解释并落盘 explain.txt。
+    """按 sample_order 匹配 Good 经验条目，调用 LLM 生成物理解释并落盘 explain.md。
 
     任意环节失败（无经验文件 / 无匹配条目 / 提示词构造失败 / LLM 初始化失败）
     均只告警并返回，不抛出，避免影响后续剪枝流程。
@@ -144,7 +144,7 @@ def explain_best_sample(results_root: str, func: str, sample_order: str,
             省略时按 ``config/agents.config.json`` 自行解析——**不再硬编码档案
             文件名**。旧实现在这里写死了 ``deepseek_deepseek-v4-flash.config``，
             该文件在仓库中并不存在，异常被下面的 ``except`` 吞掉后静默写出空的
-            ``explain.txt``（物理解释长期失效且无人发现）。
+            ``explain.md``（物理解释长期失效且无人发现）。
     """
     exp_path = os.path.join(results_root, "experiences.json")
     try:
@@ -187,7 +187,7 @@ def explain_best_sample(results_root: str, func: str, sample_order: str,
     print_block(explain if explain is not None else "")
 
     try:
-        explain_out_path = os.path.join(results_root, "explain.txt")
+        explain_out_path = os.path.join(results_root, "explain.md")
         with open(explain_out_path, "w", encoding="utf-8") as f:
             f.write(explain or "")
         print(f"[INFO] Saved explain to: {explain_out_path}")
