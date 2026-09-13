@@ -373,12 +373,32 @@ env["DRSR_ROLE_CONFIG_SUMMARY"] = <resolver 解析出的绝对路径>
   来源列被挤成 `...flashregistry:roles.explain.config` 连字。表头/表体列宽改为
   由数据算出，档案名再长也不会连字（有回归测试）。
 
-### 10.5 指标
+### 10.6 端点键名统一为 base_url（追加）
+
+同一件事曾有两个拼写：LLM 档案里 `host` 与 `base_url` 并存（`base_url` 优先），
+RAG 侧则是 `api_host`。现在统一为 `base_url` / `api_base_url`，**旧拼写一律报错**：
+
+* `normalize_llm_config`：出现 `host` → `ValueError`，错误信息里带"改名为 base_url"；
+* `rag_kb.load_config`：出现 `api_host` → `ValueError`（`_RENAMED_KEYS` 表驱动）。
+
+**为什么是报错而不是静默兼容？** 因为静默忽略旧键的后果不是"少个功能"，而是
+**连到别的地方去**：内置提供商自带默认端点，档案里的 `host` 被忽略后请求会悄悄打到
+默认地址；RAG 侧则更隐蔽——`api_base_url` 留空使 URL 变成 `/embeddings`，报一个与
+"键名写错"毫无关系的 `MissingSchema`。既然改名成本只有一行，就让它在启动瞬间响亮地
+失败，并把改法写在错误里。
+
+护栏：`test_config_roles.py` 扫描随仓库分发的模板，禁止出现这两个旧键名（只查键名，
+不做子串匹配——`base_url` 自己就含 "url"，`api_base_url` 是统一后的对应写法）；
+`test_llm_custom_provider.py` 覆盖 scheme 补齐/保留、``host`` 与 `base_url` 同时出现的
+残留配置也被拒；`test_mcp_and_rag_cli.py` 覆盖 RAG 侧的键名迁移。
+
+### 10.7 指标
 
 | 指标 | 阶段 8 结束时 | 现在 |
 |---|---|---|
-| 测试数 | 418 | **445** |
+| 测试数 | 418 | **455** |
 | 全局最长文件 | 482（`llm/client.py`） | **472**（方言适配搬进 `adapt.py` 后反而变短） |
 | `llm/` 层 | 9 文件 / 1818 行 | 10 文件 / 2001 行 |
 | 入库的配置模板 | 4 | **5**（新增 USTC 自定义提供商；`deepseek-v4-pro` 按用户要求下线、换成 `deepseek-v4-flash`） |
 | 建档无需改代码即可接入的端点 | 7（内置） | **任意 OpenAI 兼容端点** |
+| 端点的键名拼写 | `host` / `base_url` / `api_host` 三种 | **`base_url` / `api_base_url` 两种**（旧拼写报错） |

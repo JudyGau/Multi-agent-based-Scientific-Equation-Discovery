@@ -1,5 +1,5 @@
 {
-  "host": "https://open.bigmodel.cn/api/ants/v1",
+  "base_url": "https://open.bigmodel.cn/api/ants/v1",
   "api_key": "",
   "model": "glm/glm-5.3-flash",
   "max_tokens": 65536,

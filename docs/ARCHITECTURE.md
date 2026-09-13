@@ -355,11 +355,15 @@ python -m drsr_420.analysis.prune_demo
 
 | | 问题 | 在哪 | 是否入库 |
 |---|---|---|---|
-| Q1 | 连接谁？用哪把钥匙？ | `config/<提供商>_<模型>.config` 的 `host` / `api_key` | ✗（`*.config` 被 `.gitignore` 忽略） |
+| Q1 | 连接谁？用哪把钥匙？ | `config/<提供商>_<模型>.config` 的 `base_url` / `api_key` | ✗（`*.config` 被 `.gitignore` 忽略） |
 | Q2 | 生成参数是什么？ | 同一档案的 `model` / `temperature` / `max_tokens` … | 随 Q1 同文件 |
 | Q3 | **哪个角色用哪套？覆盖什么？** | `config/agents.config.json` | ✓（无密钥，需 review） |
 
 **扩展名本身就是保密边界**：`.json` 可入库、`.config` 不入库、`.config.example` 是模板。
+
+键名同样定死：**端点统一叫 `base_url`**（RAG 档案里是 `api_base_url`）。旧拼写 `host` /
+`api_host` 已下线——出现即报错并提示改名，不做静默兼容：内置提供商自带默认端点，
+忽略旧键会让请求悄悄打到默认地址而不是用户写的那一个。
 
 ### 10.1 六个角色
 
@@ -432,7 +436,7 @@ provider 段**不在**这张表里时不再报错，而是走**自定义提供�
 
 | 字段 | 作用 | 缺省 |
 |---|---|---|
-| `base_url`（别名 `host`） | 端点；自定义提供商**必填** | 内置提供商用自己的默认值 |
+| `base_url` | 端点；自定义提供商**必填**（旧拼写 `host` 已下线，写了报错） | 内置提供商用自己的默认值 |
 | `api_key_env` | 密钥环境变量名 | 按 provider 段派生（`ustc` → `USTC_API_KEY`） |
 | `api_key_required` | 是否强制要求密钥 | 内置表的约定；自定义提供商默认 `true`（本地免鉴权写 `false`） |
 | `dialect` | 请求体方言：`openai` / `glm` / `deepseek` / `ollama` | `openai`（不认识的一律不发） |

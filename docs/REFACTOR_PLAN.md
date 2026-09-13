@@ -1003,17 +1003,20 @@ Q1（连接谁 / 用哪把钥匙），按 §14 的三层分红本就归档案。
 
 顺带修掉：`extra_body` 从死字段（工厂不注入、适配层又 pop，模板里写了从没上线）变成
 **最后并入请求体**的显式出口；`--check` 的密钥问题不再误导性地提示 `cp`；角色表列宽
-改为按内容算（26 字符的档案名会把来源列挤成连字）。
+改为按内容算（26 字符的档案名会把来源列挤成连字）；端点键名统一为 `base_url`
+（LLM 侧去掉 `host` 别名、RAG 侧 `api_host` → `api_base_url`，旧拼写**报错**而非静默
+忽略——忽略会让请求打到默认端点，或报出与键名无关的 `MissingSchema`）。
 
 ### 15.1 阶段 9 指标
 
 | 指标 | 阶段 8 结束时 | 现在 |
 |---|---|---|
-| 测试数 | 418 | **445**（`tests/test_llm_custom_provider.py` 19 项 + 模板可构造/密钥报错/列宽等） |
+| 测试数 | 418 | **455**（`tests/test_llm_custom_provider.py` 23 项 + 模板可构造/密钥报错/列宽/键名迁移等） |
 | 全局最长文件 | 482（`llm/client.py`） | **472**（`llm/client.py`） |
 | `llm/` 层 | 9 文件 / 1818 行 | 10 文件 / 2001 行（新增 `adapt.py`） |
 | 入库的配置模板 | 4 | **5** |
 | 建档即可接入的端点 | 7 个内置 | **任意 OpenAI Chat Completions 兼容端点** |
+| 端点的键名拼写 | `host` / `base_url` / `api_host` | **统一为 base_url 系** |
 
 完整设计与取舍见 [`CONFIG_PLAN.md`](./CONFIG_PLAN.md) §10，架构摘要见
 [`ARCHITECTURE.md`](./ARCHITECTURE.md) §10.5。

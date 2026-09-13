@@ -5,7 +5,7 @@
     "think 布尔（见 drsr_420/llm/adapt.py），因此这里不需要写 extra_body/enable_thinking。",
     "extra_body 的语义是「原样并入请求体」，只用于某个端点独有的私有字段。"
   ],
-  "host": "http://localhost:8081/v1",
+  "base_url": "http://localhost:8081/v1",
   "api_key": "",
   "model": "ollama/Qwen3.8-27B-UD-IQ4_XS",
   "max_completion_tokens": 65536,

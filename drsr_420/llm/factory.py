@@ -136,17 +136,22 @@ def parse_provider_model(model_str: str) -> Tuple[str, str]:
 
 
 def normalize_llm_config(config: dict) -> dict:
-    """统一规范化 LLM 配置，消除 host/base_url 双键与缺 scheme 等历史混乱。
+    """统一规范化 LLM 配置：拒绝已废弃的 ``host``、补齐 scheme、校验 ``model``。
 
-    - ``base_url`` 与 ``host`` 兼容：两者都存在时 ``base_url`` 优先，输出统一为 ``base_url``；
+    - ``host`` 曾是 ``base_url`` 的**同一字段的另一种拼写**，现已统一为 ``base_url``：
+      出现 ``host`` 即报错并给出改名提示。刻意不做静默兼容——内置提供商自带默认端点，
+      忽略 ``host`` 会让请求悄悄打到默认地址，而不是用户写的那一个（自建/代理端点
+      尤其致命，且完全没有信号）；
     - 无 scheme 的地址自动补 ``https://``，避免 requests 报 "No scheme supplied"；
     - 校验 ``model`` 必须是 'provider/model' 格式，配置错误尽早暴露。
 
     返回规范化后的新 dict，不改动入参。
     """
     cfg = dict(config)
-    if not cfg.get('base_url') and cfg.get('host'):
-        cfg['base_url'] = cfg['host']
+    if 'host' in cfg:
+        raise ValueError(
+            f'配置键 "host" 已废弃，请改名为 "base_url"（收到 host={cfg["host"]!r}）。'
+            f'两者只是同一字段的两种拼写，现已统一为 base_url。')
     base_url = cfg.get('base_url')
     if isinstance(base_url, str) and base_url.strip() and '://' not in base_url:
         cfg['base_url'] = 'https://' + base_url.strip()
@@ -208,8 +213,8 @@ class ClientFactory:
         基于 'provider/model' 创建具体客户端。
 
         必填：config['model']（形如 'provider/model'）。
-        选填：config['api_key']、config['base_url']（或兼容别名 'host'）。
-        配置先经 normalize_llm_config 统一规范化（host/base_url 兼容、补齐 scheme）。
+        选填：config['api_key']、config['base_url']。
+        配置先经 normalize_llm_config 统一规范化（补齐 scheme；``host`` 已废弃并会报错）。
 
         **自定义提供商**：provider 段不在内置表里时，只要给了 ``base_url`` 就照常构造
         （走 :class:`OpenAICompatClient`）。另有两个只对自定义提供商有意义的字段：

@@ -36,7 +36,7 @@ def _build_client(config):
     """构建 ``summary`` 角色客户端（含该角色声明的私有参数）。
 
     使用项目自研客户端（基于 requests），兼容 api_key 为空串的本地服务；
-    host/base_url 双键与 scheme 补齐由 ClientFactory 内部统一规范化；
+    base_url 的 scheme 补齐由 ClientFactory 内部统一规范化（``host`` 拼写已废弃）；
     ``temperature`` / ``top_p`` 之类的角色参数来自配置注册表，不再写死在本文件里。
     """
     return llm.ClientFactory.from_config(

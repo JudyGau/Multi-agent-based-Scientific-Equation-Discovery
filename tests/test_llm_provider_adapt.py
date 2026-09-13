@@ -231,7 +231,7 @@ class ClientFactoryTaskParamsTest(unittest.TestCase):
         # 新克隆的仓库里根本不存在）——那会让本测试只在特定机器上通过。
         # 用内联构造的配置，令测试与本机凭据解耦。
         cfg = {
-            'host': 'https://open.bigmodel.cn/api/paas/v4',
+            'base_url': 'https://open.bigmodel.cn/api/paas/v4',
             'api_key': 'test-key-not-secret',
             'model': 'glm/glm-5.3-flash',
             'tasks': {
@@ -247,7 +247,7 @@ class ClientFactoryTaskParamsTest(unittest.TestCase):
         self.assertEqual(client.task_params['residual'], {'reasoning_effort': 'high'})
 
     def test_config_without_tasks_keeps_empty(self):
-        cfg = {'host': 'https://test-host/v1', 'api_key': 'k', 'model': 'glm/test'}
+        cfg = {'base_url': 'https://test-host/v1', 'api_key': 'k', 'model': 'glm/test'}
         client = llm.ClientFactory.from_config(cfg)
         self.assertEqual(client.task_params, {})
 

@@ -1,6 +1,9 @@
 {
+  "_comment": [
+    "端点统一用 api_base_url（旧拼写 api_host 已废弃，写了会直接报错并提示改名）。"
+  ],
   "backend": "api",
-  "api_host": "https://api.siliconflow.cn/v1",
+  "api_base_url": "https://api.siliconflow.cn/v1",
   "api_key": "",
   "api_model": "BAAI/bge-m3",
   "embed_batch_size": 32,

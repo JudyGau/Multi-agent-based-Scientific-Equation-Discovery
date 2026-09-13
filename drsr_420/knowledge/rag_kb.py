@@ -19,7 +19,7 @@ import numpy as np
 DEFAULT_CONFIG = {
     "backend": "local",                # local | api
     "model": "BAAI/bge-small-zh-v1.5",  # 本地模型名，或 api 后端模型名
-    "api_host": "",
+    "api_base_url": "",
     "api_key": "",
     "api_model": "bge-m3",
     "chunk_size": 500,
@@ -55,17 +55,40 @@ def _resolve_config_path(path: str | None = None) -> Path:
     return locate_config(path or _CONFIG_NAME)
 
 
+#: 已废弃的配置键 -> 现用键。
+#: RAG 端点与 LLM 档案统一用 ``base_url`` 命名（``*_host`` 这类拼写全部下线）。
+_RENAMED_KEYS = {"api_host": "api_base_url"}
+
+
+def _reject_renamed_keys(loaded: dict, source) -> None:
+    """档案里出现已废弃的键名时报错，并把改名方法写在错误里。"""
+    for old, new in _RENAMED_KEYS.items():
+        if old in loaded:
+            raise ValueError(
+                f"{source} 里的配置键 {old!r} 已废弃，请改名为 {new!r}"
+                f"（收到 {old}={loaded[old]!r}）。端点统一用 base_url 命名。")
+
+
 def load_config(path: str | None = None) -> dict:
-    """读取配置档案，缺失时使用内置默认值。"""
+    """读取配置档案，缺失时使用内置默认值。
+
+    Raises:
+        ValueError: 档案里用了已废弃的键名（见 :data:`_RENAMED_KEYS`）。静默忽略旧键
+            会让嵌入请求打到一个空地址，所以这里必须响亮地失败并给出改名方法。
+    """
     cfg = dict(DEFAULT_CONFIG)
     resolved = _resolve_config_path(path)
     try:
         with open(resolved, "r", encoding="utf-8") as f:
-            cfg.update(json.load(f))
+            loaded = json.load(f)
     except FileNotFoundError:
         print(f"[RAG] 配置文件不存在: {resolved}，使用默认配置")
+        return cfg
     except Exception as e:
         print(f"[RAG] 读取 {path} 失败，使用默认配置: {e}")
+        return cfg
+    _reject_renamed_keys(loaded, resolved)
+    cfg.update(loaded)
     return cfg
 
 
@@ -106,13 +129,13 @@ class APIEmbedder(EmbeddingModel):
     并可在请求批次间加入固定间隔，避免触发服务端 429。
     """
 
-    def __init__(self, api_host: str, api_key: str, api_model: str,
+    def __init__(self, api_base_url: str, api_key: str, api_model: str,
                  batch_size: int = 64,
                  max_retries: int = 6,
                  backoff_base: float = 1.0,
                  batch_interval: float = 0.3,
                  query_prefix: str = ""):
-        self._api_host = api_host.rstrip("/")
+        self._api_base_url = api_base_url.rstrip("/")
         self._api_key = api_key
         self._api_model = api_model
         self._api_prefix = query_prefix or ""
@@ -162,7 +185,7 @@ class APIEmbedder(EmbeddingModel):
         # api 后端同样支持 query_prefix（此前仅 local 生效，两后端行为分叉）
         if self._api_prefix and is_query:
             texts = [self._api_prefix + t for t in texts]
-        url = f"{self._api_host}/embeddings"
+        url = f"{self._api_base_url}/embeddings"
         headers = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
@@ -183,18 +206,18 @@ _embedder_state = None  # (key, embedder) 元组，整体原子替换（见 get_
 _embedder_lock = threading.Lock()
 
 
-def _env_key_for_host(api_host: str) -> str:
-    """按 API 主机推断提供商环境变量名并读取密钥（api_key 留空时回退）。"""
-    host = (api_host or "").lower()
-    if "bigmodel" in host or "zhipu" in host:
+def _env_key_for_base_url(api_base_url: str) -> str:
+    """按 API 端点推断提供商环境变量名并读取密钥（api_key 留空时回退）。"""
+    url = (api_base_url or "").lower()
+    if "bigmodel" in url or "zhipu" in url:
         return os.getenv("ZHIPU_API_KEY", "")
-    if "siliconflow" in host:
+    if "siliconflow" in url:
         return os.getenv("SILICONFLOW_API_KEY", "")
-    if "deepseek" in host:
+    if "deepseek" in url:
         return os.getenv("DEEPSEEK_API_KEY", "")
-    if "deepinfra" in host:
+    if "deepinfra" in url:
         return os.getenv("DEEPINFRA_API_KEY", "")
-    if "openai" in host:
+    if "openai" in url:
         return os.getenv("OPENAI_API_KEY", "")
     return ""
 
@@ -203,8 +226,8 @@ def get_embedder(config=None) -> EmbeddingModel:
     """进程级懒加载单例（仅首次调用才构造/加载模型，双重检查锁定）。"""
     global _embedder_state
     cfg = config or load_config()
-    api_key = cfg.get("api_key") or _env_key_for_host(cfg.get("api_host", ""))
-    key = (cfg.get("backend"), cfg.get("model"), cfg.get("api_host"),
+    api_key = cfg.get("api_key") or _env_key_for_base_url(cfg.get("api_base_url", ""))
+    key = (cfg.get("backend"), cfg.get("model"), cfg.get("api_base_url"),
            api_key, cfg.get("api_model"), cfg.get("query_prefix"))
     state = _embedder_state
     if state is not None and state[0] == key:
@@ -216,7 +239,7 @@ def get_embedder(config=None) -> EmbeddingModel:
             return state[1]
         if cfg.get("backend") == "api":
             embedder = APIEmbedder(
-                cfg.get("api_host", ""), api_key, cfg.get("api_model", "bge-m3"),
+                cfg.get("api_base_url", ""), api_key, cfg.get("api_model", "bge-m3"),
                 batch_size=cfg.get("embed_batch_size", 64),
                 max_retries=cfg.get("embed_max_retries", 6),
                 backoff_base=cfg.get("embed_backoff_base", 1.0),

@@ -17,7 +17,9 @@
 2. 未知 provider 段 + 无 ``base_url`` ⇒ 报错必须**教人怎么接进来**，而不是只列内置表；
 3. 密钥解析要有确定规则：``api_key`` > ``api_key_env`` > 按 provider 段派生的
    环境变量（``ustc`` -> ``USTC_API_KEY``），且报错信息里必须是**具体变量名**；
-4. 内置提供商的行为逐位不变（这轮只加了一条新路径，没动老路径）。
+4. 端点键名统一为 ``base_url``：``host`` 已下线，出现即报错并给出改名提示
+   （静默忽略它比报错危险得多——内置提供商有默认端点，请求会悄悄打到别处）；
+5. 内置提供商的行为逐位不变（这轮只加了一条新路径，没动老路径）。
 
 全部断言不依赖本机凭据，也不发起网络请求。
 """
@@ -70,11 +72,15 @@ class CustomProviderTest(unittest.TestCase):
         self.assertNotIn("reasoning_effort", payload)
         self.assertNotIn("thinking", payload)
 
-    def test_host_alias_also_works_for_custom_providers(self):
-        """``host`` 是 ``base_url`` 的历史别名，自定义提供商同样吃。"""
-        client = ClientFactory.from_config(
-            {"model": "ustc/x", "host": "api.llm.ustc.edu.cn/v1", "api_key": "k"})
-        self.assertEqual(client.base_url, "https://api.llm.ustc.edu.cn/v1")
+    def test_deprecated_host_key_is_rejected_with_a_rename_hint(self):
+        """``host`` 已下线：静默忽略它会让请求打到内置默认端点，而不是配置里那个。"""
+        with self.assertRaises(ValueError) as ctx:
+            ClientFactory.from_config(
+                {"model": "ustc/x", "host": "api.llm.ustc.edu.cn/v1", "api_key": "k"})
+        message = str(ctx.exception)
+        self.assertIn("host", message)
+        self.assertIn("base_url", message)          # 报错要自带改名方法
+        self.assertIn("api.llm.ustc.edu.cn/v1", message)
 
     def test_no_base_url_error_teaches_how_to_add_one(self):
         """报错必须可操作：服务器里爬不到"原来还能自定义提供商"。"""
@@ -182,6 +188,43 @@ class CustomProviderDialectTest(unittest.TestCase):
                     cfg.pop("api_key")
                 self.assertEqual(
                     ClientFactory.from_config(cfg).dialect, expected)
+
+
+class BaseUrlNamingTest(unittest.TestCase):
+    """端点键名统一为 ``base_url``：``host`` 这条旧拼写已下线。
+
+    统一的是**同一个字段的两种拼写**（不是两个字段），所以"两个都写"也算残留配置，
+    一样报错——否则迁移会停在半路，而 `host` 从此没人再看一眼。
+    """
+
+    def test_scheme_is_added_when_missing(self):
+        client = ClientFactory.from_config(
+            {"model": "glm/x", "base_url": "open.bigmodel.cn", "api_key": "k"})
+        self.assertEqual(client.base_url, "https://open.bigmodel.cn")
+
+    def test_whitespace_is_stripped_before_scheme_completion(self):
+        client = ClientFactory.from_config(
+            {"model": "glm/x", "base_url": "  open.bigmodel.cn  ", "api_key": "k"})
+        self.assertEqual(client.base_url, "https://open.bigmodel.cn")
+
+    def test_existing_scheme_is_preserved(self):
+        client = ClientFactory.from_config(
+            {"model": "local/x", "base_url": "http://localhost:8000/v1",
+             "api_key_required": False})
+        self.assertEqual(client.base_url, "http://localhost:8000/v1")
+
+    def test_host_is_rejected_even_when_base_url_is_also_present(self):
+        with self.assertRaises(ValueError) as ctx:
+            ClientFactory.from_config(
+                {"model": "glm/x", "base_url": "https://a/v1", "host": "https://b/v1",
+                 "api_key": "k"})
+        self.assertIn("base_url", str(ctx.exception))
+
+    def test_normalize_does_not_mutate_the_input_dict(self):
+        original = {"model": "glm/x", "base_url": "open.bigmodel.cn"}
+        snapshot = dict(original)
+        factory_mod.normalize_llm_config(original)
+        self.assertEqual(original, snapshot)
 
 
 class ShippedCustomProviderTest(unittest.TestCase):

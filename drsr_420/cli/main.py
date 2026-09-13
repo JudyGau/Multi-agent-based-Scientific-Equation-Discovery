@@ -398,7 +398,7 @@ def main(argv: list[str] | None = None) -> int:
         "llm": {
             "provider": client._provider_name() if client else None,
             "model": client.model if client else llm_config.get('model', ''),
-            "host": (client.base_url if client else '') or llm_config.get('base_url', ''),
+            "base_url": (client.base_url if client else '') or llm_config.get('base_url', ''),
             "api_key": ("***" if (client and client.api_key) else ""),
             "kwargs": getattr(client, 'kwargs', None) if client else None,
             # 每个角色最终生效的档案与来源（含 --role-config / 环境变量 / 注册表默认），

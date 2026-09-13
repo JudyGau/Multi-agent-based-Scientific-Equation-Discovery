@@ -196,6 +196,21 @@ class ShippedRegistryTest(unittest.TestCase):
             checked += 1
         self.assertGreaterEqual(checked, 2, "至少要检查到默认档案与自定义提供商档案")
 
+    def test_shipped_configs_use_the_unified_base_url_key(self):
+        """端点键名统一：随仓库分发的档案里不得再出现 ``host`` / ``api_host``。
+
+        只看**键名**、不做子串匹配——``base_url`` 自己就含 "url"，而 RAG 侧的
+        ``api_base_url`` 正是同一次统一的对应写法。代码侧由 factory / rag_kb 的
+        报错（含改名提示）兜底：旧键不是"还能用"，而是"写了就报错"。
+        """
+        renamed = {"host": "base_url", "api_host": "api_base_url"}
+        for path in sorted(_CONFIG_DIR.glob("*.config.example")):
+            data = json.loads(path.read_text(encoding="utf-8"))
+            for old, new in renamed.items():
+                with self.subTest(config=path.name, key=old):
+                    self.assertNotIn(old, data,
+                                     f"{path.name} 仍用旧键名 {old!r}，应改为 {new!r}")
+
 
 class RoleRegistryLoadingTest(unittest.TestCase):
     """注册表的加载与校验。"""

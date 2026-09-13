@@ -2,6 +2,7 @@
 
 覆盖：
 - rag_build CLI：--ingest 方向不再反转（只 --query 不得触发入库）；--dir 按项目根解析；
+- rag_kb 配置键名：端点统一为 ``api_base_url``，旧的 ``api_host`` 写了就报错（含改名提示）；
 - rag_kb.chunk_text：超长段硬切不再重复当前块、硬切片段之间保留 overlap；
 - read_paper._doi_filename：DOI 路径穿越/绝对路径净化，且常见 DOI 文件名向后兼容；
 - read_paper._summarize_text：max_tokens 回退、工具调用/空内容显式报错；
@@ -16,6 +17,7 @@ import unittest
 from unittest import mock
 
 from drsr_420.knowledge import rag_build
+from drsr_420.knowledge import rag_kb
 from drsr_420.knowledge.rag_kb import chunk_text, DEFAULT_CONFIG
 from drsr_420.knowledge.tools import read_paper as rp
 from drsr_420.knowledge.tools import mcp_server as ms
@@ -183,6 +185,49 @@ class McpServerErrorWrappingTest(unittest.TestCase):
     def test_read_paper_passthrough(self):
         with mock.patch.object(ms, "_read_paper_impl", return_value="[]") as impl:
             self.assertEqual(ms.read_paper([["t", "d"]]), "[]")
+
+
+class RagConfigNamingTest(unittest.TestCase):
+    """端点键名统一为 base_url：``api_host`` 已废弃，写了必须报错而不是被静默忽略。
+
+    静默忽略的后果很隐蔽：`api_base_url` 留空 → 请求 URL 变成 ``/embeddings`` →
+    报一个与"键名写错"毫无关系的 MissingSchema。
+    """
+
+    def _write(self, payload: dict) -> str:
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile("w", suffix=".config", delete=False,
+                                          encoding="utf-8")
+        json.dump(payload, tmp)
+        tmp.close()
+        self.addCleanup(os.unlink, tmp.name)
+        return tmp.name
+
+    def test_default_config_uses_base_url(self):
+        self.assertIn("api_base_url", DEFAULT_CONFIG)
+        self.assertNotIn("api_host", DEFAULT_CONFIG)
+
+    def test_base_url_key_is_accepted(self):
+        path = self._write({"backend": "api",
+                            "api_base_url": "https://api.siliconflow.cn/v1"})
+        cfg = rag_kb.load_config(path)
+        self.assertEqual(cfg["api_base_url"], "https://api.siliconflow.cn/v1")
+
+    def test_renamed_api_host_key_is_rejected_with_a_hint(self):
+        path = self._write({"backend": "api",
+                            "api_host": "https://api.siliconflow.cn/v1"})
+        with self.assertRaises(ValueError) as ctx:
+            rag_kb.load_config(path)
+        message = str(ctx.exception)
+        self.assertIn("api_host", message)
+        self.assertIn("api_base_url", message)      # 报错要自带改名方法
+
+    def test_env_key_inference_follows_the_renamed_field(self):
+        with mock.patch.dict(os.environ, {"SILICONFLOW_API_KEY": "env-key"}):
+            self.assertEqual(
+                rag_kb._env_key_for_base_url("https://api.siliconflow.cn/v1"),
+                "env-key")
+        self.assertEqual(rag_kb._env_key_for_base_url("https://unknown.example/v1"), "")
 
 
 if __name__ == "__main__":
