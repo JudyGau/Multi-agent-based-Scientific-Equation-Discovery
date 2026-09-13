@@ -51,7 +51,8 @@ class ResidualAnalyzerAgent(BaseAgent):
         CoordinatorAgent 在落盘前补齐——本 Agent 不掌握这些信息。
         """
         print("========================进入了残差分析函数========================")
-        # 计算残差的统计信息
+        # 计算残差的统计信息（供日志与后续扩展；当前提示词模板只用残差矩阵本身，
+        # 因而这三个量不进提示词——不要误以为它们已被使用）
         res_values = residual[:, -1]  # 最后一列是残差值
         mean_res = np.mean(res_values)
         max_res = np.max(np.abs(res_values))
