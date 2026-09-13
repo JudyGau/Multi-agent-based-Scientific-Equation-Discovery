@@ -63,7 +63,7 @@
       "params": {"reasoning_effort": "high"}
     },
     "summary": {
-      "config": "ustc_deepseek-v4-flash",
+      "config": "dashscope_qwen3.7-flash",
       "params": {
         "reasoning_effort": "high",
         "temperature": 0.4,
