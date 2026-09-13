@@ -1,6 +1,7 @@
 """LLM 客户端：请求发送、指数退避重试、流式解析、token 记账与参数适配。
 
-提供商子类见 ``providers.py``；实例构造与配置归一化见 ``factory.py``。
+提供商子类见 ``providers.py``；实例构造与配置归一化见 ``factory.py``；
+**请求体方言适配**（哪个提供商把 `思考强度` 拼成什么字段）见 ``adapt.py``。
 """
 import copy
 import json
@@ -12,6 +13,7 @@ from typing import Dict, List, Tuple
 import requests
 
 from drsr_420.core.llm_stats import _accumulate_global_stats
+from drsr_420.llm.adapt import adapt_payload
 from drsr_420.llm.tools_schema import tools
 
 
@@ -90,6 +92,9 @@ class LLMClient:
         self.model = model
         self.base_url = base_url
         self.provider = (provider or '').lower()
+        # 请求体方言（见 adapt.py）：由 ClientFactory 按档案的 ``dialect`` 字段设置。
+        # 留空表示"按 provider 名推断"——直接构造客户端的调用方（含单测）行为不变。
+        self.dialect = ''
         # 生成参数（temperature/top_p/max_tokens 等）
         self.kwargs = {
             'temperature': 0.5,
@@ -120,7 +125,13 @@ class LLMClient:
         避免不同任务（采样/经验/残差/分析/解释）互相覆盖生成参数。
         """
         new_client = copy.copy(self)
-        new_client.kwargs = dict(self.kwargs)
+        # 字典/列表值必须深拷贝：``extra_body``、``thinking``、``stop`` 是嵌套结构，
+        # 浅拷贝会让"克隆"与原件共享同一个内层 dict——改一个克隆就改掉全部克隆，
+        # 正是本方法要根除的那类串味（历史上三个用途的参数互相覆盖过）。
+        new_client.kwargs = {
+            k: (copy.deepcopy(v) if isinstance(v, (dict, list)) else v)
+            for k, v in self.kwargs.items()
+        }
         for k, v in (self.task_params.get(task_name) or {}).items():
             if v is not None:
                 new_client.kwargs[k] = v
@@ -172,45 +183,24 @@ class LLMClient:
         for key in ('max_tokens', 'max_completion_tokens'):
             if isinstance(payload.get(key), int) and payload[key] > 65536:
                 payload[key] = 65536
+        # extra_body 的语义（沿用 openai SDK）是"把这些键**并入**请求体"，而不是一个
+        # 发给服务的字段。它必须最后并入——那是调用方对具体端点能力的显式声明
+        # （如自建 vLLM 的 chat_template_kwargs），方言规则不应把它删掉。
+        extra = payload.pop('extra_body', None)
         self._adapt_payload(payload)
+        if isinstance(extra, dict):
+            payload.update(extra)
         return payload
 
     def _adapt_payload(self, payload: dict) -> None:
-        """按提供商修正请求体，兼容非标准 OpenAI 接口。
+        """按方言修正请求体（方言规则集中在 :mod:`drsr_420.llm.adapt`）。
 
-        思考强度（reasoning_effort/thinking）为跨提供商的语义参数，由调用点按任务
-        注入 kwargs，此处按提供商翻译成各自合法的请求字段；不支持的提供商静默忽略，
-        保证 OpenAI 兼容模型均可切换。
+        思考强度（reasoning_effort/thinking）是跨提供商的语义参数，由角色解析按任务
+        注入 kwargs，此处翻译成该方言合法的请求字段。方言来自档案的 ``dialect`` 字段
+        （由 ClientFactory 设置）；未设置时按 provider 名推断——因此直接构造客户端的
+        调用方（含单测）行为不变。
         """
-        provider = self._provider_name()
-        effort = payload.get('reasoning_effort')
-        # 通用：extra_body 为 openai SDK 专用字段，一律移除
-        payload.pop('extra_body', None)
-
-        if provider == 'glm':
-            # 智谱 v4：输出上限字段名为 max_tokens；thinking 开启时 reasoning_effort 生效
-            if 'max_completion_tokens' in payload:
-                mc = payload.pop('max_completion_tokens')
-                if mc is not None:  # None 表示调用方未设置：不得覆盖已配置的 max_tokens
-                    payload['max_tokens'] = mc
-            if effort:
-                payload['thinking'] = {'type': 'enabled'}
-            return
-        # 非智谱提供商不支持 'thinking' 字段，一律移除
-        payload.pop('thinking', None)
-        if provider == 'deepseek':
-            # DeepSeek 官方支持 reasoning_effort（low/medium/high）
-            if not effort:
-                payload.pop('reasoning_effort', None)
-            return
-        if provider == 'ollama':
-            # Ollama 用 think 布尔控制思考（reasoning_effort 不支持）
-            payload.pop('reasoning_effort', None)
-            if effort:
-                payload['think'] = True
-            return
-        # 其余提供商（siliconflow/deepinfra/blt/cstcloud）：不支持思考强度参数，静默忽略
-        payload.pop('reasoning_effort', None)
+        adapt_payload(payload, self.dialect or self._provider_name())
 
     def chat(self, messages: List[Dict[str, str]], on_delta=None) -> dict:
         """与 LLM 对话（默认流式）。

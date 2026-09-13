@@ -392,10 +392,14 @@ def read_paper(title_doi: list[tuple[str, str]] | tuple[str, str], save_dir="pdf
 
 
 # ── Agent Loop ──────────────────────────────────────────
-def agent_run(user_query: str, model: str = "deepseek-v4-pro"):
+def agent_run(user_query: str, model: str | None = None):
     """
     deepseek-chat = V3.2 非思考模式
     deepseek-reasoner = V3.2 思考模式（tool call 时要回传 reasoning_content，见下方提示）
+
+    :param model: 覆盖模型名；``None`` 表示沿用 ``summary`` 角色档案里配置的模型。
+        曾经这里写死 ``"deepseek-v4-pro"``——它会**覆盖**档案里的选择，于是"给文献摘要
+        换模型"这件事在配置层完全失效（且那个模型名已随档案一起下线）。
     """
     messages = [
         {"role": "system", "content": "You are an academic assistant skilled at searching for papers, downloading them, and summarizing them."},
@@ -403,7 +407,8 @@ def agent_run(user_query: str, model: str = "deepseek-v4-pro"):
     ]
 
     client = _get_agent_client()
-    client.model = model  # 允许调用方指定模型名
+    if model:
+        client.model = model  # 允许调用方显式指定模型名
 
     # 第一轮：让模型决定是否调工具
     resp = client.chat(messages)

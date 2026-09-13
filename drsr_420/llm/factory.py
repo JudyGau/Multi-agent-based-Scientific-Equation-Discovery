@@ -8,12 +8,22 @@
 * 目录：``<仓库根>/config/``；
 * 档案：``config/<提供商>_<模型>.config``（不入库，含密钥）；
 * 模板：``config/<提供商>_<模型>.config.example``（入库，api_key 留空）。
+
+提供商分两类，**接入新服务不必改代码**：
+
+* **内置**（:data:`ClientFactory._PROVIDER_SPECS`）：默认 base_url 与密钥环境变量名
+  写在表里，档案只需 ``model``；
+* **自定义**：provider 段是代码没见过的名字（如 ``ustc``）时，只要档案里给出
+  ``base_url`` 即可——端点属于 Q1（连接谁），本就该在档案里。请求体差异用
+  ``dialect`` 字段声明（默认 ``openai``：不认识的一律不发）。
 """
 import json
 import os
+import re
 from pathlib import Path
 from typing import Dict, Tuple, Type
 
+from drsr_420.llm.adapt import DIALECTS, resolve_dialect
 from drsr_420.llm.client import LLMClient
 from drsr_420.llm.providers import (
     BltClient,
@@ -21,6 +31,7 @@ from drsr_420.llm.providers import (
     DeepInfraClient,
     DeepSeekClient,
     OllamaClient,
+    OpenAICompatClient,
     SiliconflowClient,
     ZhipuClient,
 )
@@ -96,6 +107,16 @@ def load_llm_config(path: str | os.PathLike | None = None) -> dict:
 
 
 
+def _derive_api_key_env(provider: str) -> str:
+    """按 provider 段派生密钥环境变量名（``ustc`` -> ``USTC_API_KEY``）。
+
+    自定义提供商没有内置表可查，Key 又常常由环境变量注入（部署机不落盘密钥），
+    所以需要一条确定的派生规则——而不是让每个调用方各猜一个名字。
+    """
+    safe = re.sub(r'[^0-9A-Za-z]+', '_', provider).strip('_').upper()
+    return f"{safe}_API_KEY" if safe else "LLM_API_KEY"
+
+
 def parse_provider_model(model_str: str) -> Tuple[str, str]:
     """
     解析模型字符串为 (provider, model)。
@@ -166,6 +187,22 @@ class ClientFactory:
     }
 
     @staticmethod
+    def _unsupported_provider_message(provider: str) -> str:
+        """未知 provider 段的报错：既列出内置项，也给出"不改代码接进来"的路子。
+
+        内置列表由 ``_PROVIDER_SPECS`` 生成而非手写——手写的那份在加提供商时必然漂移。
+        """
+        builtin = "、".join(f"'{name}'" for name in ClientFactory._PROVIDER_SPECS)
+        dialects = "|".join(DIALECTS)
+        return (
+            f"不支持的提供商: {provider}（内置：{builtin}；常见别名会自动归一）。"
+            f"接入自建或第三方 OpenAI Chat Completions 兼容服务**无需改代码**——"
+            f"在档案里给出 base_url 即可，例如 "
+            f'{{"model": "{provider}/<模型名>", "base_url": "https://<主机>/v1"}}；'
+            f'若该服务的请求体方言与某个内置家族一致，可另加 "dialect": "{dialects}"。'
+        )
+
+    @staticmethod
     def from_config(config: dict, task_params: dict | None = None):
         """
         基于 'provider/model' 创建具体客户端。
@@ -173,6 +210,16 @@ class ClientFactory:
         必填：config['model']（形如 'provider/model'）。
         选填：config['api_key']、config['base_url']（或兼容别名 'host'）。
         配置先经 normalize_llm_config 统一规范化（host/base_url 兼容、补齐 scheme）。
+
+        **自定义提供商**：provider 段不在内置表里时，只要给了 ``base_url`` 就照常构造
+        （走 :class:`OpenAICompatClient`）。另有两个只对自定义提供商有意义的字段：
+
+        * ``api_key_env``：密钥环境变量名，缺省按 provider 段派生（``ustc`` ->
+          ``USTC_API_KEY``）；
+        * ``api_key_required``：显式声明是否需要密钥。自定义提供商默认为 ``true``；
+          本地免鉴权服务写 ``false``；
+        * ``dialect``：请求体方言（``openai`` / ``glm`` / ``deepseek`` / ``ollama``），
+          缺省为 ``openai``（见 :mod:`drsr_420.llm.adapt`）。
 
         Args:
             task_params: 覆盖/补充配置里的 ``tasks`` 字段，形如
@@ -218,20 +265,26 @@ class ClientFactory:
                 )
             return resolved
 
-        # 设置默认 base_url 并构造对应客户端（表驱动，替代原先 7 分支 if/elif）
+        # 提供商规格：内置表命中则用它；否则走**自定义提供商**——端点属于 Q1
+        # （连接谁），本就该在档案里给出，因此这里只要求 base_url，不动代码表。
         canonical = ClientFactory._PROVIDER_ALIASES.get(provider, provider)
         spec = ClientFactory._PROVIDER_SPECS.get(canonical)
         if spec is None:
-            raise ValueError(
-                f"不支持的提供商: {provider}，请使用 'deepseek'、'siliconflow'、"
-                f"'deepinfra'、'blt'、'cstcloud'、'glm' 或 'ollama'")
-        client_cls, env_var, default_base_url = spec
-
-        # ollama 不强制 api_key；其余提供商走 _require_api_key（缺失时回退环境变量）
-        if env_var is None:
-            resolved_key = api_key or ''
+            if not base_url:
+                raise ValueError(ClientFactory._unsupported_provider_message(provider))
+            client_cls, spec_env_var, default_base_url = OpenAICompatClient, None, None
+            spec_requires_key = True      # 自定义提供商默认需要密钥（本地免鉴权写 false）
         else:
-            resolved_key = _require_api_key(api_key, env_var)
+            client_cls, spec_env_var, default_base_url = spec
+            spec_requires_key = spec_env_var is not None   # 只有 ollama 这类本地部署为 None
+
+        # 密钥环境变量名：档案显式声明 > 内置表 > 按 provider 段派生。
+        # derived 兜底保证报错信息里永远有一个**可设置的具体变量名**，而不是 "None"。
+        env_var = config.get('api_key_env') or spec_env_var or _derive_api_key_env(canonical)
+        api_key_required = config.get('api_key_required')
+        if api_key_required is None:
+            api_key_required = spec_requires_key
+        resolved_key = _require_api_key(api_key, env_var) if api_key_required else (api_key or '')
 
         # base_url：传入优先，否则用 spec 默认；spec 默认为 None 时由客户端类
         # 自行从环境变量兜底（如 BltClient 读 BLT_API_BASE）
@@ -240,13 +293,20 @@ class ClientFactory:
 
         # 必须写别名规范化后的 canonical：_provider_name() 只在 provider 为空时才
         # 从 URL 推断，直接写原始别名（'zhipu'/'bigmodel'/'glm4'…）会让
-        # _adapt_payload 的所有提供商分支（glm 的 max_tokens 改名、thinking、
+        # 方言适配的所有分支（glm 的 max_tokens 改名、thinking、
         # deepseek 等）静默跳过——别名用户丢失按任务注入的 reasoning_effort。
         client.provider = canonical
+        # 方言同理必须在构造处定死：自定义提供商的 provider 段（如 'ustc'）不是方言名，
+        # 靠 _provider_name() 推断只会落到"其余"分支——显式解析可让档案复用某个
+        # 已知家族的分支（"dialect": "deepseek"），也让内置提供商行为逐位不变。
+        client.dialect = resolve_dialect(canonical, config.get('dialect'))
         # 统一从配置注入生成参数（temperature/top_p/max_tokens 等），
         # 调用方无需再手动 client.kwargs.update，避免各入口重复拼装同一套字段。
+        # extra_body 也在其中：它的语义是"并入请求体"，是自定义端点接私有能力
+        # （如 vLLM 的 chat_template_kwargs）的唯一出口。
         for k in ('max_tokens', 'max_completion_tokens', 'temperature', 'top_p', 'top_k',
-                  'frequency_penalty', 'presence_penalty', 'stream', 'n', 'stop'):
+                  'frequency_penalty', 'presence_penalty', 'stream', 'n', 'stop',
+                  'extra_body'):
             if k in config and config[k] is not None:
                 client.kwargs[k] = config[k]
         # 任务级私有参数（如思考强度），供 clone_for_task 按任务注入：

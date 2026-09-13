@@ -55,5 +55,19 @@ class ZhipuClient(LLMClient):
         base_url = base_url or os.getenv('ZHIPU_API_BASE', 'https://open.bigmodel.cn/api/paas/v4')
         super().__init__(api_key=api_key, model=model, base_url=base_url)
 
+class OpenAICompatClient(LLMClient):
+    """**自定义提供商**：任意 OpenAI Chat Completions 兼容端点。
+
+    与上面那些内置子类的唯一区别是**没有默认 base_url**——端点必须由档案给出
+    （见 ``factory.ClientFactory`` 的自定义提供商分支）。因此 provider 段可以是
+    代码从未见过的名字（如 ``ustc``），接入新服务**不必改代码**，只在
+    ``config/<提供商>_<模型>.config`` 里写清 base_url 即可。
+
+    请求体差异由档案的 ``dialect`` 字段声明（``adapt.resolve_dialect``），默认
+    ``openai``：不认识的一律不发。
+    """
+    def __init__(self, api_key: str, model: str, base_url: str):
+        super().__init__(api_key=api_key, model=model, base_url=base_url)
+
 # 兼容旧拼写
 GLMClient = ZhipuClient

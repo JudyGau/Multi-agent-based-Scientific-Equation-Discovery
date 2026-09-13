@@ -49,7 +49,7 @@ CoordinatorAgent.run()  while 未达采样上限/时长上限:
 | 层 | 位置 | 职责 |
 |---|---|---|
 | `core` | `drsr_420/core/` | 领域无关基础设施：经验记忆（多岛 + 聚类抽样）、AST 与程序拼装、配置、线程前缀输出、样本/进度记录、提示词模板、全局 token 统计 |
-| `llm` | `drsr_420/llm/` | LLM 接入：客户端（重试/流式/参数适配/记账）、提供商子类、客户端工厂与档案定位、**角色 → 档案 解析**（`roles.py` / `role_clients.py` / `role_diagnostics.py`）、工具调用 schema |
+| `llm` | `drsr_420/llm/` | LLM 接入：客户端（重试/流式/记账）、**请求体方言适配**（`adapt.py`）、提供商子类（含通用 `OpenAICompatClient`）、客户端工厂与档案定位、**角色 → 档案 解析**（`roles.py` / `role_clients.py` / `role_diagnostics.py`）、工具调用 schema |
 | `evaluation` | `drsr_420/evaluation/` | 评估执行**机制**：多起点拟合打分、常驻子进程沙箱（超时重建）、可选 numba 加速 |
 | `knowledge` | `drsr_420/knowledge/` | 外部知识：Chroma RAG 知识库与入库 CLI、MCP 工具（文献检索/阅读）与其 stdio 服务器 |
 | `agents` | `drsr_420/agents/` | ★ **多 Agent 角色层**：7 个 Agent + 契约（`base.py`）+ 消息（`messages.py`）+ 层内部件（`skeleton.py` / `prompt_injection.py`） |
@@ -67,7 +67,7 @@ CoordinatorAgent.run()  while 未达采样上限/时长上限:
 | 层 | 文件 | 行数 | 实际依赖 |
 |---|---|---|---|
 | `core/` | 8 | 1857 | —（最底层） |
-| `llm/` | 9 | 1818 | `core` |
+| `llm/` | 10 | 2001 | `core` |
 | `evaluation/` | 4 | 615 | `core` |
 | `knowledge/` | 8 | 1359 | `llm` |
 | `agents/` | 13 | 2656 | `core`, `evaluation`, `knowledge`, `llm` |
@@ -75,7 +75,7 @@ CoordinatorAgent.run()  while 未达采样上限/时长上限:
 | `runtime/` | 2 | 299 | `agents`, `analysis`, `core`, `knowledge` |
 | `cli/` | 3 | 542 | `agents`, `core`, `evaluation`, `llm`, `runtime` |
 
-包内实现共 10,450 行；顶层只剩 `__init__.py`（0 行实现）。全局最长文件 `llm/client.py` 482 行。
+包内实现共 10,654 行；顶层只剩 `__init__.py`（0 行实现）。全局最长文件 `llm/client.py` 472 行。
 
 ---
 
@@ -318,6 +318,7 @@ python -m drsr_420.agents
 # 角色 → LLM 档案（唯一声明处：config/agents.config.json）
 python -m drsr_420.llm.roles
 python -m drsr_420.llm.roles --check      # 档案存在 / model 合法 / 密钥可达
+python -m drsr_420.llm.roles --profiles --templates   # 本机已有档案 / 随仓库模板
 
 # 命令行入口（两者等价；安装后还可用 console script `drsr420`）
 python -m drsr_420.cli.main --help
@@ -373,6 +374,10 @@ python -m drsr_420.analysis.prune_demo
 
 角色表是代码常量（`llm/roles.py::TASKS`），`AgentSpec.llm_task` 必须落在其中（有护栏）。
 
+随仓库分发的绑定：`explain` → 官方 DeepSeek 端点，`summary` → 校内网关（走下面的
+自定义提供商路径），其余四个角色共用 `default`。两个角色之所以单独绑定，是因为
+"给某个角色换模型"在旧结构里**原理上无法表达**（见 §8）。
+
 ### 10.2 解析优先级
 
 ```
@@ -406,5 +411,44 @@ python -m drsr_420.analysis.prune_demo
 文件"尽早暴露。护栏（`tests/test_config_roles.py`）直接扫描库代码里的字符串字面量：
 出现写死的 `*.config` 文件名即失败——这条堵死的正是"explain 硬编码了一个不存在的
 档案、异常被吞、`explain.txt` 长期为空"那类故障的成因。
+
+### 10.5 自定义提供商：端点写在档案里，不是代码里
+
+内置提供商（`deepseek` / `siliconflow` / `deepinfra` / `ollama` / `blt` / `cstcloud` / `glm`）
+把"默认 base_url + 密钥环境变量名"写在代码表 `ClientFactory._PROVIDER_SPECS` 里。
+provider 段**不在**这张表里时不再报错，而是走**自定义提供商**路径——只要档案给了
+`base_url` 就照常构造（`OpenAICompatClient`，`llm/providers.py`）。这仍然是 §10 的
+分工：端点属于 Q1，本就归档案；塞进代码等于"接一个校内网关"要改代码 + 重新 review
+客户端工厂。
+
+```json
+{
+  "base_url": "https://api.llm.ustc.edu.cn/v1",
+  "api_key": "",
+  "model": "ustc/deepseek-v4-flash",
+  "max_tokens": 65536
+}
+```
+
+| 字段 | 作用 | 缺省 |
+|---|---|---|
+| `base_url`（别名 `host`） | 端点；自定义提供商**必填** | 内置提供商用自己的默认值 |
+| `api_key_env` | 密钥环境变量名 | 按 provider 段派生（`ustc` → `USTC_API_KEY`） |
+| `api_key_required` | 是否强制要求密钥 | 内置表的约定；自定义提供商默认 `true`（本地免鉴权写 `false`） |
+| `dialect` | 请求体方言：`openai` / `glm` / `deepseek` / `ollama` | `openai`（不认识的一律不发） |
+
+**方言**（`llm/adapt.py`）是"发给谁时字段长什么样"的唯一定义处：同一个
+`reasoning_effort`，智谱要配 `thinking` 开关、DeepSeek 直通、Ollama 要变成 `think`
+布尔、纯 OpenAI 兼容端点则必须**不发**（否则 400）。自定义提供商默认落在最后一种；
+若其端点恰好与某个已知家族一致，写一行 `"dialect": "deepseek"` 就能复用该分支，
+不必改代码。拼错的方言会直接报错、不静默降级——静默降级等于"配了却没生效"。
+
+端点上仍有独有的私有字段时（如 vLLM 的 `chat_template_kwargs`），用 `extra_body`
+原样并入请求体：它由 `_build_payload` **最后**并入，所以方言规则不会把它删掉。
+（此前它是个死字段：工厂不注入、适配层又 pop 掉，模板里写了也从没上过线。）
+
+护栏：`tests/test_llm_custom_provider.py` 锁住"未知 provider + base_url 即可用"与密钥
+解析规则；`tests/test_config_roles.py` 要求**每个模板填上占位密钥后都能构造出客户端**，
+并跳过不含 `model` 的模板（`rag.config` 是知识库配置，不是 LLM 档案）。
 
 设计与迁移过程见 [`CONFIG_PLAN.md`](./CONFIG_PLAN.md)。

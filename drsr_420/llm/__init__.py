@@ -3,6 +3,7 @@
 子模块职责
 ==========
 * ``client.py``       ``LLMClient``：请求/重试/流式/参数适配/token 记账
+* ``adapt.py``        请求体方言适配（glm/deepseek/ollama/openai，含自定义提供商）
 * ``providers.py``    各提供商子类（默认 base_url 与旧拼写别名）
 * ``factory.py``      ``ClientFactory`` / ``load_llm_config`` / ``parse_provider_model``
 * ``stats.py``        实验级全局 token 与耗时统计
@@ -40,6 +41,7 @@ from drsr_420.llm.providers import (
     DeepSeekClient,
     GLMClient,
     OllamaClient,
+    OpenAICompatClient,
     SiliconflowClient,
     SliconflowClient,
     ZhipuClient,
@@ -53,7 +55,9 @@ from drsr_420.core.llm_stats import (
 from drsr_420.llm.tools_schema import tools
 
 #: 名字归属查找顺序——"定义该名字的模块"必须排在"只是 import 了它"的模块前面。
+#: ``adapt`` 排在 ``client`` 前：``adapt_payload`` 定义在 adapt，client 只是 import 了它。
 _OWNER_MODULES = (
+    "drsr_420.llm.adapt",
     "drsr_420.llm.client",
     "drsr_420.core.llm_stats",
     "drsr_420.llm.providers",
@@ -87,7 +91,8 @@ __all__ = [
     "LLMClient", "ClientFactory", "load_llm_config", "parse_provider_model",
     "normalize_llm_config", "DeepSeekClient", "SiliconflowClient", "SliconflowClient",
     "DeepInfraClient", "CSTCloudClient", "OllamaClient", "BltClient", "ZhipuClient",
-    "GLMClient", "reset_global_tokens", "get_global_tokens", "reset_global_time",
+    "GLMClient", "OpenAICompatClient", "DIALECTS",
+    "reset_global_tokens", "get_global_tokens", "reset_global_time",
     "get_global_time", "tools", "owner_module",
     # 角色 → 档案（Q3）
     "roles", "TASKS", "RoleClients", "resolve_roles", "load_role_config",

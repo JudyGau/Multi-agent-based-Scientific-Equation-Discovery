@@ -3,7 +3,7 @@
 #
 # 用法：
 #   bash example.sh                      # 使用默认配置与 python
-#   LLM_CONFIG=config/deepseek_deepseek-v4-pro.config bash example.sh
+#   LLM_CONFIG=config/deepseek_deepseek-v4-flash.config bash example.sh
 #   PYTHON=.venv2/Scripts/python.exe bash example.sh   # Windows venv
 #
 # 依赖：需存在 LLM 档案（默认 config/glm_glm-5.3-flash.config），且 api_key 已填或

@@ -75,15 +75,16 @@ config/
     "analysis":   {"params": {"reasoning_effort": "high"}},
     "experience": {"params": {"reasoning_effort": "high", "temperature": 0.0}},
     "residual":   {"params": {"reasoning_effort": "high", "temperature": 0.4}},
-    "explain":    {"config": "deepseek_deepseek-v4-pro"},   // 可给单个角色换模型
-    "summary":    {"config": "ollama_Qwen3.8-27B"}
+    "explain":    {"config": "deepseek_deepseek-v4-flash"},  // 给单个角色换模型
+    "summary":    {"config": "ustc_deepseek-v4-flash"}       // 自定义提供商（校内网关）
   }
 }
 ```
 
 6 个角色：`sampling`（采样者+工具调用者）、`analysis`（数据分析者）、`experience`（经验总结者）、
 `residual`（残差分析者）、`explain`（收尾物理解释）、`summary`（文献摘要，跑在 MCP 子进程里）。
-省略 `config` 即沿用 `default`。
+省略 `config` 即沿用 `default`。上面前两个角色单独绑定，是因为"给某个角色换模型"在旧结构里
+**原理上无法表达**（详见 `docs/CONFIG_PLAN.md`）。
 
 ```bash
 python -m drsr_420.llm.roles            # 打印「角色 → 档案（生效来源）」
@@ -104,10 +105,20 @@ python -m drsr_420.llm.roles --check    # 自检：档案存在、model 合法�
 ```
 
 首次使用：`cp config/glm_glm-5.3-flash.config.example config/glm_glm-5.3-flash.config` 并填入密钥。
+注册表里单独绑定过档案的角色还需各自的档案，例如
+`cp config/ustc_deepseek-v4-flash.config.example config/ustc_deepseek-v4-flash.config`；
+`python -m drsr_420.llm.roles --check` 会把缺哪些档案、该复制哪个模板逐条列出来。
 
 - 文件名的唯一权威是文件内的 `model` 字段（`provider/model` 形式，会做格式校验）；**代码不解析文件名**，写错只会"读不到文件"而不会静默连错模型。
 - 支持提供商：`deepseek`、`siliconflow`、`deepinfra`、`ollama`、`blt`（柏拉图）、`cstcloud`（科技云）、`glm`（智谱）；别名（`zhipu`/`bigmodel`/`cst`/`bltcy`…）会自动归一。
 - `api_key` 留空时回退对应环境变量（`ZHIPU_API_KEY`、`DEEPSEEK_API_KEY`、`SILICONFLOW_API_KEY` 等）。
+- **自定义提供商**：provider 段可以是一个代码从未见过的名字（如 `ustc`），只要档案里给出
+  `base_url` 就能用，**不需要改代码**——端点属于"连接谁"，本就归档案管。可照抄
+  `config/ustc_deepseek-v4-flash.config.example`。三个可选字段：`api_key_env`（密钥环境变量名，
+  缺省按 provider 段派生：`ustc` → `USTC_API_KEY`）、`api_key_required`（本地免鉴权服务写 `false`）、
+  `dialect`（请求体方言 `openai`/`glm`/`deepseek`/`ollama`，缺省 `openai`：不认识的一律不发，
+  避免 400）。端点独有的私有字段（如 vLLM 的 `chat_template_kwargs`）写进 `extra_body`，
+  会原样并入请求体。
 - **一次性覆盖**：`--llm_config <档案>` 改的是"默认档案"（未绑定档案的角色共用它）；`--role-config explain=<档案>` 精确覆盖某个角色，`--role-config '*=<档案>'` 强制所有角色。每次实验的解析结果都记进 `config_snapshot.json` 的 `llm.roles`。
 - `.idea/runConfigurations/` 的 4 个 MRF 运行配置显式指定 `--llm_config config/glm_glm-5.3-flash.config`。
 
@@ -205,10 +216,13 @@ drsr_420/                     # 单一顶层包（8 层，依赖方向自底向�
     prompt_config.py          #   提示词模板与 PromptContext
     llm_stats.py              #   实验级全局 token / 耗时统计
   llm/                        # LLM 接入层
-    client.py                 #   LLMClient：请求/重试/流式/参数适配/记账
-    providers.py              #   各提供商子类
+    client.py                 #   LLMClient：请求/重试/流式/记账
+    adapt.py                  #   请求体方言适配（glm/deepseek/ollama/openai，含自定义提供商）
+    providers.py              #   提供商子类 + OpenAICompatClient（任意兼容端点）
     factory.py                #   ClientFactory / 档案定位与归一化（Q1+Q2）
     roles.py                  #   ★ 角色 → 档案 解析（Q3，唯一声明处）
+    role_clients.py           #   按角色提供已参数化的客户端（独立克隆 + 按档案缓存）
+    role_diagnostics.py       #   角色配置表格渲染与 --check 自检
     tools_schema.py           #   工具调用 schema
   evaluation/                 # 评估执行机制
     problems.py               #   多起点 least_squares 拟合与打分

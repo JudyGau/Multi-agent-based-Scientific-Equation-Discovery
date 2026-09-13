@@ -160,8 +160,8 @@ def build_parser() -> ArgumentParser:
     parser.add_argument('--role-config', action='append', default=None,
                         metavar='ROLE=FILE',
                         help='按角色覆盖档案（可重复），如 --role-config '
-                             'explain=deepseek_deepseek-v4-pro；ROLE 用 * 表示所有角色。'
-                             '角色清单见 python -m drsr_420.llm.roles')
+                             'explain=<档案ID>；ROLE 用 * 表示所有角色。'
+                             '角色清单与当前绑定见 python -m drsr_420.llm.roles')
     parser.add_argument('--background', type=str, default=None, help='背景知识（可选）')
     parser.add_argument('--samples_per_iteration', type=int, default=None,
                         help='每轮生成的候选数量（覆盖 config 默认值）')

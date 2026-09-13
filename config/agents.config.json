@@ -7,6 +7,8 @@
     "roles.<role>.config  该角色使用的档案 ID（不含 .config 后缀）；省略 = 沿用 default。",
     "roles.<role>.params  该角色的参数覆盖；省略该字段即使用代码内置默认",
     "                     （见 drsr_420/llm/roles.py 的 BUILTIN_ROLE_PARAMS）。",
+    "                     注：reasoning_effort 只在支持它的方言下才发出去（deepseek/glm/ollama），",
+    "                     纯 OpenAI 兼容端点会被静默忽略（见 drsr_420/llm/adapt.py）。",
     "",
     "可用角色（与 AgentSpec.llm_task 及两个非 Agent 调用方一一对应）：",
     "  sampling    采样者 + 工具调用者",
@@ -16,17 +18,21 @@
     "  explain     收尾物理解释（analysis/explain.py，非 Agent）",
     "  summary     文献摘要（MCP 工具 read_paper，非 Agent，跑在子进程里）",
     "",
-    "默认全部角色共用 default 档案——零配置即可跑通，且与重构前行为一致。",
-    "要让某个角色单独用别的模型，加上一行 config 即可，例如：",
-    "    \"explain\": {\"config\": \"deepseek_deepseek-v4-pro\", \"params\": {...}}",
-    "    \"summary\": {\"config\": \"ollama_Qwen3.8-27B\",       \"params\": {...}}",
-    "（这两行正是仓库里那两个无人读取的 llm_explain.config / llm_summary.config",
-    " 想表达、而旧结构无法表达的意图；现在可以表达了。记得先用 config/ 下的",
-    ".example 模板建好对应档案。）",
+    "当前绑定：除下面两个角色外都共用 default 档案。",
+    "  explain -> deepseek_deepseek-v4-flash  （官方 DeepSeek 端点）",
+    "  summary -> ustc_deepseek-v4-flash      （**自定义提供商**：USTC 校内网关）",
+    "",
+    "自定义提供商 = provider 段不在 factory 内置表里，只要档案里给出 base_url 就能用，",
+    "**不需要改代码**；请求体差异用档案的 dialect 字段声明。可照抄的完整例子见",
+    "config/ustc_deepseek-v4-flash.config.example（说明见 docs/ARCHITECTURE.md 的配置一节）。",
+    "",
+    "档案文件不入库，所以新克隆的仓库要先按模板把它建出来，例如：",
+    "    cp config/ustc_deepseek-v4-flash.config.example config/ustc_deepseek-v4-flash.config",
+    "然后填入密钥（或改用环境变量 USTC_API_KEY）。自检：python -m drsr_420.llm.roles --check",
+    "回滚：删掉某角色的 config 行即退回 default。",
     "",
     "覆盖优先级：--role-config > env DRSR_ROLE_CONFIG_<ROLE> > 本文件 roles.<role>.config",
-    "            > --llm_config > 本文件 default > 内置默认",
-    "自检：python -m drsr_420.llm.roles --check"
+    "            > --llm_config > 本文件 default > 内置默认"
   ],
   "default": "glm_glm-5.3-flash",
   "roles": {
@@ -53,9 +59,11 @@
       }
     },
     "explain": {
+      "config": "deepseek_deepseek-v4-flash",
       "params": {"reasoning_effort": "high"}
     },
     "summary": {
+      "config": "ustc_deepseek-v4-flash",
       "params": {
         "reasoning_effort": "high",
         "temperature": 0.4,

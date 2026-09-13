@@ -14,7 +14,9 @@
    成因，而不是只修那一个文件；
 2. **解析优先级必须是文档写的那一套**（6 级，逐级构造场景验证）；
 3. **模板完整性**：每个 ``*.config`` 都要有随仓库分发的 ``*.config.example``，
-   否则新克隆的仓库拿不到配置起点。
+   否则新克隆的仓库拿不到配置起点；且每个模板都要**真能构造出客户端**——
+   注册表一旦把某个角色绑到某份档案，那份档案的模板就必须是可用的，
+   否则"换模型"这件事在新克隆里会以运行时报错的形式才暴露。
 
 全部断言都刻意做到**不依赖本机是否已建好真实档案**（那属于部署状态，不是仓库状态），
 因此新克隆的仓库里这组测试同样全绿。
@@ -157,6 +159,42 @@ class ShippedRegistryTest(unittest.TestCase):
                      for p in _CONFIG_DIR.glob("*.config.example")}
         self.assertEqual(profiles - templates, set(),
                          "这些档案没有可入库的模板（新克隆拿不到起点）")
+
+    def test_registry_bound_profiles_have_shipped_templates(self):
+        """注册表引用的每份档案都必须有模板，``--check`` 给出的 ``cp`` 才对得上。
+
+        这条随"角色单独绑定档案"一起变得重要：绑定越具体，越容易指向一份
+        别人克隆后根本建不出来的档案。
+        """
+        registry = roles_mod.RoleRegistry.load()
+        bound = {registry.default} | {e.profile for e in registry.roles.values()
+                                      if e.profile}
+        for profile in sorted(bound):
+            with self.subTest(profile=profile):
+                template = _CONFIG_DIR / f"{profile}.config.example"
+                self.assertTrue(template.is_file(),
+                                f"注册表引用了 {profile}，但缺少模板 {template.name}")
+
+    def test_every_shipped_template_builds_a_client(self):
+        """模板不能只是"存在"——填上占位密钥后必须真的能构造出客户端。
+
+        这是唯一能同时守住三类漂移的检查：``model`` 拼写、自定义提供商漏写
+        ``base_url``、``dialect`` 拼错。跳过不含 ``model`` 的模板（``rag.config``
+        是知识库配置，不是 LLM 档案——用结构而非文件名区分）。
+        """
+        templates = sorted(_CONFIG_DIR.glob("*.config.example"))
+        self.assertTrue(templates, "应当有随仓库分发的模板")
+        checked = 0
+        for template in templates:
+            config = json.loads(template.read_text(encoding="utf-8"))
+            if "model" not in config:
+                continue
+            with self.subTest(template=template.name):
+                config = dict(config, api_key="placeholder-not-a-secret")
+                client = factory_mod.ClientFactory.from_config(config)
+                self.assertIsNotNone(client)
+            checked += 1
+        self.assertGreaterEqual(checked, 2, "至少要检查到默认档案与自定义提供商档案")
 
 
 class RoleRegistryLoadingTest(unittest.TestCase):
@@ -387,12 +425,34 @@ class RoleDiagnosticsTest(unittest.TestCase):
 
         刻意不断言"零问题"：本机是否已建好真实档案属于部署状态，新克隆的仓库里
         ``check`` 就该报告缺档案——关键是报告得可操作。
+
+        也刻意不把"可操作"等同于"含 ``cp``"：问题分两类、修复动作不同——档案不存在
+        用 ``cp <模板> <档案>``；档案在但密钥不可达则要"填字段 / 设环境变量"，给后者
+        塞一句 cp 反而是误导（文件明明就在）。
         """
         problems = check_roles()
         self.assertIsInstance(problems, list)
         for problem in problems:
             with self.subTest(problem=problem):
-                self.assertIn("cp ", problem)
+                self.assertTrue(
+                    "cp " in problem or "环境变量" in problem,
+                    f"问题描述没给出可执行的下一步：{problem}")
+
+    def test_check_reports_missing_key_with_the_env_var_name(self):
+        """自定义提供商缺密钥：必须点出**具体**环境变量名，否则用户没法照做。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = _write_json(pathlib.Path(tmp) / "probe.config", {
+                "model": "probevendor/probe-model",
+                "base_url": "https://probe.invalid/v1",
+                "api_key": "",
+            })
+            registry = roles_mod.RoleRegistry.load(_write_json(
+                pathlib.Path(tmp) / "agents.config.json",
+                {"default": str(profile)}))
+            problems = check_roles(registry=registry, environ={})
+        joined = "\n".join(problems)
+        self.assertIn("PROBEVENDOR_API_KEY", joined)
+        self.assertIn("环境变量", joined)
 
     def test_check_reports_missing_profile_with_copy_hint(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -403,6 +463,17 @@ class RoleDiagnosticsTest(unittest.TestCase):
         self.assertTrue(any("档案文件不存在" in p for p in problems), problems)
         self.assertTrue(any("cp " in p for p in problems),
                         "缺失档案时应给出可复制的修复命令")
+
+    def test_describe_widens_columns_for_long_profile_names(self):
+        """列宽必须按内容算：``deepseek_deepseek-v4-flash``（26 字符）正好顶满旧的
+        26 宽列，来源列被挤成 ``...flashregistry:roles...`` 连字。"""
+        long_name = "deepseek_deepseek-v4-flash"
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = roles_mod.RoleRegistry.load(_write_json(
+                pathlib.Path(tmp) / "agents.config.json", {"default": long_name}))
+            text = describe_roles(registry=registry, environ={})
+        self.assertIn(long_name + "  ", text)
+        self.assertNotIn(long_name + "registry", text)
 
 
 class AgentSpecRoleTest(unittest.TestCase):

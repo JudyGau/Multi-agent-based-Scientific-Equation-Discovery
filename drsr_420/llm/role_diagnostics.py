@@ -41,25 +41,41 @@ def describe_roles(
     cli_overrides: Mapping[str, str] | Sequence[str] | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> str:
-    """把「角色 → 档案」渲染成对齐的文本表格（由 :func:`resolve_roles` 生成）。"""
+    """把「角色 → 档案」渲染成对齐的文本表格（由 :func:`resolve_roles` 生成）。
+
+    列宽**按内容算**而不是写死：自定义提供商上线后档案名从 ``glm_glm-5.3-flash``
+    （17 字符）变成 ``deepseek_deepseek-v4-flash``（26 字符）加来源列
+    ``registry:roles.explain.config``（30 字符），写死的 26/24 会把两列挤成
+    ``...-flashregistry:roles...`` 连在一起。
+    """
     registry = registry if registry is not None else RoleRegistry.load()
     resolutions = resolve_roles(
         registry=registry, cli_default=cli_default,
         cli_overrides=cli_overrides, environ=environ)
 
+    rows = [
+        (role, res.profile, res.source,
+         ", ".join(f"{k}={v}" for k, v in res.params.items()) or "-")
+        for role, res in resolutions.items()
+    ]
+    # +2 = 列间至少留两个空格；表头用中文，宽度按字符算（中文显示更宽，仅影响表头观感）
+    w_role = max([len("角色")] + [len(r[0]) for r in rows]) + 2
+    w_prof = max([len("档案")] + [len(r[1]) for r in rows]) + 2
+    w_src = max([len("生效来源")] + [len(r[2]) for r in rows]) + 2
+    rule = "-" * (w_role + w_prof + w_src + 12)
+
     origin = str(registry.path) if registry.path else "(未找到注册表，使用内置默认)"
     lines = [
         f"LLM 角色配置（{len(resolutions)} 个角色）",
-        "=" * 78,
+        "=" * len(rule),
         f"注册表: {origin}",
-        "=" * 78,
-        f"{'角色':<10}{'档案':<26}{'生效来源':<24}参数",
-        "-" * 78,
+        "=" * len(rule),
+        f"{'角色':<{w_role}}{'档案':<{w_prof}}{'生效来源':<{w_src}}参数",
+        rule,
     ]
-    for role, res in resolutions.items():
-        params = ", ".join(f"{k}={v}" for k, v in res.params.items()) or "-"
-        lines.append(f"{role:<12}{res.profile:<26}{res.source:<24}{params}")
-    lines.append("-" * 78)
+    for role, profile, source, params in rows:
+        lines.append(f"{role:<{w_role}}{profile:<{w_prof}}{source:<{w_src}}{params}")
+    lines.append(rule)
     lines.append(_PRECEDENCE_NOTE)
     return "\n".join(lines)
 
@@ -79,9 +95,12 @@ def check_roles(
     2. 被引用的档案文件存在——缺失时给出 ``cp <name>.config.example`` 的修复提示，
        这条专门防"新克隆的仓库拿不到配置起点"；
     3. 档案能被解析且 ``model`` 字段合法（``provider/model`` 格式）；
-    4. 能真的构造出客户端（密钥缺失会在此暴露，并透出 ClientFactory 的可操作提示）。
+    4. 能真的构造出客户端——密钥缺失（提示里带具体环境变量名）、自定义提供商漏写
+       ``base_url``、``dialect`` 拼错都在这一步暴露，且透出 ClientFactory 的可操作提示。
 
     同一档案被多个角色引用时只检查一次（6 个角色常常共用一份默认档案）。
+    问题分两类、修复动作不同（建档案 vs 补密钥），所以措辞不统一成 ``cp``：
+    缺档案才给 ``cp``，缺密钥给的是"填哪个字段 / 设哪个环境变量"。
     """
     registry = registry if registry is not None else RoleRegistry.load()
 
