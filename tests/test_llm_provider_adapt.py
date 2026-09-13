@@ -1,9 +1,11 @@
-"""LLM 客户端 provider 适配层单元测试。
+"""LLM 客户端请求体方言适配单元测试。
 
-覆盖新增的 per-provider 私有参数适配逻辑：
-- ``LLMClient._adapt_payload``：glm / deepseek / ollama / 其他提供商对
-  ``thinking`` / ``reasoning_effort`` / ``extra_body`` / ``max_completion_tokens``
-  的翻译与静默忽略（方言规则本身在 ``drsr_420/llm/adapt.py``）；
+覆盖 ``LLMClient._adapt_payload`` 的方言规则：
+- ``glm`` / ``deepseek`` / ``ollama`` / ``openai`` 对 ``thinking`` /
+  ``reasoning_effort`` / ``extra_body`` / ``max_completion_tokens`` 的翻译与静默
+  忽略（方言规则本身在 ``drsr_420/llm/adapt.py``）；
+- 方言是**声明出来的**：本文件按方言名构造客户端，不靠 provider 名推断
+  （见 ``_mk_client``）；
 - ``extra_body`` 的**并入语义**：它是调用方对端点私有能力的显式声明，最后并入且
   不被方言规则删掉（自定义提供商接 vLLM 私有字段的唯一出口）；
 - ``LLMClient.clone_for_task``：按任务注入 ``task_params`` 声明的私有参数，
@@ -17,14 +19,20 @@ import unittest
 from drsr_420 import llm
 
 
-def _mk_client(provider='glm', **kwargs):
-    """构造指定 provider 的客户端，并注入生成参数 kwargs。"""
+def _mk_client(dialect='openai', **kwargs):
+    """构造指定**方言**的客户端，并注入生成参数 kwargs。
+
+    方言必须显式给出：它由档案的 ``dialect`` 字段（或提供商规格行的默认值）决定，
+    与 provider 叫什么名字无关——`glm/x` 之所以得到 glm 方言，是规格表里那一行
+    写了 ``'glm'``，不是因为它叫 glm。
+    """
     client = llm.LLMClient(
         api_key='test-key',
-        model=f'{provider}/test-model',
+        model=f'{dialect}/test-model',
         base_url='http://test-host/v1',
-        provider=provider,
+        provider=dialect,
     )
+    client.dialect = dialect
     client.kwargs.update(kwargs)
     return client
 
@@ -103,11 +111,15 @@ class OllamaAdapterTest(unittest.TestCase):
 
 
 class GenericAdapterTest(unittest.TestCase):
-    """其他提供商（siliconflow/cstcloud 等）：私有参数静默忽略，保持 OpenAI 兼容。"""
+    """openai 方言：siliconflow/cstcloud/deepinfra/blt 与自定义提供商的默认值。
+
+    它们的 provider 名与方言名无关（``siliconflow`` 从来不是方言），所以这里按
+    方言名构造，而不是按厂商名——后者正是"名字撞上方言名才生效"的老毛病。
+    """
 
     def test_generic_ignores_private_params(self):
         c = _mk_client(
-            'siliconflow',
+            'openai',
             thinking={'type': 'enabled'},
             reasoning_effort='low',
             extra_body={'x': 1},
@@ -118,7 +130,7 @@ class GenericAdapterTest(unittest.TestCase):
         self.assertNotIn('extra_body', payload)
 
     def test_generic_keeps_standard_params(self):
-        c = _mk_client('cstcloud', temperature=0.3, top_p=0.9)
+        c = _mk_client('openai', temperature=0.3, top_p=0.9)
         payload = c._build_payload([{'role': 'user', 'content': 'hi'}])
         self.assertEqual(payload['temperature'], 0.3)
         self.assertEqual(payload['top_p'], 0.9)
@@ -141,13 +153,13 @@ class ExtraBodyTest(unittest.TestCase):
     def test_extra_body_has_the_last_word_over_dialect_cleanup(self):
         """openai 方言默认删 reasoning_effort，但写在 extra_body 里的是**显式声明**，
         不能被方言规则顺手删掉——那等于这个出口对最需要它的端点失效。"""
-        c = _mk_client('siliconflow', extra_body={'reasoning_effort': 'high'})
+        c = _mk_client('openai', extra_body={'reasoning_effort': 'high'})
         payload = c._build_payload([{'role': 'user', 'content': 'hi'}])
         self.assertEqual(payload['reasoning_effort'], 'high')
 
     def test_private_params_still_cleaned_when_not_in_extra_body(self):
         """对照组：同样一个 reasoning_effort，从 kwargs 进就被方言清理。"""
-        c = _mk_client('siliconflow', reasoning_effort='high')
+        c = _mk_client('openai', reasoning_effort='high')
         payload = c._build_payload([{'role': 'user', 'content': 'hi'}])
         self.assertNotIn('reasoning_effort', payload)
 

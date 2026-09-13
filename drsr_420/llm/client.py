@@ -1,7 +1,9 @@
 """LLM 客户端：请求发送、指数退避重试、流式解析、token 记账与参数适配。
 
-提供商子类见 ``providers.py``；实例构造与配置归一化见 ``factory.py``；
-**请求体方言适配**（哪个提供商把 `思考强度` 拼成什么字段）见 ``adapt.py``。
+**所有提供商共用这一个类**——各家的差异只有端点、密钥变量名与请求体方言三项数据，
+分别落在档案与 ``factory._PROVIDER_SPECS`` 里，不必再分子类。
+实例构造与配置归一化见 ``factory.py``；**请求体方言适配**（哪家把 `思考强度` 拼成
+什么字段）见 ``adapt.py``。
 """
 import copy
 import json
@@ -134,14 +136,16 @@ class LLMClient:
         :param api_key: API 密钥
         :param model: 模型名称
         :param base_url: API 的完整基础 URL（须带 http(s)://，见 :func:`require_absolute_url`）
-        :param provider: 提供商标识（如 'glm'）；缺省时由 base_url 推断
+        :param provider: 提供商标识（如 'glm'），**只作标签**（日志 / 快照 / `--check`）；
+            缺省为空，标签退化为 'llm'。它不参与任何行为决策。
         """
         self.api_key = api_key
         self.model = model
         self.base_url = require_absolute_url(base_url)
         self.provider = (provider or '').lower()
-        # 请求体方言（见 adapt.py）：由 ClientFactory 按档案的 ``dialect`` 字段设置。
-        # 留空表示"按 provider 名推断"——直接构造客户端的调用方（含单测）行为不变。
+        # 请求体方言（见 adapt.py）：由 ClientFactory 按"档案 dialect 字段 >
+        # 提供商规格行默认值"写进来。留空表示未设置，按 openai（不认识的不发），
+        # 而不是拿 provider 名去猜——名字撞上方言名只是巧合，不是契约。
         self.dialect = ''
         # 生成参数（temperature/top_p/max_tokens 等）
         self.kwargs = {
@@ -193,27 +197,14 @@ class LLMClient:
         return new_client
 
     def _provider_name(self) -> str:
-        if self.provider:
-            return self.provider
-        try:
-            url = (self.base_url or '').lower()
-            if 'deepseek' in url:
-                return 'deepseek'
-            if 'siliconflow' in url or 'siliconflow.cn' in url:
-                return 'siliconflow'
-            if 'deepinfra' in url:
-                return 'deepinfra'
-            if 'bltcy' in url or 'blt' in url:
-                return 'blt'
-            if 'ollama' in url or 'localhost' in url:
-                return 'ollama'
-            if 'cstcloud' in url or 'uni-api.cstcloud.cn' in url:
-                return 'cstcloud'
-            if 'bigmodel' in url or 'zhipu' in url or 'glm' in url:
-                return 'glm'
-        except Exception:
-            pass
-        return 'llm'
+        """提供商标签，**只用于打印**（日志头、实验元数据、`--check` 输出）。
+
+        身份由 :class:`~drsr_420.llm.factory.ClientFactory` 按档案的 ``model``
+        前缀写在 ``self.provider`` 上；这里不再从 ``base_url`` 里嗅探厂商名——
+        那是"我是谁"的第三份真相来源，`'blt' in url` 之类会命中无关域名，
+        而且嗅探结果会被当成方言名用（见 ``_adapt_payload``）。
+        """
+        return self.provider or 'llm'
 
     def _build_payload(self, messages: List[Dict[str, str]]) -> dict:
         """构造请求体：固定字段 + 白名单生成参数 + 提供商差异适配。"""
@@ -244,11 +235,12 @@ class LLMClient:
         """按方言修正请求体（方言规则集中在 :mod:`drsr_420.llm.adapt`）。
 
         思考强度（reasoning_effort/thinking）是跨提供商的语义参数，由角色解析按任务
-        注入 kwargs，此处翻译成该方言合法的请求字段。方言来自档案的 ``dialect`` 字段
-        （由 ClientFactory 设置）；未设置时按 provider 名推断——因此直接构造客户端的
-        调用方（含单测）行为不变。
+        注入 kwargs，此处翻译成该方言合法的请求字段。方言来自档案的 ``dialect``
+        字段或提供商规格行的默认值（均由 ``ClientFactory`` 写进 ``self.dialect``）；
+        直接构造客户端时未设置，则按 ``openai`` 处理——**不认识的一律不发**，而不是
+        拿 provider 名去猜。
         """
-        adapt_payload(payload, self.dialect or self._provider_name())
+        adapt_payload(payload, self.dialect or 'openai')
 
     def chat(self, messages: List[Dict[str, str]], on_delta=None) -> dict:
         """与 LLM 对话（默认流式）。

@@ -442,7 +442,7 @@ token。诊断文本经 `_clip` 强制 GBK 可编码：诊断工具不该因为"
 
 ### 10.8 指标
 
-| 指标 | 阶段 8 结束时 | 现在 |
+| 指标 | 阶段 8 结束时 | 阶段 9 收尾 |
 |---|---|---|
 | 测试数 | 418 | **506**（新增 12 条 `tests/test_batch_scripts.py`：XML / `.sh` / `.bat` 三者逐项等价；另 7 条补在 `test_expr_substitution` / `test_agent_behavior`：sympy 撞名与样本序号归属） |
 | 全局最长文件 | 482（`llm/client.py`） | **487**（`llm/client.py`；`rag_kb.py` 一度 517，已拆出 `rag_config.py`） |
@@ -452,3 +452,69 @@ token。诊断文本经 `_clip` 强制 GBK 可编码：诊断工具不该因为"
 | 建档无需改代码即可接入的端点 | 7（内置） | **任意 OpenAI 兼容端点** |
 | 端点的键名/写法 | `host` / `base_url` / `api_host`，且允许裸主机 | **`base_url` / `api_base_url`，必须完整 URL**（旧拼写报错） |
 | 一份坏档案的后果 | 整个实验起不来 | **只影响用到它的角色**（启动告警） |
+
+### 10.9 提供商收敛为「一张规格表」，方言转为显式声明（追加）
+
+起因是一次设计复盘：`provider` 在代码里到底是不是必要的。追下来的结论是——**它作为
+"代码概念"几乎不起作用，真正不可省的是 `dialect`**，而 dialect 当时藏在 provider 名字里。
+
+**三份"我是谁"的真相：**
+
+| 位置 | 记了什么 | 实际生效情况 |
+|---|---|---|
+| `factory._PROVIDER_SPECS` | 客户端类 + 密钥变量名 + 默认端点 | 端点这一列在随仓库分发的 **4 份 LLM 档案里 0 次命中**（档案都自带 `base_url`） |
+| `llm/providers.py` | 7 个子类的默认端点 | 与上表重复；`blt` / `glm` 还在子类里各读一次环境变量 |
+| `client._provider_name()` | 22 行 URL 子串嗅探 | 第三份真相；`'blt' in url` 会命中任何含该子串的域名 |
+
+而且那些子类是空壳：`from_config` 构造时**不传** `provider`，随后用
+`client.provider = canonical` 事后补赋值——身份既然要手工补，就说明类层级只是
+"默认端点的载体"，并没有承担"我是谁"。
+
+**为什么说它有害，而不只是冗余**：方言当时按
+`provider if provider in DIALECTS else 'openai'` 推断，于是"名字撞上方言名"成了隐式契约。
+别名用户（`zhipu` / `bigmodel` / `glm4`）因此**静默丢掉**按角色注入的 `reasoning_effort`
+（`factory.py` 里那段注释就是那个 live bug 的墓碑）。名字撞上方言名只是巧合，不是契约。
+
+**改法：**
+
+* `llm/providers.py` **删除**（7 个空壳子类）；`_PROVIDER_SPECS` 升级为 `ProviderSpec`
+  NamedTuple —— （默认端点 / 密钥变量名 / **默认方言** / 端点环境变量名），成为唯一真相；
+* `client._provider_name()` 的 URL 嗅探删除，退化为标签访问器（`self.provider or 'llm'`），
+  只服务日志头与 `config_snapshot.json`；
+* `adapt.resolve_dialect(declared, *, default=...)`：**不再按 provider 名推断**。默认方言
+  来自规格行，档案的 `dialect` 字段覆盖它；自定义提供商不声明即 `openai`。默认值也一并
+  校验——规格表里写错一个字母，所有档案会一起悄悄退化，那比档案写错更难发现；
+* 端点环境变量（`ZHIPU_API_BASE` / `BLT_API_BASE`）从子类构造函数移进规格表的
+  `base_url_env` 列——**仍是 blt/glm 两家，取值与语义一律不变**（刻意不为其余五家新增
+  通道：凭空多出 `DEEPSEEK_API_BASE` 这类变量，会让只写了 `model` + `api_key` 的档案被
+  环境里一个无关变量静默改掉端点）。变的只是它从两处硬编码变成一列可见的数据，优先级
+  明确为 **档案 > 环境变量 > 表内默认**，环境变量留空按未设置处理；
+* `client.provider` 改在构造处定死（`LLMClient(..., provider=canonical)`），不再事后赋值。
+
+**保留别名表**（`zhipu`/`bigmodel`/`glm4`…）。它曾经是"别名 → 方言"的隐式耦合，现在只影响
+"查表用哪个键"与日志标签，于是从正确性风险降级为纯便利；删掉它会让已有的 `zhipu/...`
+档案立刻报错，收益为负。
+
+**迁移说明（breaking）**：`drsr_420.llm.providers` 模块与 `drsr_420.llm` 下的
+`DeepSeekClient` / `ZhipuClient` / `GLMClient` / `OpenAICompatClient` 等名字**不再存在**。
+它们只是"构造时给 `base_url` 一个默认值"，等价写法：
+
+```python
+ClientFactory.from_config({"model": "deepseek/deepseek-reasoner", "api_key": key})
+```
+
+仓库内无其他调用方（`python -m drsr_420.llm` 冒烟入口已改走工厂）。
+
+### 10.10 指标（provider 归并后）
+
+| 指标 | 归并前 | 归并后 |
+|---|---|---|
+| 测试数 | 506 | **509**（+3：端点环境变量通道仍受校验、环境变量与档案的优先级、档案 `dialect` 覆盖规格行默认） |
+| `llm/providers.py` | 73 行 / 7 个空壳子类 | **已删除** |
+| `client._provider_name()` | 22 行（URL 子串嗅探） | **1 行**（`self.provider or 'llm'`，仅作标签） |
+| "默认端点"的存放处 | 3 处（规格表 / 子类默认参数 / 子类读环境变量） | **1 处**（规格表的 `base_url` + `base_url_env`） |
+| 方言的确定方式 | provider 名恰好等于方言名（隐式） | **档案声明 > 规格行默认**（显式） |
+| 客户端类数量 | 8（`LLMClient` + 7 子类） | **1**（`LLMClient`） |
+| `llm/` 层 | 11 文件 / 2331 行 | **10 文件 / 2176 行**（删除 `providers.py` 73 行，`client.py` 487 → 479 行） |
+| 包内最长文件 | `llm/client.py` 487 行 | **`agents/coordinator_agent.py` 480 行**（仍 < 500 行预算） |
+

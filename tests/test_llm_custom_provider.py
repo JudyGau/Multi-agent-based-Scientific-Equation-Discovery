@@ -13,7 +13,7 @@
 
 所以这里守四条：
 
-1. 未知 provider 段 + ``base_url`` ⇒ 照常构造（走 :class:`OpenAICompatClient`）；
+1. 未知 provider 段 + ``base_url`` ⇒ 照常构造（同一个 ``LLMClient``，没有子类）；
 2. 未知 provider 段 + 无 ``base_url`` ⇒ 报错必须**教人怎么接进来**，而不是只列内置表；
 3. 密钥解析要有确定规则：``api_key`` > ``api_key_env`` > 按 provider 段派生的
    环境变量（``ustc`` -> ``USTC_API_KEY``），且报错信息里必须是**具体变量名**；
@@ -36,7 +36,6 @@ from drsr_420.llm import factory as factory_mod
 from drsr_420.llm.adapt import DIALECTS
 from drsr_420.llm.client import LLMClient
 from drsr_420.llm.factory import ClientFactory
-from drsr_420.llm.providers import OpenAICompatClient, ZhipuClient
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _CONFIG_DIR = _REPO_ROOT / "config"
@@ -58,7 +57,8 @@ class CustomProviderTest(unittest.TestCase):
 
     def test_unknown_provider_with_base_url_is_accepted(self):
         client = ClientFactory.from_config(_cfg())
-        self.assertIsInstance(client, OpenAICompatClient)
+        # 同一个 LLMClient：提供商是数据（规格表一行），不是子类
+        self.assertIs(type(client), LLMClient)
         # provider 段原样保留：日志与快照里要能看出"连的到底是哪家"
         self.assertEqual(client.provider, "ustc")
         self.assertEqual(client._provider_name(), "ustc")
@@ -99,12 +99,21 @@ class CustomProviderTest(unittest.TestCase):
                               "内置提供商列表应由 _PROVIDER_SPECS 生成，不该手写后漂移")
 
     def test_alias_normalisation_still_wins(self):
-        """别名（zhipu -> glm）必须照旧归一到内置表，不能误判成自定义提供商。"""
+        """别名（zhipu -> glm）必须照旧归一到内置表，不能误判成自定义提供商。
+
+        判据从"客户端不是某个子类"（子类已不存在）换成**行为**：别名用户拿到的是
+        内置规格那一行——端点、方言都与规范名一致。这条正是老 bug 的回归位：
+        别名曾让方言分支整体跳过，`reasoning_effort` 静默丢失。
+        """
         client = ClientFactory.from_config(
             {"model": "zhipu/glm-5.3-flash", "api_key": "k"})
-        self.assertNotIsInstance(client, OpenAICompatClient)
+        self.assertEqual(client.base_url,
+                         ClientFactory._PROVIDER_SPECS["glm"].base_url)
         self.assertEqual(client.provider, "glm")
         self.assertEqual(client.dialect, "glm")
+        client.kwargs["reasoning_effort"] = "high"
+        payload = client._build_payload([{"role": "user", "content": "hi"}])
+        self.assertEqual(payload["reasoning_effort"], "high")
 
 
 class CustomProviderApiKeyTest(unittest.TestCase):
@@ -177,8 +186,12 @@ class CustomProviderDialectTest(unittest.TestCase):
             with self.subTest(dialect=dialect):
                 self.assertIn(dialect, message)
 
-    def test_builtin_providers_keep_their_implicit_dialect(self):
-        """内置提供商的方言仍按规范名推断，未声明的档案行为逐位不变。"""
+    def test_builtin_providers_keep_their_builtin_default_dialect(self):
+        """内置提供商的默认方言来自**规格表那一行**，未声明的档案行为逐位不变。
+
+        规则已从"provider 名恰好等于方言名就用它"改成"读规格行的 dialect 字段"：
+        `siliconflow`/`cstcloud` 之所以是 openai，是因为表里写的就是 openai。
+        """
         cases = {
             "glm/x": "glm", "deepseek/x": "deepseek", "ollama/x": "ollama",
             "siliconflow/x": "openai", "cstcloud/x": "openai",
@@ -188,8 +201,18 @@ class CustomProviderDialectTest(unittest.TestCase):
                 cfg = {"model": model, "api_key": "k"}
                 if expected == "ollama":
                     cfg.pop("api_key")
+                client = ClientFactory.from_config(cfg)
+                self.assertEqual(client.dialect, expected)
+                # 规格表是唯一来源：默认方言必须等于表里那一行的值
+                provider, _ = factory_mod.parse_provider_model(model)
                 self.assertEqual(
-                    ClientFactory.from_config(cfg).dialect, expected)
+                    ClientFactory._PROVIDER_SPECS[provider].dialect, expected)
+
+    def test_declared_dialect_overrides_the_builtin_default(self):
+        """档案的 dialect 字段优先级高于规格行——自建端点可复用任一家族的分支。"""
+        client = ClientFactory.from_config(
+            {"model": "glm/x", "api_key": "k", "dialect": "deepseek"})
+        self.assertEqual(client.dialect, "deepseek")
 
 
 class BaseUrlNamingTest(unittest.TestCase):
@@ -233,11 +256,31 @@ class BaseUrlNamingTest(unittest.TestCase):
                                             "base_url": ""})
         self.assertEqual(client.base_url, "https://open.bigmodel.cn/api/paas/v4")
 
-    def test_client_constructor_is_the_backstop_for_every_channel(self):
-        """配置之外还有环境变量兜底通道（如 ``ZHIPU_API_BASE``），同样不许裸主机。"""
+    def test_endpoint_env_var_channel_is_still_validated(self):
+        """配置之外还有端点环境变量通道（如 ``ZHIPU_API_BASE``），同样不许裸主机。
+
+        这条通道原先分别藏在 ``ZhipuClient`` / ``BltClient`` 的构造函数里；现在由
+        规格表的 ``base_url_env`` 统一承载——覆盖范围反而变全（每个内置提供商
+        一视同仁），而且不再有一份"表里的默认端点"和一份"类里的默认端点"。
+        """
         with mock.patch.dict(os.environ, {"ZHIPU_API_BASE": "open.bigmodel.cn"}):
             with self.assertRaises(ValueError):
-                ZhipuClient(api_key="k", model="glm-5.3-flash", base_url=None)
+                ClientFactory.from_config({"model": "glm/x", "api_key": "k"})
+
+    def test_endpoint_env_var_wins_over_the_table_default(self):
+        with mock.patch.dict(
+                os.environ, {"ZHIPU_API_BASE": "https://proxy.example.com/v1"}):
+            client = ClientFactory.from_config({"model": "glm/x", "api_key": "k"})
+        self.assertEqual(client.base_url, "https://proxy.example.com/v1")
+
+    def test_config_base_url_wins_over_the_endpoint_env_var(self):
+        """优先级：档案 > 端点环境变量 > 规格表默认。"""
+        with mock.patch.dict(
+                os.environ, {"ZHIPU_API_BASE": "https://proxy.example.com/v1"}):
+            client = ClientFactory.from_config(
+                {"model": "glm/x", "api_key": "k",
+                 "base_url": "https://open.bigmodel.cn/api/paas/v4"})
+        self.assertEqual(client.base_url, "https://open.bigmodel.cn/api/paas/v4")
 
     def test_direct_client_construction_rejects_bare_hostname(self):
         with self.assertRaises(ValueError):
@@ -289,7 +332,7 @@ class ShippedCustomProviderTest(unittest.TestCase):
         config = dict(self._summary_profile_config())
         config["api_key"] = "placeholder-not-a-secret"
         client = ClientFactory.from_config(config)
-        self.assertIsInstance(client, OpenAICompatClient)
+        self.assertIs(type(client), LLMClient)
         self.assertTrue(client.base_url.startswith("http"))
         self.assertEqual(client._provider_name(),
                          factory_mod.parse_provider_model(config["model"])[0])

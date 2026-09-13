@@ -4,10 +4,14 @@
 ==========
 * ``client.py``       ``LLMClient``：请求/重试/流式/参数适配/token 记账
 * ``adapt.py``        请求体方言适配（glm/deepseek/ollama/openai，含自定义提供商）
-* ``providers.py``    各提供商子类（默认 base_url 与旧拼写别名）
 * ``factory.py``      ``ClientFactory`` / ``load_llm_config`` / ``parse_provider_model``
 * ``stats.py``        实验级全局 token 与耗时统计
 * ``tools_schema.py`` 工具调用 schema（function-calling 用）
+
+提供商是**数据不是类**：所有提供商共用 ``LLMClient``，各家差异（默认端点、密钥
+环境变量名、默认方言）写在 ``factory._PROVIDER_SPECS`` 一行里。曾经存在的
+``providers.py``（7 个只设默认 base_url 的空壳子类）已删除——它与那张表重复，
+且客户端里还有第三处 URL 嗅探，三份"我是谁"必然漂移。
 
 为什么本模块还需要 ``__getattr__``
 ==================================
@@ -34,18 +38,6 @@ from drsr_420.llm.factory import (
     normalize_llm_config,
     parse_provider_model,
 )
-from drsr_420.llm.providers import (
-    BltClient,
-    CSTCloudClient,
-    DeepInfraClient,
-    DeepSeekClient,
-    GLMClient,
-    OllamaClient,
-    OpenAICompatClient,
-    SiliconflowClient,
-    SliconflowClient,
-    ZhipuClient,
-)
 from drsr_420.core.llm_stats import (
     get_global_time,
     get_global_tokens,
@@ -60,7 +52,6 @@ _OWNER_MODULES = (
     "drsr_420.llm.adapt",
     "drsr_420.llm.client",
     "drsr_420.core.llm_stats",
-    "drsr_420.llm.providers",
     "drsr_420.llm.factory",
     "drsr_420.llm.tools_schema",
 )
@@ -89,9 +80,7 @@ def owner_module(name: str):
 
 __all__ = [
     "LLMClient", "ClientFactory", "load_llm_config", "parse_provider_model",
-    "normalize_llm_config", "DeepSeekClient", "SiliconflowClient", "SliconflowClient",
-    "DeepInfraClient", "CSTCloudClient", "OllamaClient", "BltClient", "ZhipuClient",
-    "GLMClient", "OpenAICompatClient", "DIALECTS",
+    "normalize_llm_config", "DIALECTS",
     "reset_global_tokens", "get_global_tokens", "reset_global_time",
     "get_global_time", "tools", "owner_module",
     # 角色 → 档案（Q3）

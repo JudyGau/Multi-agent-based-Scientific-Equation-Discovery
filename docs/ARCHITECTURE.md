@@ -49,7 +49,7 @@ CoordinatorAgent.run()  while 未达采样上限/时长上限:
 | 层 | 位置 | 职责 |
 |---|---|---|
 | `core` | `drsr_420/core/` | 领域无关基础设施：经验记忆（多岛 + 聚类抽样）、AST 与程序拼装、配置、线程前缀输出、样本/进度记录、提示词模板、全局 token 统计 |
-| `llm` | `drsr_420/llm/` | LLM 接入：客户端（重试/流式/记账）、**请求体方言适配**（`adapt.py`）、提供商子类（含通用 `OpenAICompatClient`）、客户端工厂与档案定位、**角色 → 档案 解析**（`roles.py` / `role_clients.py` / `role_diagnostics.py`）、工具调用 schema |
+| `llm` | `drsr_420/llm/` | LLM 接入：客户端（重试/流式/记账，**所有提供商共用一个类**）、**请求体方言适配**（`adapt.py`）、**提供商规格表**（`factory._PROVIDER_SPECS`：端点 / 密钥变量名 / 默认方言）、客户端工厂与档案定位、**角色 → 档案 解析**（`roles.py` / `role_clients.py` / `role_diagnostics.py`）、工具调用 schema |
 | `evaluation` | `drsr_420/evaluation/` | 评估执行**机制**：多起点拟合打分、常驻子进程沙箱（超时重建）、可选 numba 加速 |
 | `knowledge` | `drsr_420/knowledge/` | 外部知识：Chroma RAG 知识库与入库 CLI、MCP 工具（文献检索/阅读）与其 stdio 服务器 |
 | `agents` | `drsr_420/agents/` | ★ **多 Agent 角色层**：7 个 Agent + 契约（`base.py`）+ 消息（`messages.py`）+ 层内部件（`skeleton.py` / `prompt_injection.py`） |
@@ -427,12 +427,21 @@ python -m drsr_420.analysis.prune_demo
 
 ### 10.5 自定义提供商：端点写在档案里，不是代码里
 
+**提供商是数据，不是类。** 所有提供商共用同一个 `LLMClient`——客户端行为（重试 / 流式 /
+记账 / 请求体构造）与"连的是哪家"无关。各家差异只有三项数据，集中在规格表
+`ClientFactory._PROVIDER_SPECS` 一行里：
+
+| 字段 | 含义 |
+|---|---|
+| `base_url` | 内置默认端点 |
+| `api_key_env` | 密钥环境变量名（`None` = 不要求密钥，如本地 ollama） |
+| `dialect` | **默认请求体方言**（见 §10.5.1） |
+| `base_url_env` | 端点环境变量名（如 `ZHIPU_API_BASE`），优先于 `base_url` |
+
 内置提供商（`deepseek` / `siliconflow` / `deepinfra` / `ollama` / `blt` / `cstcloud` / `glm`）
-把"默认 base_url + 密钥环境变量名"写在代码表 `ClientFactory._PROVIDER_SPECS` 里。
-provider 段**不在**这张表里时不再报错，而是走**自定义提供商**路径——只要档案给了
-`base_url` 就照常构造（`OpenAICompatClient`，`llm/providers.py`）。这仍然是 §10 的
-分工：端点属于 Q1，本就归档案；塞进代码等于"接一个校内网关"要改代码 + 重新 review
-客户端工厂。
+命中这张表；provider 段**不在**表里时不报错，而是走**自定义提供商**路径——只要档案给了
+`base_url` 就照常构造。这仍然是 §10 的分工：端点属于 Q1，本就归档案；塞进代码等于
+"接一个校内网关"要改代码 + 重新 review 客户端工厂。
 
 ```json
 {
@@ -443,22 +452,40 @@ provider 段**不在**这张表里时不再报错，而是走**自定义提供�
 }
 ```
 
+曾经这里还有一份 `llm/providers.py`（7 个只设默认 `base_url` 的空壳子类），以及客户端里
+22 行"从 URL 嗅探厂商名"的兜底——同一件事实有三份来源，改一处必然漏两处。两者都已删除，
+理由与迁移说明见 [`REFACTOR_PLAN.md`](./REFACTOR_PLAN.md) §15.5。
+
+#### 10.5.1 方言由声明决定，不按 provider 名推断
+
+`dialect` 决定"思考强度"这类跨提供商语义参数怎么落到请求体上（`glm` 要
+`thinking={'type':'enabled'}` 且输出上限字段名是 `max_tokens`；`deepseek` 直通
+`reasoning_effort`；`ollama` 翻成 `think` 布尔；`openai` **不认识的一律不发**）。
+
+规则是两层、都显式：**档案的 `dialect` 字段 > 规格行里的默认方言**；自定义提供商
+不声明即 `openai`。曾经的做法是"provider 名恰好等于某个方言名就用它"，那让方言变成
+接入方**名字的副作用**：别名用户（`zhipu`/`bigmodel`/`glm4`）因此静默丢掉按角色注入的
+`reasoning_effort`——方言分支整体跳过，且毫无信号。名字撞上方言名只是巧合，不是契约。
+
+| 键名 | 优先级 | 说明 |
+|---|---|---|
+| 端点 | 档案 `base_url` > `base_url_env` 环境变量 > 规格行 `base_url` | 环境变量留空按未设置处理 |
+| 方言 | 档案 `dialect` > 规格行 `dialect`（自定义提供商为 `openai`） | 拼错即报错，不静默降级 |
+| 密钥 | 档案 `api_key` > 档案 `api_key_env` > 规格行 `api_key_env` > 按 provider 段派生 | 报错里永远是具体变量名 |
+
 | 字段 | 作用 | 缺省 |
 |---|---|---|
-| `base_url` | 端点；自定义提供商**必填**。必须是完整 URL（`https://<主机>/<路径>`，不接受裸主机域名）；旧拼写 `host` 已下线，写了报错 | 内置提供商用自己的默认值 |
-| `api_key_env` | 密钥环境变量名 | 按 provider 段派生（`ustc` → `USTC_API_KEY`） |
-| `api_key_required` | 是否强制要求密钥 | 内置表的约定；自定义提供商默认 `true`（本地免鉴权写 `false`） |
-| `dialect` | 请求体方言：`openai` / `glm` / `deepseek` / `ollama` | `openai`（不认识的一律不发） |
+| `base_url` | 端点；自定义提供商**必填**。必须是完整 URL（`https://<主机>/<路径>`，不接受裸主机域名）；旧拼写 `host` 已下线，写了报错 | 规格行给的默认端点（`base_url_env` 环境变量优先于它） |
+| `api_key_env` | 密钥环境变量名 | 规格行给的；自定义提供商按 provider 段派生（`ustc` → `USTC_API_KEY`） |
+| `api_key_required` | 是否强制要求密钥 | 规格表的约定；自定义提供商默认 `true`（本地免鉴权写 `false`） |
+| `dialect` | 请求体方言：`openai` / `glm` / `deepseek` / `ollama` | 规格行里的默认方言；自定义提供商为 `openai` |
 
-**方言**（`llm/adapt.py`）是"发给谁时字段长什么样"的唯一定义处：同一个
-`reasoning_effort`，智谱要配 `thinking` 开关、DeepSeek 直通、Ollama 要变成 `think`
-布尔、纯 OpenAI 兼容端点则必须**不发**（否则 400）。自定义提供商默认落在最后一种；
-若其端点恰好与某个已知家族一致，写一行 `"dialect": "deepseek"` 就能复用该分支，
-不必改代码。拼错的方言会直接报错、不静默降级——静默降级等于"配了却没生效"。
-
-端点上仍有独有的私有字段时（如 vLLM 的 `chat_template_kwargs`），用 `extra_body`
-原样并入请求体：它由 `_build_payload` **最后**并入，所以方言规则不会把它删掉。
-（此前它是个死字段：工厂不注入、适配层又 pop 掉，模板里写了也从没上过线。）
+方言规则本身（同一个 `reasoning_effort`，智谱要配 `thinking` 开关、DeepSeek 直通、
+Ollama 要变成 `think` 布尔、纯 OpenAI 兼容端点则必须不发，否则 400）是
+`llm/adapt.py` 的唯一定义处。端点上仍有独有的私有字段时（如 vLLM 的
+`chat_template_kwargs`），用 `extra_body` 原样并入请求体：它由 `_build_payload`
+**最后**并入，所以方言规则不会把它删掉。（此前它是个死字段：工厂不注入、适配层又
+pop 掉，模板里写了也从没上过线。）
 
 护栏：`tests/test_llm_custom_provider.py` 锁住"未知 provider + base_url 即可用"与密钥
 解析规则；`tests/test_config_roles.py` 要求**每个模板填上占位密钥后都能构造出客户端**，
