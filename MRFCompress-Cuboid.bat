@@ -49,7 +49,7 @@ echo ================================================================
   --data_csv data/MRFCompress-Cuboid/train.csv ^
   --num_samplers 4 ^
   --llm_config "%LLM_CONFIG%" ^
-  --niterations 8 ^
+  --niterations 6 ^
   --samples_per_iteration 4 ^
   --background "Find the mathematical function skeleton that represents magnetorheological effect in compress mode, given data on lambda12(L1/L2), and lambda23(L2/L3). L1, L2, and L3 are the long axis, medium axis, and short axis of the cuboid particle."
 set "RC=%errorlevel%"

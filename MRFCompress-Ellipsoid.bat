@@ -49,7 +49,7 @@ echo ================================================================
   --data_csv data/MRFCompress-Ellipsoid/train.csv ^
   --num_samplers 4 ^
   --llm_config "%LLM_CONFIG%" ^
-  --niterations 8 ^
+  --niterations 6 ^
   --samples_per_iteration 4 ^
   --background "Find the mathematical function skeleton that represents magnetorheological effect in compress mode, given data on lambda12(L1/L2). L1 and L2 are the long axis and short axis of the ellipsoid particle."
 set "RC=%errorlevel%"
