@@ -1,5 +1,10 @@
 {
-  "base_url": "https://open.bigmodel.cn/api/ants/v1",
+  "_comment": [
+    "智谱 OpenAI 兼容端点。注意路径是 /api/paas/v4；曾误写成 /api/ants/v1，",
+    "那个路径现在返回 {\"code\":500,\"msg\":\"404 NOT_FOUND\"}（HTTP 仍是 200，",
+    "所以只看状态码看不出来——客户端会因为响应里没有 choices 而报错）。"
+  ],
+  "base_url": "https://open.bigmodel.cn/api/paas/v4",
   "api_key": "",
   "model": "glm/glm-5.3-flash",
   "max_tokens": 65536,
