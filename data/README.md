@@ -78,5 +78,7 @@ set LLM_CONFIG=config/deepseek_deepseek-v4-flash.config
 example.bat
 ```
 
-`.bat` 与 `.sh` 的逐项等价由 `tests/test_batch_scripts.py` 守住：问题名、数据路径、
-background 与全部命令行参数必须一致。
+4 个单问题运行配置（`MRFShear-Cuboid` / `MRFShear-Ellipsoid` / `MRFCompress-Cuboid` /
+`MRFCompress-Ellipsoid`）同样各有 `.sh` 与 `.bat`，参数与 `.idea/runConfigurations/`
+下的同名 XML 一致。上述三份的逐项等价（以及 `background` 必须与数据表头相符）由
+`tests/test_batch_scripts.py` 守住。

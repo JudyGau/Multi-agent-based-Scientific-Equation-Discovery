@@ -1014,7 +1014,7 @@ Q1（连接谁 / 用哪把钥匙），按 §14 的三层分红本就归档案。
 
 | 指标 | 阶段 8 结束时 | 现在 |
 |---|---|---|
-| 测试数 | 418 | **495**（新增 8 条 `tests/test_batch_scripts.py`：`.bat` 与 `.sh` 逐项等价） |
+| 测试数 | 418 | **499**（新增 12 条 `tests/test_batch_scripts.py`：XML / `.sh` / `.bat` 三者逐项等价） |
 | 全局最长文件 | 482（`llm/client.py`） | **487**（`llm/client.py`；`rag_kb.py` 一度 517，已拆出 `rag_config.py`） |
 | `llm/` 层 | 9 文件 / 1818 行 | 11 文件 / 2331 行（新增 `adapt.py` / `stream.py`） |
 | 入库的配置模板 | 4 | **5** |
@@ -1036,6 +1036,29 @@ Q1（连接谁 / 用哪把钥匙），按 §14 的三层分红本就归档案。
 顺带修掉 `locate_config` 把 `config/x.config` 拼成 `config/config/x.config` 的报错路径；
 并把 `rag_kb.py` 顶部的档案部分拆到 `knowledge/rag_config.py`（加完端点校验后 517 行，
 破了 500 行预算，拆分后 420 行）。
+
+### 15.3 收尾：4 个 MRF 运行配置补齐 .sh / .bat，并修掉 3 份 XML 写错的 background（追加）
+
+`.idea/runConfigurations/` 下的 4 个配置（`MRFShear-Cuboid` / `MRFShear-Ellipsoid` /
+`MRFCompress-Cuboid` / `MRFCompress-Ellipsoid`）原先只能在 IDE 里跑，且第 7 阶段之后
+仓库根的启动脚本只剩批量示例。现在每组都有三份等价物：XML（参数的源头）、`<名>.sh`
+（Linux/macOS）、`<名>.bat`（Windows，可双击），`tests/test_batch_scripts.py` 守住三者
+逐项一致，并额外要求 `background` 与 `data/<名>/train.csv` 的表头相符。
+
+顺带发现 3 份 XML 的 `background` 是复制粘贴写坏的——而 background 会直接进提示词，
+描述一个数据里不存在的列会误导采样：
+
+| 配置 | XML 原文 | 实际数据列 | 已改为 |
+|---|---|---|---|
+| `MRFCompress-Ellipsoid` | …lambda12(L1/L2), **and lambda23(L2/L3)**… | `lambda12,sigma` | 只提 lambda12 与 L1/L2 |
+| `MRFShear-Ellipsoid` | …lambda12(L1/L2), **and lambda23(L2/L3)**… | `lambda12,miu` | 只提 lambda12 与 L1/L2 |
+| `MRFShear-Cuboid` | …短轴 of the **ellipsoid** particle | `lambda12,lambda23,miu` | `cuboid particle` |
+
+`example.sh` 里这 4 条本来就是对的一份，因此以它为准（新建的 `.sh` / `.bat` 也用这一份）。
+另外把两条踩过的坑固化成注释与测试：① 批处理的 `call :label 参数` 会把参数里的脱字符
+翻倍（1→2、2→4），而 `echo` 会把它显示回 1 个，于是写坏的值只在真正传给 Python 时才
+暴露——含 LaTeX `^{...}` 的 background 必须走变量传递；② `.bat` 必须是 CRLF（cmd 的
+`call`/`goto` 按字节偏移定位标签），由新增的 `.gitattributes` 固定。
 
 完整设计与取舍见 [`CONFIG_PLAN.md`](./CONFIG_PLAN.md) §10，架构摘要见
 [`ARCHITECTURE.md`](./ARCHITECTURE.md) §10.5。

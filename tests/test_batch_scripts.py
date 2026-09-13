@@ -1,11 +1,22 @@
-"""启动脚本一致性护栏：`example.bat` / `MRFCompress-3.bat` 必须与同名 `.sh` 等价。
+"""启动脚本一致性护栏：4 组 MRF 运行配置各有三份等价物，必须逐项一致。
 
-为什么需要这组测试：Windows 批处理的 `call :label 参数` 会对参数做**第二轮解析**，
-把参数里的脱字符（caret）**翻倍**——1 个变 2 个、2 个变 4 个；而 `echo` 又会把翻倍
-后的结果显示回 1 个，于是写坏的值只在真正传给 Python 时才暴露（背景知识会带着
-`^^{` 而不是 `^{` 进提示词）。`MRFCompress-3` 的 background 含 LaTeX 的 `^{...}`，
-正是踩这个坑的样本：`example.bat` 因此把 background 放在 `BACKGROUND` 变量里传，
-**不**放进 `call` 参数。下面的测试把这条结论固化成护栏，并守住两份脚本的逐一对应。
+每一组配置（`MRFShear-Cuboid` / `MRFShear-Ellipsoid` / `MRFCompress-Cuboid` /
+`MRFCompress-Ellipsoid`）都有三份：
+
+    .idea/runConfigurations/<名>.xml   IDE 运行配置（入库，参数的源头）
+    <名>.sh                             Linux/macOS 一行命令
+    <名>.bat                            Windows 批处理（可直接双击）
+
+外加 `example.sh` / `example.bat`（批量跑 18 个数据集，两行一组）。测试守住三件事：
+① 三份等价物的参数逐项一致；② `background` 与数据列相符（列名以 `data/<名>/train.csv`
+的表头为准）；③ 批处理本身的硬性要求（UTF-8 无 BOM、全 CRLF、`chcp 65001`、
+`cd /d "%~dp0"`、走 `python -m` 入口）。
+
+为什么盯得这么细：Windows 批处理的 `call :label 参数` 会对参数做**第二轮解析**，把参数
+里的脱字符（caret）**翻倍**——1 个变 2 个、2 个变 4 个；而 `echo` 又会把翻倍后的结果
+显示回 1 个，于是写坏的值只在真正传给 Python 时才暴露。`example.bat` 里 MRFCompress-3
+的 background 含 LaTeX 的 `^{...}`，正是踩这个坑的样本，因此那份 background 走
+`BACKGROUND` 变量传递、**不**放进 `call` 参数。
 
 只做文本解析、不调用 cmd，所以在 Linux 上也能跑（`.bat` 的 CRLF 由 `.gitattributes`
 的 `*.bat text eol=crlf` 保证）。
@@ -17,10 +28,17 @@ import unittest
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+_XML_DIR = _REPO_ROOT / ".idea" / "runConfigurations"
+
 _EXAMPLE_SH = _REPO_ROOT / "example.sh"
 _EXAMPLE_BAT = _REPO_ROOT / "example.bat"
-_MRF_SH = _REPO_ROOT / "MRFCompress-3.sh"
-_MRF_BAT = _REPO_ROOT / "MRFCompress-3.bat"
+
+#: 仓库根的所有批处理与 shell 脚本（example 的 + 4 组 MRF 的）
+_ALL_BATS = sorted(_REPO_ROOT.glob("*.bat"))
+_ALL_SHS = sorted(_REPO_ROOT.glob("*.sh"))
+_MRF_BATS = [p for p in _ALL_BATS if p.stem.startswith("MRF")]
+_MRF_SHS = [p for p in _ALL_SHS if p.stem.startswith("MRF")]
+_XMLS = sorted(_XML_DIR.glob("*.xml"))
 
 #: bash 侧一行调用：run_problem <问题名> <csv> '<或">background<引号>
 _PROBLEM_RE = re.compile(r"^\s*run_problem\s+(\S+)\s+(\S+)\s+(['\"])(.*)\3\s*$")
@@ -31,14 +49,19 @@ _CALL_RE = re.compile(r"^call :run_problem\s+(\S+)\s+(\S+)\s*$")
 _FLAG_RE = re.compile(r"(--\w+)\s+(\"[^\"]*\"|'[^']*'|\S+)")
 
 
+def _read(path: Path) -> str:
+    """读脚本（Path.read_text 做全域换行归一，CRLF 会变成 LF）。"""
+    return path.read_text(encoding="utf-8")
+
+
 def _sh_text(path: Path) -> str:
     """读 shell 脚本，并把反斜杠续行折成空格，使其可以按行解析。"""
-    return path.read_text(encoding="utf-8").replace("\\\n", " ")
+    return _read(path).replace("\\\n", " ")
 
 
-def _bat_text(path: Path) -> str:
-    """读批处理脚本（Path.read_text 做全域换行归一，CRLF 会变成 LF）。"""
-    return path.read_text(encoding="utf-8")
+def _code_only(text: str) -> str:
+    """去掉 rem/注释行，避免注释里的 `--词` 被当成参数。"""
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().lower().startswith("rem"))
 
 
 def _unquote(token: str) -> str:
@@ -47,8 +70,44 @@ def _unquote(token: str) -> str:
 
 
 def _norm_csv(path: str) -> str:
-    """`.sh` 写 `./data/x.csv`，`.bat` 写 `data/x.csv`，同一路径的两种写法。"""
+    """`.sh`/XML 写 `./data/x.csv`，`.bat` 写 `data/x.csv`，同一路径的两种写法。"""
     return path[2:] if path.startswith("./") else path
+
+
+def _flags(text: str, llm_config: str = "") -> dict[str, str]:
+    """把命令行拆成 {参数名: 值}；`%LLM_CONFIG%` 用脚本里声明的默认值代入。"""
+    return {
+        name.lstrip("-"): (llm_config if raw == '"%LLM_CONFIG%"' else _unquote(raw))
+        for name, raw in _FLAG_RE.findall(_code_only(text))
+    }
+
+
+def _default_llm_config(text: str) -> str:
+    """脚本里 LLM_CONFIG 的默认值（shell 是 ${VAR:-x}，批处理是 if not defined）。"""
+    for pattern in (r"LLM_CONFIG:-([^}\"]+)", r'if not defined LLM_CONFIG set "LLM_CONFIG=([^"]+)"'):
+        m = re.search(pattern, text)
+        if m:
+            return m.group(1)
+    raise AssertionError("脚本里找不到 LLM_CONFIG 默认值")
+
+
+def _xml_option(path: Path, name: str) -> str:
+    m = re.search(r'<option name="%s" value="([^"]*)"' % name, _read(path))
+    if m is None:
+        raise AssertionError(f"{path.name} 里没有 option {name}")
+    return m.group(1).replace("&quot;", '"').replace("&amp;", "&")
+
+
+def _xml_name(path: Path) -> str:
+    m = re.search(r'<configuration[^>]*\bname="([^"]+)"', _read(path))
+    if m is None:
+        raise AssertionError(f"{path.name} 里没有 configuration name")
+    return m.group(1)
+
+
+def _csv_columns(problem: str) -> set[str]:
+    header = (_REPO_ROOT / "data" / problem / "train.csv").read_text(encoding="utf-8").splitlines()[0]
+    return {c.strip() for c in header.split(",")}
 
 
 def _sh_problems() -> list[tuple[str, str, str]]:
@@ -64,7 +123,7 @@ def _bat_problems() -> list[tuple[str, str, str]]:
     """example.bat 的 (问题名, csv, background)；background 取自紧邻上一行的 set。"""
     out: list[tuple[str, str, str]] = []
     background: str | None = None
-    for line in _bat_text(_EXAMPLE_BAT).splitlines():
+    for line in _read(_EXAMPLE_BAT).splitlines():
         m = _SET_BG_RE.match(line)
         if m:
             background = m.group(1)
@@ -77,28 +136,68 @@ def _bat_problems() -> list[tuple[str, str, str]]:
     return out
 
 
-def _flags(text: str, llm_config: str) -> dict[str, str]:
-    return {
-        name.lstrip("-"): (llm_config if raw == '"%LLM_CONFIG%"' else _unquote(raw))
-        for name, raw in _FLAG_RE.findall(text)
-    }
+class RunConfigurationParityTest(unittest.TestCase):
+    """4 组 MRF 配置：XML（源头）、.sh、.bat 三份参数逐项一致。"""
+
+    def test_the_four_configurations_all_exist_in_all_three_forms(self):
+        names = {_xml_name(p) for p in _XMLS}
+        self.assertEqual(len(names), 4, "入库的 IDE 运行配置应为 4 个（.idea/runConfigurations/*.xml）")
+        self.assertEqual(names, {p.stem for p in _MRF_BATS}, "有配置缺 .bat，或有多余的 .bat")
+        self.assertEqual(names, {p.stem for p in _MRF_SHS}, "有配置缺 .sh，或有多余的 .sh")
+
+    def test_ide_configs_use_module_entry_point(self):
+        for path in _XMLS:
+            with self.subTest(config=path.name):
+                self.assertEqual(_xml_option(path, "SCRIPT_NAME"), "drsr_420.cli.main")
+                self.assertEqual(_xml_option(path, "MODULE_MODE"), "true")
+                self.assertEqual(_xml_option(path, "WORKING_DIRECTORY"), "$PROJECT_DIR$")
+
+    def test_bats_match_their_ide_run_configurations(self):
+        for path in _XMLS:
+            name = _xml_name(path)
+            bat = _REPO_ROOT / f"{name}.bat"
+            expected = _flags(_xml_option(path, "PARAMETERS"))
+            expected["data_csv"] = _norm_csv(expected["data_csv"])
+            actual = _flags(_read(bat), _default_llm_config(_read(bat)))
+            actual["data_csv"] = _norm_csv(actual["data_csv"])
+            with self.subTest(config=name):
+                self.assertEqual(expected, actual, f"{bat.name} 的参数与 {path.name} 不一致")
+
+    def test_bats_match_their_shell_scripts(self):
+        for bat in _MRF_BATS:
+            sh = _REPO_ROOT / f"{bat.stem}.sh"
+            expected = _flags(_sh_text(sh))
+            expected["data_csv"] = _norm_csv(expected["data_csv"])
+            actual = _flags(_read(bat), _default_llm_config(_read(bat)))
+            actual["data_csv"] = _norm_csv(actual["data_csv"])
+            with self.subTest(config=bat.stem):
+                self.assertEqual(expected, actual, f"{bat.name} 的参数与 {sh.name} 不一致")
+
+    def test_background_matches_the_dataset(self):
+        """background 描述的列必须真的存在——XML 里曾把 ellipsoid 写成 lambda12+lambda23。"""
+        for bat in _MRF_BATS:
+            name = bat.stem
+            bg = _flags(_read(bat), _default_llm_config(_read(bat)))["background"]
+            columns = _csv_columns(name)
+            with self.subTest(config=name):
+                for var in ("lambda12", "lambda23"):
+                    self.assertEqual(var in bg, var in columns,
+                                     f"{name} 的 background 与数据列不符（实际列：{sorted(columns)}）")
+                mode = "shear" if "Shear" in name else "compress"
+                self.assertIn(f"{mode} mode", bg, f"{name} 的 background 没写对模式")
+                shape = name.rsplit("-", 1)[-1].lower()  # cuboid / ellipsoid
+                self.assertIn(shape, bg.lower(), f"{name} 的 background 把粒子形状写错了")
+
+    def test_llm_config_defaults_match(self):
+        sh = _default_llm_config(_sh_text(_EXAMPLE_SH))
+        for path in _ALL_BATS:
+            with self.subTest(bat=path.name):
+                self.assertEqual(_default_llm_config(_read(path)), sh,
+                                 f"{path.name} 的默认档案与 example.sh 不一致")
 
 
-def _default_llm_config(text: str) -> str:
-    """从脚本里取出 LLM_CONFIG 的默认值（shell 用 ${VAR:-x}，批处理用 if not defined）。"""
-    for pattern in (r"LLM_CONFIG:-([^}\"]+)", r'if not defined LLM_CONFIG set "LLM_CONFIG=([^"]+)"'):
-        m = re.search(pattern, text)
-        if m:
-            return m.group(1)
-    raise AssertionError("脚本里找不到 LLM_CONFIG 默认值")
-
-
-class BatchScriptParityTest(unittest.TestCase):
-    """两个 .bat 与对应 .sh 逐项等价：问题名、数据路径、background、命令行参数。"""
-
-    def test_shell_counterparts_still_exist(self):
-        for path in (_EXAMPLE_SH, _MRF_SH):
-            self.assertTrue(path.is_file(), f"{path.name} 被删了，但对应的 .bat 还在")
+class ExampleScriptParityTest(unittest.TestCase):
+    """example.bat 的 18 条调用与 example.sh 逐字节一致。"""
 
     def test_example_bat_declares_the_same_problems(self):
         sh, bat = _sh_problems(), _bat_problems()
@@ -112,30 +211,12 @@ class BatchScriptParityTest(unittest.TestCase):
         latex = {name: bg for name, _, bg in sh}["MRFCompress-3"]
         self.assertEqual(latex.count("^"), 3, "LaTeX 的 ^ 不再出现，脱字符护栏需要重估")
 
-    def test_mrf_bat_passes_the_same_flags(self):
-        # MRFCompress-3.sh 直接写死 --llm_config（没有环境变量默认值这一层），
-        # 所以它的档案取值从命令行里取；.bat 那边用 %LLM_CONFIG% 的默认值。
-        m = re.search(r"--llm_config\s+(\S+)", _sh_text(_MRF_SH))
-        self.assertIsNotNone(m, "MRFCompress-3.sh 里没解析到 --llm_config")
-        sh = _flags(_sh_text(_MRF_SH), _unquote(m.group(1)))
-        self.assertTrue(sh.get("background"), "MRFCompress-3.sh 里没解析到 --background")
-        bat = _flags(_bat_text(_MRF_BAT), _default_llm_config(_bat_text(_MRF_BAT)))
-        for flags in (sh, bat):  # .sh 写 ./data/…，.bat 写 data/…，同一路径的两种写法
-            flags["data_csv"] = _norm_csv(flags["data_csv"])
-        self.assertEqual(sh, bat, "MRFCompress-3.bat 的参数与 MRFCompress-3.sh 不一致")
 
-    def test_llm_config_defaults_match(self):
-        sh = _default_llm_config(_sh_text(_EXAMPLE_SH))
-        for path, text in ((_EXAMPLE_BAT, _bat_text(_EXAMPLE_BAT)),
-                           (_MRF_BAT, _bat_text(_MRF_BAT))):
-            self.assertEqual(_default_llm_config(text), sh, f"{path.name} 的默认档案与 example.sh 不一致")
-
-
-class BatchScriptHygieneTest(unittest.TestCase):
+class BatchHygieneTest(unittest.TestCase):
     """批处理本身的硬性要求：CRLF + 无 BOM + UTF-8 + 双击可用 + 走模块入口。"""
 
     def test_files_are_utf8_crlf_without_bom(self):
-        for path in (_EXAMPLE_BAT, _MRF_BAT):
+        for path in _ALL_BATS:
             raw = path.read_bytes()
             with self.subTest(bat=path.name):
                 self.assertFalse(raw.startswith(b"\xef\xbb\xbf"),
@@ -146,23 +227,32 @@ class BatchScriptHygieneTest(unittest.TestCase):
                                  "必须全是 CRLF：cmd 的 call/goto 按字节定位标签，LF-only 会找错标签")
                 self.assertTrue(raw.endswith(b"\r\n"), "结尾缺少换行")
 
-    def test_double_click_works_from_any_directory(self):
-        for path in (_EXAMPLE_BAT, _MRF_BAT):
-            with self.subTest(bat=path.name):
-                self.assertIn('cd /d "%~dp0"', _bat_text(path),
-                              "缺 cd /d \"%~dp0\"，双击时工作目录不对，data/ 与 config/ 都会找不到")
+    def test_shell_scripts_are_lf(self):
+        for path in _ALL_SHS:
+            raw = path.read_bytes()
+            with self.subTest(sh=path.name):
+                self.assertNotIn(b"\r\n", raw, "shell 脚本必须是 LF：CRLF 会让 shebang 与续行失效")
+                self.assertTrue(raw.endswith(b"\n"), "结尾缺少换行")
 
-    def test_background_is_never_passed_as_call_argument(self):
+    def test_double_click_works_from_any_directory(self):
+        for path in _ALL_BATS:
+            with self.subTest(bat=path.name):
+                self.assertIn('cd /d "%~dp0"', _read(path),
+                              '缺 cd /d "%~dp0"，双击时工作目录不对，data/ 与 config/ 都会找不到')
+
+    def test_no_caret_inside_call_arguments(self):
         """call 会把参数里的脱字符翻倍，含 ^ 的 background 必须走变量传递。"""
-        for line in _bat_text(_EXAMPLE_BAT).splitlines():
-            if line.strip().startswith("call :run_problem"):
-                self.assertNotIn("^", line, f"call 参数里的 ^ 会被翻倍，background 必须走变量：{line}")
-        # 上面「走变量」的写法必须真的把 background 传下去：每个 call 前都有 set BACKGROUND
+        for path in _ALL_BATS:
+            for line in _read(path).splitlines():
+                if line.lstrip().startswith("call"):
+                    self.assertNotIn("^", line,
+                                     f"{path.name}: call 参数里的 ^ 会被翻倍：{line}")
+        # example.bat 的「走变量」写法必须真的把 background 传下去：每个 call 前都有 set BACKGROUND
         self.assertEqual(len(_bat_problems()), 18)
 
     def test_module_entry_point_only(self):
-        for path in (_EXAMPLE_BAT, _MRF_BAT):
-            text = _bat_text(path)
+        for path in _ALL_BATS:
+            text = _read(path)
             with self.subTest(bat=path.name):
                 self.assertIn("-m drsr_420.cli.main", text)
                 self.assertNotIn("main.py", text, "仓库根已无 main.py，入口必须是 python -m")

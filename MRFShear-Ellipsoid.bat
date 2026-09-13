@@ -5,11 +5,11 @@ cd /d "%~dp0"
 set "SELF=%~nx0"
 
 rem ===========================================================================
-rem DrSR 单问题运行示例（Windows 批处理版，与 MRFCompress-3.sh 等价）：
-rem 对 MRFCompress-Cuboid（压缩模式，8 个样本）执行一次方程发现。
+rem DrSR 单问题运行示例（Windows 批处理版，与 MRFShear-Ellipsoid.sh 等价）：
+rem 对 MRFShear-Ellipsoid（剪切模式，7 个样本）执行一次方程发现。
 rem
 rem 用法：
-rem   MRFCompress-3.bat                        直接双击，用默认档案与 Python
+rem   MRFShear-Ellipsoid.bat                   直接双击，用默认档案与 Python
 rem   set LLM_CONFIG=config/deepseek_deepseek-v4-flash.config 后再运行本脚本
 rem   set PYTHON=C:\Python312\python.exe 后再运行本脚本
 rem
@@ -17,7 +17,7 @@ rem 依赖：需存在 LLM 档案（默认 config/glm_glm-5.3-flash.config），
 rem 对应环境变量已设置（如 ZHIPU_API_KEY / DEEPSEEK_API_KEY）。
 rem 首次使用：copy config\glm_glm-5.3-flash.config.example config\glm_glm-5.3-flash.config
 rem 入口为 python -m drsr_420.cli.main（本脚本会先切到仓库根目录）。
-rem 注意：文件名沿用原 .sh 的叫法，实际运行的问题是 MRFCompress-Cuboid。
+rem 参数与入库的 IDE 运行配置 .idea/runConfigurations/ 下的同名 XML 一致。
 rem ===========================================================================
 
 rem ── Python 解释器：PYTHON 环境变量 优先，其次仓库内 .venv2，最后 PATH 上的 python
@@ -42,19 +42,19 @@ if not exist "%LLM_CONFIG%" (
 )
 
 echo ================================================================
-echo === MRFCompress-Cuboid
+echo === MRFShear-Ellipsoid
 echo ================================================================
 "%PYTHON%" -m drsr_420.cli.main ^
-  --problem_name MRFCompress-Cuboid ^
-  --data_csv data/MRFCompress-Cuboid/train.csv ^
+  --problem_name MRFShear-Ellipsoid ^
+  --data_csv data/MRFShear-Ellipsoid/train.csv ^
   --num_samplers 4 ^
   --llm_config "%LLM_CONFIG%" ^
   --niterations 8 ^
   --samples_per_iteration 4 ^
-  --background "Find the mathematical function skeleton that represents magnetorheological effect in compress mode, given data on lambda12(L1/L2), and lambda23(L2/L3). L1, L2, and L3 are the long axis, medium axis, and short axis of the cuboid particle."
+  --background "Find the mathematical function skeleton that represents magnetorheological effect in shear mode, given data on lambda12(L1/L2). L1 and L2 are the long axis and short axis of the ellipsoid particle."
 set "RC=%errorlevel%"
-if not "%RC%"=="0" echo [FAIL] MRFCompress-Cuboid（退出码 %RC%）
-if "%RC%"=="0" echo [OK] MRFCompress-Cuboid
+if not "%RC%"=="0" echo [FAIL] MRFShear-Ellipsoid（退出码 %RC%）
+if "%RC%"=="0" echo [OK] MRFShear-Ellipsoid
 call :maybe_pause
 exit /b %RC%
 
