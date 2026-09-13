@@ -73,7 +73,7 @@ def _summarize_text(client, cfg, full_text):
         {"role": "system", "content": "You are a helpful assistant, you need to read literature and summarize."},
         {"role": "user", "content": f"{full_text}"}
     ])
-    # llm.py 对每个请求都附带 tools + tool_choice=auto：摘要模型偶尔会"回答"成
+    # drsr_420.llm.client 对每个请求都附带 tools + tool_choice=auto：摘要模型偶尔会"回答"成
     # 工具调用而 content 为空——必须显式报错（由调用方记入返回列表），
     # 否则空字符串会被当成合法摘要静默入库。
     if response.get("tool_calls"):

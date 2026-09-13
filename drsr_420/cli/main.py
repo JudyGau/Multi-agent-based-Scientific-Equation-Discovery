@@ -9,7 +9,8 @@
 
 现在：参数解析 / 输出双写 / 日志 / LLM 客户端 / 数据集 / spec 渲染 / 产物快照各成
 一个函数，``main(argv)`` 只做编排。**命令行接口与产物文件名保持不变**
-（``.idea/runConfigurations/*.xml`` 直接以 ``$PROJECT_DIR$/main.py`` 启动）。
+（``.idea/runConfigurations/*.xml`` 的 4 个 MRF 运行配置、``example.sh`` 与
+``MRFCompress-3.sh`` 都以 ``python -m drsr_420.cli.main`` 启动本模块）。
 """
 from __future__ import annotations
 

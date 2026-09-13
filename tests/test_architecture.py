@@ -14,6 +14,10 @@ Agent 层不反向依赖编排层。
 阶段 6：兼容层清退——旧路径必须导入失败、顶层只留 `__init__.py`、
 库代码与测试都不得再 import 旧路径。
 
+阶段 7：仓库根的 `main.py` / `llm.py` 也清退——入口统一为
+`python -m drsr_420.cli.main`（IDE 运行配置与 `.sh` 同步改为模块方式），
+`llm` 的公开 API 由 `drsr_420.llm` 直接提供；仓库根不再贡献任何可导入模块。
+
 基线（阶段 0 记录）：测试数 217 ｜ drsr_420+tests 源码 9,375 行 ｜
 drsr_420/ 顶层 .py 21 个（15 实现 + 6 兼容 shim）｜ 子包 2 个 ｜
 最长文件 llm.py 773 行 ｜ Agent 7 个
@@ -22,6 +26,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import importlib.util
 import os
 import subprocess
 import sys
@@ -177,6 +182,60 @@ class LegacyPathRemovalTest(unittest.TestCase):
             + "\n".join(sorted(set(offenders))))
 
 
+#: 仓库根目录曾有过的两个顶层模块：命令行入口 `main.py` 与 LLM 客户端 `llm.py`。
+#: 阶段 7 把两者也清退了（此前只是被降级成转发层）。
+_REMOVED_ROOT_MODULES = ("main", "llm")
+
+
+class RootEntrypointRemovalTest(unittest.TestCase):
+    """阶段 7：仓库根不再有可导入的模块，入口统一走 `-m drsr_420.cli.main`。
+
+    与 `LegacyPathRemovalTest` 的分工：那个守"包内旧路径"，这个守"包外的顶层模块"。
+    根目录的 `main.py`（入口）与 `llm.py`（LLM 客户端）都已清退，根目录不再是
+    `sys.path` 的一部分，因此包自包含、也不会被 PyPI 上的同名 `llm` 包劫持。
+    """
+
+    def test_root_holds_no_python_module(self):
+        leftovers = sorted(path.name for path in Path(_REPO_ROOT).glob("*.py"))
+        self.assertEqual(
+            leftovers, [],
+            "仓库根不应再有 .py 模块：命令行入口用 `python -m drsr_420.cli.main`，"
+            "库代码一律进 drsr_420/ 的分层子包")
+
+    def test_removed_root_modules_resolve_outside_repo_root(self):
+        """`import main` / `import llm` 不得解析回仓库根。
+
+        只看"解析结果是否落在仓库根"而不是"是否 ModuleNotFoundError"：环境里若恰好
+        装了同名的 PyPI 包（`llm` 就是这种情况），断言前者依然成立。
+        """
+        root = Path(_REPO_ROOT).resolve()
+        for name in _REMOVED_ROOT_MODULES:
+            with self.subTest(module=name):
+                spec = importlib.util.find_spec(name)
+                if spec is None or spec.origin is None:
+                    continue          # 压根解析不到，正是期望
+                origin = Path(spec.origin).resolve()
+                self.assertNotEqual(
+                    origin.parent, root,
+                    f"`{name}` 仍从仓库根解析（{origin}）——顶层模块已清退")
+
+    def test_no_source_imports_root_modules(self):
+        offenders: list[str] = []
+        targets = (list(Path(_PKG_DIR).rglob("*.py"))
+                   + list(Path(_REPO_ROOT, "tests").rglob("*.py")))
+        for path in targets:
+            if "__pycache__" in path.parts:
+                continue
+            for module_name in _all_imports(str(path)):
+                if module_name.split(".")[0] in _REMOVED_ROOT_MODULES:
+                    offenders.append(
+                        f"{path.relative_to(_REPO_ROOT)} -> {module_name}")
+        self.assertEqual(
+            sorted(set(offenders)), [],
+            "这些 import 指向已删除的仓库根模块（运行时会 ImportError 或解析到别的库）:\n"
+            + "\n".join(sorted(set(offenders))))
+
+
 class ModuleImportabilityTest(unittest.TestCase):
     """每个 Agent 模块都必须能单独导入（防循环导入）。"""
 
@@ -208,7 +267,7 @@ class LayerDirectionTest(unittest.TestCase):
         "drsr_420.runtime",
         "drsr_420.analysis",
         "drsr_420.cli",
-        "main",
+        "main",          # 仓库根入口已删除（阶段 7）；保留为墓碑，防旧写法复活
     )
 
     def test_agents_do_not_import_orchestration_layers(self):

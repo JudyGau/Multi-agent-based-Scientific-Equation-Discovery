@@ -8,6 +8,9 @@
 #
 # 依赖：需存在 LLM 配置文件（默认 glm_glm-5.3-flash.config），且 api_key 已填或
 # 对应环境变量已设置（如 ZHIPU_API_KEY / DEEPSEEK_API_KEY）。
+#
+# 入口为 `python -m drsr_420.cli.main`（需在仓库根目录执行）；等价于安装后的
+# `drsr420` 命令，以及 IDE 里 4 个 MRF* 运行配置（同样以模块方式启动）。
 set -u
 
 PYTHON="${PYTHON:-python3}"
@@ -39,7 +42,7 @@ run_problem() {
   echo "================================================================"
   echo "=== [$TOTAL] $name"
   echo "================================================================"
-  if "$PYTHON" main.py \
+  if "$PYTHON" -m drsr_420.cli.main \
       --problem_name "$name" \
       --data_csv "$csv" \
       --llm_config "$LLM_CONFIG" \

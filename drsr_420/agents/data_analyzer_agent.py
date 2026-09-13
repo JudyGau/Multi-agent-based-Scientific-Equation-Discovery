@@ -221,7 +221,7 @@ STRICTLY deliver results in the following structured format:
             if self.llm_client is None:
                 raise RuntimeError('DataAnalyzer requires llm_client, but got None')
             # 按任务克隆客户端：思考强度等私有参数从配置 tasks.analysis 声明，
-            # 由 ClientFactory 注入 task_params，provider 差异在 llm.py 适配层处理
+            # 由 ClientFactory 注入 task_params，provider 差异在 drsr_420/llm 适配层处理
             llm_client = self.llm_client.clone_for_task('analysis')
             # 数据分析仅需简短结论，限制输出长度，避免 max_tokens 过大导致服务端长时间生成
             llm_client.kwargs['max_tokens'] = 32768

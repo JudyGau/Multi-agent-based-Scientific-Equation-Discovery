@@ -869,6 +869,10 @@ $env:ZHIPU_API_KEY='dummy-test-key'
 4 行真入口（IDE 运行配置与两个 `.sh` 都靠它），`llm.py` 只再导出公开 API。
 判据、保留理由与迁移期踩过的坑见 [`ARCHITECTURE.md`](./ARCHITECTURE.md) §8。
 
+> 这两个根模块随后也在阶段 7 一并删除（见 §13）：`-m` 已经能表达同一个入口，
+> 而仓库根留在 `sys.path` 上的代价（包不自包含、`import llm` 可能被同名 PyPI 包劫持）
+> 并不值得。
+
 ### 12.4 顺带修掉的缺陷
 
 1. **GBK 控制台崩溃 ×3**（同类缺陷第三次出现）：剪枝演示的 `x²`、剪枝 verbose 日志的 `✂`、
@@ -888,3 +892,53 @@ $env:ZHIPU_API_KEY='dummy-test-key'
 | `drsr_420/` 顶层 `.py` | 21（1 `__init__` + 20 shim） | **1** |
 | 包内实现行数 | 未统计 | 9,477（8 层） |
 | 兼容转发模块 | 24 | **0** |
+
+---
+
+## 13. 执行记录（阶段 7：清退仓库根的顶层模块）
+
+阶段 6 只清退了**包内**的转发层，仓库根还留着最后两个顶层模块——`main.py`（命令行
+入口）与 `llm.py`（旧模块名的再导出）。当时把它们判为"项目的对外接口"，但那份接口
+完全可以用 `-m` 表达；真正付出的代价是仓库根必须永远待在 `sys.path` 上。本阶段把
+这两个文件也删掉，并把所有引用点同步改成模块方式。
+
+### 13.1 改了什么
+
+| 曾经的用法 | 现在 | 同步修改的引用点 |
+|---|---|---|
+| `python main.py …` | `python -m drsr_420.cli.main …` | 4 个 `.idea/runConfigurations/*.xml`、`example.sh`、`MRFCompress-3.sh`、`tests/test_console_encoding.py` |
+| `import llm` / `python llm.py` | `from drsr_420 import llm` / `python -m drsr_420.llm` | 库代码与 `tests/` 全部走规范路径（阶段 6 已完成迁移） |
+
+IDE 运行配置从**脚本模式**改为**模块模式**：`SCRIPT_NAME` 由 `$PROJECT_DIR$/main.py`
+改为 `drsr_420.cli.main`，`MODULE_MODE` 由 `false` 改为 `true`；`WORKING_DIRECTORY`
+保持 `$PROJECT_DIR$`，因此 `--data_csv ./data/…` 与 `--llm_config llm.config` 这些
+相对路径、以及命令行参数与产物文件名**全程未变**。
+
+### 13.2 新护栏：`RootEntrypointRemovalTest`
+
+阶段 6 的 `LegacyPathRemovalTest` 管包内旧路径，本阶段补上管**包外顶层模块**的三条：
+
+1. 仓库根不得再出现任何 `.py` 模块（这才是"没有下一个顶层 shim"的充分条件）；
+2. `main` / `llm` 不得从仓库根解析——断言"解析结果不落在仓库根"而非
+   "ModuleNotFoundError"，因为环境里若恰好装了同名的 PyPI 包（`llm` 就是这种情况），
+   后者会假失败；
+3. 库代码与 `tests/` 不得 import 这两个顶层名。
+
+第 1 条比列出两个具体文件名更强：它顺带堵住"多年后再冒出一个根目录脚本"。
+
+### 13.3 顺带清理的过期表述
+
+转发层消失后，几处注释仍在描述"门面模块"：`drsr_420/llm/__init__.py` 里
+"`owner_module()` 供兼容层把属性写入转发到定义处"（已无兼容层，改为提醒打桩必须打在
+定义处）、`tool_runner.py` / `read_paper.py` / `data_analyzer_agent.py` /
+`cli/main.py` 里指向 `main.py`、`llm.py` 的注释，以及 README / ARCHITECTURE / `data/README.md`
+中的命令行示例。
+
+### 13.4 阶段 7 指标
+
+| 指标 | 阶段 6 结束时 | 现在 |
+|---|---|---|
+| 测试数 | 372 | **375**（`RootEntrypointRemovalTest` 新增 3 条） |
+| 仓库根 `.py` 模块 | 2（`main.py` 18 行、`llm.py` 33 行） | **0** |
+| `drsr_420.tools.*` 等旧路径 | 0 | 0（未复活） |
+| `sys.path` 依赖 | 需"仓库根在搜索路径上" | 无（`python -m` + `drsr420` 命令） |

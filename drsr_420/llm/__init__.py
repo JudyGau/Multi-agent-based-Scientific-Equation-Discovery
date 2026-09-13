@@ -1,4 +1,4 @@
-"""LLM 接入层（对外 API 与原根目录 ``llm.py`` 完全一致）。
+"""LLM 接入层（原根目录 ``llm.py`` 的实现，公开 API 保持不变）。
 
 子模块职责
 ==========
@@ -10,16 +10,18 @@
 
 为什么本模块还需要 ``__getattr__``
 ==================================
-旧实现是单模块 ``llm.py``，所以外部与测试会直接访问两类"不在 `__all__` 里"的名字：
+旧实现是单模块 ``llm.py``，所以外部与单测会直接访问两类"不在 `__all__` 里"的名字：
 
-1. **私有名**：``llm._post_with_retry``、``llm._accumulate_global_stats``
-   （``mock.patch`` / 单测直接用它们）；
+1. **私有名**：``llm._post_with_retry``、``llm._accumulate_global_stats``；
 2. **会被重新绑定的模块级状态**：``GLOBAL_TIME_SECONDS`` 由 stats 模块
    ``global X; X += ...`` 重新绑定——``from ... import X`` 只会拿到导入那一刻的旧值。
 
 因此这两类名字**不做 eager re-export**，一律经 ``__getattr__`` 从**定义它的子模块**
-取；``owner_module()`` 同时供兼容层把属性写入（``mock.patch`` 的打桩）转发到定义处，
-否则桩会打在门面上而实现模块看不到。
+取（:func:`owner_module` 负责定位归属）。
+
+根目录的转发层 ``llm.py`` 已在阶段 7 删除，已无"门面模块"需要把属性写入转发到定义处；
+``mock.patch`` 请一律打在**定义处**：``LLMClient.chat`` 是在 ``drsr_420/llm/client.py``
+的全局命名空间里查找 ``_post_with_retry`` 的，打在 ``drsr_420.llm`` 上等于没打。
 """
 import importlib
 

@@ -34,7 +34,7 @@ pip install -e .          # 之后可用 `drsr420` 命令；包自包含，不�
 CSV 需带表头：前 n-1 列为特征，最后一列为因变量。
 
 ```bash
-python main.py \
+python -m drsr_420.cli.main \
   --problem_name oscillator1 \
   --data_csv ./data/oscillator1/train.csv \
   --background 'Find the mathematical function skeleton that represents acceleration in a damped nonlinear oscillator system with driving force, given data on position, and velocity.'
@@ -42,10 +42,13 @@ python main.py \
 
 运行后在 `experiments/{problem}_{时间戳}/` 下生成所有产物。
 
+> 须在**仓库根目录**执行：`--data_csv ./data/…` 与 `--llm_config llm.config` 都按当前
+> 工作目录解析（IDE 运行配置的 `WORKING_DIRECTORY` 也正是 `$PROJECT_DIR$`）。
+
 可选调参示例（最大采样数 ≈ niterations × num_samplers × samples_per_iteration）：
 
 ```bash
-python main.py --problem_name oscillator1 --data_csv ./data/oscillator1/train.csv \
+python -m drsr_420.cli.main --problem_name oscillator1 --data_csv ./data/oscillator1/train.csv \
   --niterations 50 --samples_per_iteration 8
 ```
 
@@ -155,8 +158,6 @@ python -m drsr_420.agents --check    # 契约自检：上下游引用 / 可达�
 ## 仓库结构
 
 ```
-main.py                       # 命令行入口（一行委托到 drsr_420/cli/main.py）
-llm.py                        # 旧根模块名再导出公开 API（实现见 drsr_420/llm）
 glm_glm-5.3-flash.config / deepseek_deepseek-v4-flash.config / rag.config   # 配置文件（不入库）
 example.sh                    # 批量运行示例
 drsr_420/                     # 单一顶层包（8 层，依赖方向自底向上）
@@ -205,13 +206,18 @@ drsr_420/                     # 单一顶层包（8 层，依赖方向自底向�
   runtime/
     pipeline.py               #   实验主流程编排
   cli/
-    main.py                   #   命令行入口（拆分为可测函数）
+    main.py                   #   命令行入口：python -m drsr_420.cli.main（拆分为可测函数）
 specs/                        # 历史静态 spec（动态模式已不使用，保留备查）
 experiments/{problem}_{timestamp}/   # 本次运行产物
 ```
 
 > `drsr_420/` 顶层只有 `__init__.py`：实现全部分层，历史的一层平铺路径已清退
 > （见 `docs/ARCHITECTURE.md` §8）。
+>
+> **仓库根目录没有任何 `.py` 模块**：命令行入口是 `python -m drsr_420.cli.main`
+> （安装后等价于 `drsr420` 命令），`.idea/runConfigurations/` 的 4 个 MRF 运行配置、
+> `example.sh` 与 `MRFCompress-3.sh` 都以模块方式启动。因此包自包含、克隆即可运行，
+> 也不会被 PyPI 上的同名 `llm` 包劫持。
 
 ## 测试
 

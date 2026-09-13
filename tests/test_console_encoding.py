@@ -24,7 +24,7 @@ _ENTRY_POINTS = (
     ("agents 契约自检", ["-m", "drsr_420.agents", "--check"]),
     ("剪枝演示", ["-m", "drsr_420.analysis.prune_demo"]),
     ("剪枝 verbose 日志", ["-m", "drsr_420.analysis.sensitivity_prune"]),
-    ("CLI --help", ["main.py", "--help"]),
+    ("CLI --help", ["-m", "drsr_420.cli.main", "--help"]),
 )
 
 #: 直接调用 API（verbose 剪枝会走 _log 打印路径）的探针脚本。

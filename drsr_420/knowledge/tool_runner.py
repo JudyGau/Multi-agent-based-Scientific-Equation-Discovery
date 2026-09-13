@@ -105,7 +105,7 @@ class MCPStdioClient:
             try:
                 # errlog 显式绑定 sys.__stderr__：mcp 的默认参数 errlog=sys.stderr
                 # 在 mcp.client.stdio 导入瞬间求值，而本模块可能被 tool_caller_agent
-                # 在 main.py 把 sys.stderr 换成无 fileno 的 _Tee 之后才首次导入——
+                # 在 drsr_420/cli/main.py 把 sys.stderr 换成无 fileno 的 _Tee 之后才首次导入——
                 # 届时默认值即 _Tee，子进程 spawn 直接 AttributeError 起不来。
                 async with stdio_client(self._params, errlog=sys.__stderr__) as (read, write):
                     async with ClientSession(read, write) as session:

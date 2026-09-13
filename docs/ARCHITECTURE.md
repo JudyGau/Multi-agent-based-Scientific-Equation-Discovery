@@ -17,7 +17,7 @@ Reasoning from Data and Experience*, arXiv:2506.04282。
 ## 1. 一分钟看懂运行链路
 
 ```
-python main.py --problem_name X --data_csv data/X/train.csv
+python -m drsr_420.cli.main --problem_name X --data_csv data/X/train.csv
   └─ drsr_420.cli.main.main()
        ├─ runtime.pipeline.main()
        │    ├─ core.buffer.ExperienceBuffer        共享记忆（含断点续跑恢复）
@@ -58,8 +58,9 @@ CoordinatorAgent.run()  while 未达采样上限/时长上限:
 | `cli` | `drsr_420/cli/` | 命令行入口：参数解析、输出归档、数据集加载、spec 渲染、产物快照 |
 
 `drsr_420/` 顶层只有 `__init__.py`：**实现全部在分层子包里**，历史的一层平铺路径已清退
-（见 §8）；根目录的 `main.py`（命令行入口）与 `llm.py`（旧根模块名的公开 API 再导出）
-是仅有的两个例外，它们不是分层的一部分。
+（见 §8）。仓库根目录同样不再有任何 `.py` 模块——命令行入口是
+`python -m drsr_420.cli.main`（或安装后的 `drsr420` 命令），因此 `drsr_420/` 之外
+没有任何代码需要被导入，包是自包含的。
 
 ### 实测规模
 
@@ -266,16 +267,26 @@ python -c "from drsr_420.agents import agent_specs; print(agent_specs())"
 | `drsr_420.sampler` / `evaluator` / `tool_caller` / `experience_summarizer` / `residual_analyzer` / `data_analyse_real` | `drsr_420.agents.*` |
 
 **删除时机（当初写下的判据，现已满足）**：外部脚本与历史测试全部改到新路径。
-具体是：`.idea/runConfigurations/*.xml`（4 个运行配置）、`example.sh`、`MRFCompress-3.sh`
-都只依赖 `python main.py`（入口本身保留），`tests/` 下的旧路径 import 全部迁移完毕，
+具体是：`tests/` 下的旧路径 import 全部迁移完毕，`.idea/runConfigurations/*.xml`、
+`example.sh`、`MRFCompress-3.sh` 也都改为 `python -m drsr_420.cli.main`，
 `_POST_WRITE`（写/删转发）只在兼容层内部被用到——于是转发层成为纯负债。
 
-**根目录两个文件不在删除范围内**，它们是项目的对外接口而非历史包袱：
+### 8.1 仓库根的两个顶层模块（阶段 7，已删除）
 
-| 文件 | 现状 | 为什么保留 |
+包内转发层清退后，根目录还留着 `main.py`（命令行入口）与 `llm.py`（旧模块名的
+再导出）。它们当时的保留理由是"项目的对外接口"，但这份"接口"完全可以用 `-m` 表达，
+代价却是仓库根必须一直待在 `sys.path` 上：包不自包含，`import llm` 还可能被 PyPI 上的
+同名包劫持。因此两者一并删除，全部引用点同步改为模块方式：
+
+| 曾经的用法 | 现在的调用方式 | 已同步的引用点 |
 |---|---|---|
-| `main.py` | 4 行委托：`from drsr_420.cli.main import main` | 4 个 IDE 运行配置与两个 `.sh` 脚本都以 `python main.py` 启动实验 |
-| `llm.py` | 再导出 `drsr_420.llm.__all__` | 外部脚本/notebook 仍在 `import llm`；私有名不再转发，打桩请打定义处 |
+| `python main.py ...` | `python -m drsr_420.cli.main ...` | 4 个 IDE 运行配置、`example.sh`、`MRFCompress-3.sh`、`tests/test_console_encoding.py` |
+| `import llm` / `python llm.py` | `from drsr_420 import llm` / `python -m drsr_420.llm` | 包内代码与 `tests/` 全部走规范路径 |
+
+IDE 运行配置的改法：`.idea/runConfigurations/*.xml` 里把 `SCRIPT_NAME` 从
+`$PROJECT_DIR$/main.py` 改成模块名 `drsr_420.cli.main`，并置 `MODULE_MODE=true`；
+`WORKING_DIRECTORY` 仍是 `$PROJECT_DIR$`，所以 `--data_csv ./data/…` 与
+`--llm_config llm.config` 这些相对路径不受影响。命令行参数与产物文件名全程未变。
 
 **迁移期间踩过、值得记住的坑**（都不再需要，但改回"门面转发"就会重新踩）：
 
@@ -286,9 +297,10 @@ python -c "from drsr_420.agents import agent_specs; print(agent_specs())"
   （MCP 客户端要等 120s 超时才会发现）；
 * **新旧路径必须是同一对象**（`is` 比较），复制成副本会让"改一处生效另一处不生效"。
 
-`tests/test_architecture.py::LegacyPathRemovalTest` 现在反向守护这件事：旧路径
-导入必须失败、`drsr_420/` 顶层只允许 `__init__.py`、库代码与测试都不得再
-`import` 已删除的路径。
+`tests/test_architecture.py` 反向守护这两件事：`LegacyPathRemovalTest` 管**包内**旧路径
+（导入必须失败、`drsr_420/` 顶层只允许 `__init__.py`、源码不得再 import 已删除路径），
+`RootEntrypointRemovalTest` 管**仓库根**（根目录不得再有 `.py`、`main`/`llm` 不得从仓库根
+解析、源码不得 import 这两个顶层名）。
 
 ---
 
@@ -303,10 +315,9 @@ $env:ZHIPU_API_KEY='dummy-test-key'
 python -m drsr_420.agents --check
 python -m drsr_420.agents
 
-# 命令行入口（三者等价）
-python main.py --help
+# 命令行入口（两者等价；安装后还可用 console script `drsr420`）
 python -m drsr_420.cli.main --help
-drsr420 --help                              # 安装后（pyproject.toml 的 console script）
+drsr420 --help
 
 # 知识库 CLI 与语义剪枝演示
 python -m drsr_420.knowledge.rag_build --help
@@ -317,7 +328,8 @@ python -m drsr_420.analysis.prune_demo
 
 | 检查 | 说明 |
 |---|---|
-| 旧路径已清退 | 已删除的路径导入必须失败、顶层只留 `__init__.py`、源码不得再 import 旧路径 |
+| 旧路径已清退 | 已删除的包内路径导入必须失败、顶层只留 `__init__.py`、源码不得再 import 旧路径 |
+| 仓库根已清空 | 根目录不得再有 `.py` 模块；`main` / `llm` 不得从仓库根解析；源码不得 import 这两个顶层名 |
 | 分层目录 | 8 层子包都存在且带 `__init__.py`，且每层都有实现（空层是"分层被掏空"的信号） |
 | 依赖方向 | 禁止越界/倒置/库代码依赖 `cli`（AST 扫描全部运行时 import） |
 | `__file__` 路径锚点 | 仓库根锚点与独立运行的 `sys.path` 兜底必须指对（用子进程实测） |
