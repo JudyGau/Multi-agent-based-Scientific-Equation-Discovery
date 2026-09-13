@@ -70,6 +70,27 @@ def atomic_write_json(path: str, data) -> None:
     os.replace(tmp, path)
 
 
+def _captured_order(batch: SampleBatch, index: int) -> int:
+    """取第 ``index`` 个样本（0-based）在评估阶段领到的全局采样序号。
+
+    归属序号必须用**评估时捕获**的值，不能用"当前全局计数 - 本轮样本数 + index"
+    反推：多岛并发下，全局计数在本轮评估与落盘之间还会被别的岛推进，反推出来的序号
+    既会撞车也会漏号（实测一次运行：57 个序号承载了 132 条经验，其中 37 个序号重复、
+    63 个序号一条经验都没有）。下游按 ``sample_order`` 匹配经验——提示词注入的新鲜度
+    窗口、收尾的物理解释——序号错位就会取错条目，或像 ``explain_best_sample`` 那样
+    一条都取不到。
+
+    缺少捕获值时**显式报错**而不是退回反推：静默错配正是要修掉的那个 bug。
+    """
+    if index < len(batch.sample_orders):
+        return batch.sample_orders[index]
+    raise ValueError(
+        f"样本缺少评估阶段捕获的 sample_order（第 {index + 1} 个；已捕获 "
+        f"{len(batch.sample_orders)} 个）：该批次未经 _evaluate_batch 处理，"
+        f"无法确定经验归属，拒绝静默错配。"
+    )
+
+
 def clone_llm_client(client, task=None, **kwargs_overrides):
     """基于现有 LLMClient 复制一份独立实例，使各实例 kwargs 互不影响。
 
@@ -246,8 +267,10 @@ class CoordinatorAgent(BaseAgent):
         id = 0
         round_best = best_score  # 本轮已见最高分，初值=评估前阈值基准
         for sample in batch.samples:
-            self._global_sample_nums_plus_one()
-            cur_global_sample_nums = self._get_global_sample_nums()
+            # 序号在这里一次领取并随样本带走：多岛并发时全局计数随后还会被别的岛推进，
+            # 落盘阶段再反推必然算错（见 _captured_order）。
+            cur_global_sample_nums = self._next_global_sample_num()
+            batch.sample_orders.append(cur_global_sample_nums)
             chosen_evaluator: EvaluatorAgent = np.random.choice(self._evaluators)
             outcome: EvaluationOutcome = chosen_evaluator.analyze(EvaluationRequest(
                 sample=sample,
@@ -341,8 +364,7 @@ class CoordinatorAgent(BaseAgent):
             record = dataclasses.replace(
                 insight,
                 island_id=batch.prompt.island_id,
-                sample_order=(self._get_global_sample_nums()
-                              - len(batch.samples) + batch.best_id),
+                sample_order=_captured_order(batch, batch.best_id - 1),
                 best_score=batch.best_score,
             )
             residual_data_list.append(record.to_json())
@@ -379,7 +401,7 @@ class CoordinatorAgent(BaseAgent):
                 record = dataclasses.replace(
                     entry,
                     island_id=batch.prompt.island_id,
-                    sample_order=self._get_global_sample_nums() - len(batch.samples) + i + 1,
+                    sample_order=_captured_order(batch, i),
                     sample_time=batch.sample_time,
                     score=batch.scores[i] if i < len(batch.scores) else None,
                     thinking_content=(batch.thinking_contents[i]
@@ -405,9 +427,18 @@ class CoordinatorAgent(BaseAgent):
         with _SAMPLER_LOCK:
             cls._global_samples_nums = num
 
-    def _global_sample_nums_plus_one(self):
+    @classmethod
+    def _next_global_sample_num(cls) -> int:
+        """自增并返回本次采样应使用的全局序号（**同一次加锁内完成**）。
+
+        历史实现是 ``_global_sample_nums_plus_one()`` 之后再
+        ``_get_global_sample_nums()``：两步各拿一次锁，两个岛线程可以在中间交错，
+        于是**两个样本领到同一个序号**（实测一次运行里 37 个序号重复）。序号必须
+        唯一，否则按 ``sample_order`` 取经验的下游会取错条目。
+        """
         with _SAMPLER_LOCK:
-            self.__class__._global_samples_nums += 1
+            cls._global_samples_nums += 1
+            return cls._global_samples_nums
 
     # ------------------------------------------------------------------
     # 断点续跑与可观测性

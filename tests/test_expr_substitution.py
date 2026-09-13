@@ -378,5 +378,55 @@ class IntermediateVariableLineTest(_ExprTestCase):
         self.assertEqual(sp.simplify(expr - 4 * X1), 0)
 
 
+class SympyNameCollisionTest(_ExprTestCase):
+    """中间变量/自变量与 sympy 全局名撞名：必须解析成那个符号，而不是 sympy 的同名对象。
+
+    回归自一次真实运行：骨架里写了 ``poly = params[5]*a12 + ...``，而 ``poly`` 在 sympy
+    里是函数，于是 ``poly * f23`` 抛
+    ``TypeError: unsupported operand type(s) for *: 'function' and 'Symbol'``，
+    整个收尾分析（物理解释 / 剪枝 / 预览图）被跳过。``E`` / ``pi`` / ``gamma``
+    这类更危险：旧实现**不报错**，静默把中间变量换成常量，产出错误的表达式。
+    """
+
+    def test_intermediate_named_poly_is_not_the_sympy_function(self):
+        func = _spec([
+            "poly = params[0]*x1",
+            "return poly",
+        ])
+        expr = expr_substitution(func, [2.0])
+        self.assertIsNotNone(expr)
+        self.assertEqual(sp.simplify(expr - 2 * X1), 0)
+
+    def test_poly_multiplied_by_another_intermediate(self):
+        """`poly * f` 就是抛 TypeError 的那一行。"""
+        func = _spec([
+            "poly = params[0]*x1",
+            "f = params[1] + x1",
+            "return poly*f",
+        ])
+        expr = expr_substitution(func, [2.0, 3.0])
+        self.assertIsNotNone(expr)
+        self.assertEqual(sp.simplify(expr - 2 * X1 * (X1 + 3)), 0)
+
+    def test_intermediate_named_E_is_not_eulers_number(self):
+        """`E` 是最隐蔽的一类：旧实现不报错，静默换成自然常数 e。"""
+        func = _spec([
+            "E = params[0]*x1",
+            "return E",
+        ])
+        expr = expr_substitution(func, [2.0])
+        self.assertIsNotNone(expr)
+        self.assertFalse(expr.has(sp.E), "中间变量 E 被静默替换成了自然常数 e")
+        self.assertEqual(sp.simplify(expr - 2 * X1), 0)
+
+    def test_independent_variable_named_like_a_sympy_function(self):
+        """自变量同样可能撞名：`beta` 在 sympy 里是函数。"""
+        func = _spec(["return params[0]*beta"], independents="beta")
+        expr = expr_substitution(func, [2.0])
+        self.assertIsNotNone(expr)
+        self.assertEqual(expr.free_symbols, {sp.Symbol("beta")})
+        self.assertAlmostEqual(float(expr.subs(sp.Symbol("beta"), 3.0)), 6.0)
+
+
 if __name__ == "__main__":
     unittest.main()

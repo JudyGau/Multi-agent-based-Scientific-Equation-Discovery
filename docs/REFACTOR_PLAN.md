@@ -1014,7 +1014,7 @@ Q1（连接谁 / 用哪把钥匙），按 §14 的三层分红本就归档案。
 
 | 指标 | 阶段 8 结束时 | 现在 |
 |---|---|---|
-| 测试数 | 418 | **499**（新增 12 条 `tests/test_batch_scripts.py`：XML / `.sh` / `.bat` 三者逐项等价） |
+| 测试数 | 418 | **506**（新增 12 条 `tests/test_batch_scripts.py`：XML / `.sh` / `.bat` 三者逐项等价；另 7 条补在 `test_expr_substitution` / `test_agent_behavior`：sympy 撞名与样本序号归属） |
 | 全局最长文件 | 482（`llm/client.py`） | **487**（`llm/client.py`；`rag_kb.py` 一度 517，已拆出 `rag_config.py`） |
 | `llm/` 层 | 9 文件 / 1818 行 | 11 文件 / 2331 行（新增 `adapt.py` / `stream.py`） |
 | 入库的配置模板 | 4 | **5** |
@@ -1059,6 +1059,37 @@ Q1（连接谁 / 用哪把钥匙），按 §14 的三层分红本就归档案。
 翻倍（1→2、2→4），而 `echo` 会把它显示回 1 个，于是写坏的值只在真正传给 Python 时才
 暴露——含 LaTeX `^{...}` 的 background 必须走变量传递；② `.bat` 必须是 CRLF（cmd 的
 `call`/`goto` 按字节偏移定位标签），由新增的 `.gitattributes` 固定。
+
+### 15.4 收尾：两个静默失效的收尾环节（物理解释 / 剪枝）修好（追加）
+
+一次真实的 `MRFCompress-Cuboid` 运行（mse≈1.4e-21，几乎是完美拟合）在收尾处连报三条
+WARN，整条收尾链一个产物都没留下：没有 `explain.txt`，也没有 `expr.png` / `prunedExpr.png`。
+查出两个互不相干的 bug。
+
+**① `sample_order` 归属错位（多岛并发），物理解释因此被跳过。**
+`_persist_experiences` / `_persist_residual` 用"当前全局计数 − 本轮样本数 + i"**反推**样本
+序号；而全局计数在本轮评估与落盘之间还会被别的岛推进，并且"先自增、再读取"分两次加锁
+（两个岛可以在中间交错、领到同一个号）。实测该运行：`experiences.json` 里 57 个序号承载了
+132 条经验，其中 **37 个序号重复、63 个序号一条都没有**，10 个 top 样本里有 3 个
+（85 / 55 / 57）完全查不到经验——`explain_best_sample` 按序号找 Good 经验，找不到就跳过。
+受影响的远不止收尾：提示词注入的"新鲜度窗口"同样按 `sample_order` 过滤，序号错位会让注入
+的经验张冠李戴。
+改法：序号在**评估阶段一次领取**（`_next_global_sample_num`：自增与读取同一次加锁）并随
+批次带下来（`SampleBatch.sample_orders`），落盘直接取用；缺失时显式报错，不退回反推。
+
+**② 中间变量与 sympy 撞名，剪枝因此被跳过。**
+最佳样本里写了 `poly = params[5]*a12 + ...`，而 `poly` 在 sympy 里是函数。旧实现
+`sp.parse_expr(text, {'N': ...})` 只把 `N` 放进 `local_dict`，其余名字回落到整个 sympy
+全局命名空间，于是 `poly * f23` 抛
+`TypeError: unsupported operand type(s) for *: 'function' and 'Symbol'` →
+`expr_substitution` 返回 None → 剪枝与预览图全部跳过。更危险的是 `E` / `pi` / `gamma`
+这类**不报错**的撞名：中间变量被静默换成常量或函数，产出看着正常、其实错误的表达式。
+改法：把自变量与已知中间变量都注册进 `local_dict`（`_parse_expr_with_symbols`），令其
+优先于 sympy 全局名；`N` 按历史行为继续保留为符号。
+
+修好后对同一份样本实测：表达式正常解析（`poly` / `f12` / `f23` / `sat23` 全部代入），
+剪枝跑完并产出 `expr.png` / `prunedExpr.png` / 表达式树 PDF。新增 7 条回归测试
+（`SympyNameCollisionTest` 4 条 + 序号归属与并发唯一性 3 条）。
 
 完整设计与取舍见 [`CONFIG_PLAN.md`](./CONFIG_PLAN.md) §10，架构摘要见
 [`ARCHITECTURE.md`](./ARCHITECTURE.md) §10.5。

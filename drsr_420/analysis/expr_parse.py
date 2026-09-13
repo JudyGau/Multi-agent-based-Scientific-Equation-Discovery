@@ -15,9 +15,12 @@ LLM 写出来的"类 Python"骨架与 SymPy 的语义有三处系统性偏差，
 2. ``x1 == 0`` 在 SymPy 里会退化成 Python 的 ``False``（``Symbol.__eq__`` 对非 Basic
    返回 False），于是 ``where(x1 == 0, a, b)`` 会**静默**塌缩成 ``b``；必须包成 ``Eq``；
 3. ``a = expr`` 形式的中间变量行要显式消解，否则 ``return a`` 会静默返回裸符号 ``a``，
-   被下游当成"发现"的方程。
+   被下游当成"发现"的方程；
+4. ``parse_expr`` 默认把**整个 sympy 命名空间**当全局名，中间变量一旦与 sympy 撞名
+   （``poly`` 抛异常、``E`` / ``pi`` / ``gamma`` 静默换成常量）必须先注册进
+   ``local_dict``——见 :func:`_parse_expr_with_symbols`。
 
-这三处坑各自都有回归测试（``tests/test_expr_substitution.py``），逻辑集中在这里
+这四处坑各自都有回归测试（``tests/test_expr_substitution.py``），逻辑集中在这里
 便于逐条加固；``find_best_eq.py`` 只负责"调它、拿结果、做下一步"。
 
 对外契约：``expr_substitution()`` 解析失败一律返回 ``None``（不抛异常）；
@@ -95,6 +98,32 @@ _WHERE_CALL_RE = re.compile(r'(?<![\w.])where\s*\(')
 # 锚定的中间变量赋值行：`a = expr`。`(?!=)` 排除 `==`，前面的标识符要求保证
 # 含比较运算符的行（`return where(x1 >= 0, ...)`）不会误判为赋值。
 _ASSIGN_RE = re.compile(r'^\s*([A-Za-z_]\w*)\s*=(?!=)\s*(.+?)\s*$')
+
+
+def _known_names(independent_list: list, inter_vars: dict) -> list:
+    """自变量 + 已解析中间变量的名字，用作 :func:`_parse_expr_with_symbols` 的符号表。"""
+    return [*independent_list, *(str(sym) for sym in inter_vars)]
+
+
+def _parse_expr_with_symbols(text: str, names: list) -> sp.Expr:
+    """用显式符号表解析表达式，避免与 SymPy 全局名撞名。
+
+    ``sp.parse_expr`` 只在 ``local_dict`` 里找不到名字时才去查全局名，而它的
+    ``global_dict`` 默认是**整个 sympy 命名空间**。模型把中间变量取成 sympy 已有的
+    名字时就会出事，且两种后果都难排查：
+
+    * ``poly`` 在 sympy 里是函数，``poly * f23`` 直接抛
+      ``TypeError: unsupported operand type(s) for *: 'function' and 'Symbol'``，
+      于是``expr_substitution`` 返回 None，物理解释 / 剪枝 / 预览图全部跳过；
+    * ``E`` / ``pi`` / ``gamma`` 这类**不报错**：中间变量被静默替换成常量或函数，
+      产出一个看着正常、其实错误的表达式，比抛异常更危险。
+
+    因此把自变量与已知中间变量的名字都放进 ``local_dict``，令其优先于全局名；
+    ``N``（样本数）按历史行为始终保留为符号。
+    """
+    local = {name: sp.Symbol(name) for name in names}
+    local.setdefault('N', sp.Symbol('N'))
+    return sp.parse_expr(text, local)
 
 
 def normalize_condition(cond: str) -> str:
@@ -273,7 +302,8 @@ def expr_substitution(func: str, params: list) -> sp.Expr | None:
         eq_left, eq_right = assign_match.group(1), assign_match.group(2)
         var = sp.Symbol(eq_left)
         try:
-            expr = sp.parse_expr(eq_right, {'N': sp.Symbol('N')})
+            expr = _parse_expr_with_symbols(
+                eq_right, _known_names(independent_list, inter_vars))
         except Exception as e:
             print(f"[WARN] 中间变量行解析失败（跳过）: {eq_left} = {eq_right} -> {e}")
             continue
@@ -292,7 +322,8 @@ def expr_substitution(func: str, params: list) -> sp.Expr | None:
 
     expr_str = _unwrap_outer_parens(match.group(1).strip())
     try:
-        expr = sp.parse_expr(expr_str, {'N': sp.Symbol('N')})
+        expr = _parse_expr_with_symbols(
+            expr_str, _known_names(independent_list, inter_vars))
     except Exception as e:
         print(f"[WARN] return 表达式解析失败，返回 None: {e}")
         return None

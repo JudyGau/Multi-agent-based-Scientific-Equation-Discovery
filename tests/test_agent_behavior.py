@@ -9,6 +9,7 @@
 import json
 import os
 import tempfile
+import threading
 import time
 import unittest
 
@@ -554,6 +555,9 @@ class CoordinatorBehaviorTest(unittest.TestCase):
     # ── 经验落盘 ──────────────────────────────────────────────
     def _batch_with_entries(self):
         batch = _batch(["s0", "s1", "s2"], thinking=["t0", "t1", "t2"], sample_time=1.5)
+        # 评估阶段逐样本捕获的序号（SampleBatch.sample_orders）：落盘归属一律用它，
+        # 而不是回头去读可能已被别的岛推进的全局计数。
+        batch.sample_orders = [8, 9, 10]
         batch.scores = [-0.1, -0.5, None]
         batch.experience_entries = [
             ExperienceEntry(sample="s0", quality=QUALITY_GOOD, analysis="A0"),
@@ -568,7 +572,7 @@ class CoordinatorBehaviorTest(unittest.TestCase):
 
     def test_persist_experiences_completes_attribution_fields(self):
         coord, _ = self._coordinator()
-        CoordinatorAgent.set_global_sample_nums(10)     # 本轮 3 个样本 → 序号 8/9/10
+        CoordinatorAgent.set_global_sample_nums(10)     # 与捕获序号 [8,9,10] 无关
         coord._persist_experiences(self._batch_with_entries())
 
         data = self._load_experiences()
@@ -609,6 +613,7 @@ class CoordinatorBehaviorTest(unittest.TestCase):
         coord, _ = self._coordinator()
         CoordinatorAgent.set_global_sample_nums(10)
         batch = _batch(["s0", "s1", "s2"])
+        batch.sample_orders = [8, 9, 10]
         batch.best_id = 2
         batch.best_score = -0.15
 
@@ -617,10 +622,59 @@ class CoordinatorBehaviorTest(unittest.TestCase):
         with open(os.path.join(self.root, "residual_analyze.json"), "r", encoding="utf-8") as f:
             records = json.load(f)
         self.assertEqual(len(records), 1)
-        self.assertEqual(records[0]["sample_order"], 9)     # 10 - 3 + 2
+        self.assertEqual(records[0]["sample_order"], 9)     # 捕获序号 [8,9,10] 的第 2 个
         self.assertEqual(records[0]["best_score"], -0.15)
         self.assertEqual(records[0]["analysis"], "INSIGHT")
         self.assertEqual(records[0]["equation"], "s1")
+
+    def test_persist_experiences_uses_captured_order_not_the_live_counter(self):
+        """归属序号取自评估时捕获的值：别的岛随后把全局计数推远也不影响归属。
+
+        历史实现是「当前全局计数 - 本轮样本数 + i」，多岛并发下算出来的序号会撞车、
+        漏号——实测一次 MRFCompress-Cuboid 运行里 57 个序号承载了 132 条经验，其中
+        37 个序号重复，最佳样本（sample_order=85）恰好一条经验都没有，于是收尾的
+        物理解释被静默跳过。
+        """
+        coord, _ = self._coordinator()
+        batch = self._batch_with_entries()
+        CoordinatorAgent.set_global_sample_nums(99)     # 其它岛已把计数推远
+        coord._persist_experiences(batch)
+
+        data = self._load_experiences()
+        self.assertEqual(data[QUALITY_GOOD][0]["sample_order"], 8)
+        self.assertEqual(data[QUALITY_NONE][0]["sample_order"], 10)
+
+    def test_persist_experiences_refuses_batch_without_captured_orders(self):
+        """没经过评估的批次没有归属序号：显式报错，不退回会算错的反推。"""
+        coord, _ = self._coordinator()
+        batch = self._batch_with_entries()
+        batch.sample_orders = []
+        with self.assertRaises(ValueError):
+            coord._persist_experiences(batch)
+
+    def test_global_sample_nums_are_unique_under_concurrency(self):
+        """8 个线程各领 50 个序号：必须互不重复，且恰好覆盖 1..400。
+
+        历史实现「先自增、再读取」分两次加锁，线程可以在中间交错，两个样本于是拿到
+        同一个序号。
+        """
+        CoordinatorAgent.set_global_sample_nums(0)
+        got: list = []
+        collect_lock = threading.Lock()
+
+        def worker():
+            mine = [CoordinatorAgent._next_global_sample_num() for _ in range(50)]
+            with collect_lock:
+                got.extend(mine)
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(len(got), len(set(got)), "序号出现重复")
+        self.assertEqual(sorted(got), list(range(1, 401)))
 
     # ── 停止条件与可观测性 ────────────────────────────────────
     def test_stop_on_wall_time_limit(self):
@@ -671,7 +725,7 @@ class CoordinatorBehaviorTest(unittest.TestCase):
         coord_a, _ = self._coordinator()
         coord_b, _ = self._coordinator()
         CoordinatorAgent.set_global_sample_nums(1)
-        coord_a._global_sample_nums_plus_one()
+        self.assertEqual(coord_a._next_global_sample_num(), 2)   # 自增与读取同一次加锁
         self.assertEqual(coord_b._get_global_sample_nums(), 2)
 
     # ── 采样批次封装 ──────────────────────────────────────────

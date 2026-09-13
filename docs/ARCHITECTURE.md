@@ -188,7 +188,9 @@ python -c "from drsr_420.agents import agent_specs; print(agent_specs())"
 | `SampleBatch` | coordinator 一轮内的容器 | prompt、骨架、分数、错误、质量、经验条目、本轮最优 |
 
 约定：**分析类 Agent 只填"内容"字段**（样本、分析文本），**归属字段**（岛屿、样本
-顺序号、分数）由 Coordinator 在落盘前补齐——这样每个字段的来源都能一眼指认。
+顺序号、分数）由 Coordinator 在落盘前补齐——这样每个字段的来源都能一眼指认。其中样本
+顺序号是**评估阶段逐样本领取**并随批次带下来的（`SampleBatch.sample_orders`），落盘时
+直接取用，不按"当前全局计数"反推。
 
 ---
 
@@ -197,7 +199,8 @@ python -c "from drsr_420.agents import agent_specs; print(agent_specs())"
 | 状态 | 保护方式 | 说明 |
 |---|---|---|
 | `ExperienceBuffer`（多岛经验 + 聚类） | 内部 `threading.RLock` | 所有 Sampler 线程共享 |
-| 全局采样计数 `CoordinatorAgent._global_samples_nums` | 模块级可重入锁 `_SAMPLER_LOCK` | 类属性；断点恢复时由 `set_global_sample_nums` 校准 |
+| 全局采样计数 `CoordinatorAgent._global_samples_nums` | 模块级可重入锁 `_SAMPLER_LOCK` | 类属性；自增与读取在**同一次加锁**内完成（`_next_global_sample_num`），断点恢复时由 `set_global_sample_nums` 校准 |
+| 样本归属序号 | 评估阶段逐样本捕获（`SampleBatch.sample_orders`） | **不得**按"当前计数 − 本轮样本数"反推：多岛并发下会撞号、漏号，经验/残差落盘一律用捕获值 |
 | `experiences.json` / `residual_analyze.json` / `checkpoint.json` | 同上（读-改-写整段持锁） | 写入走 `atomic_write_json`（临时文件 + `os.replace`） |
 | `EvaluatorAgent` 实例 | **每个 Sampler 线程独享一份** | 避免 `LocalSandbox._last_params`（热启动参数）等实例状态竞态 |
 | `LocalSandbox` worker 池 | 任务锁 + 队列 | 串行调度；超时/崩溃时**换一条新队列**并重建 worker（陈旧任务结构上不可达） |

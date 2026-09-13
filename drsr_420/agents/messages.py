@@ -191,6 +191,11 @@ class SampleBatch:
     scores: list = dataclasses.field(default_factory=list)
     errors: list = dataclasses.field(default_factory=list)
     qualities: list = dataclasses.field(default_factory=list)
+    #: 评估阶段逐样本领取的全局采样序号（与 samples/scores 平行、同序）。经验记录与
+    #: 残差记录的归属序号一律取自这里，**不要**用"当前全局计数 - 本轮样本数"反推：
+    #: 多岛并发时全局计数会被别的岛推进，反推会撞号、漏号（见 coordinator 的
+    #: ``_captured_order``）。
+    sample_orders: list = dataclasses.field(default_factory=list)
     #: 反思阶段产物：ExperienceSummarizerAgent 返回的 list[ExperienceEntry]。
     experience_entries: list = dataclasses.field(default_factory=list)
     best_sample: str | None = None
