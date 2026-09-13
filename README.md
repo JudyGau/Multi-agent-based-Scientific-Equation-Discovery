@@ -52,7 +52,8 @@ python -m drsr_420.cli.main --problem_name oscillator1 --data_csv ./data/oscilla
   --niterations 50 --samples_per_iteration 8
 ```
 
-批量示例见根目录 `example.sh`。
+批量示例见根目录 `example.sh`（bash）与 `example.bat`（Windows，可直接双击）；单问题示例见
+`MRFCompress-3.sh` / `MRFCompress-3.bat`。
 
 ## LLM 配置：角色 → 档案
 
@@ -218,7 +219,8 @@ config/                       # 配置目录（.json 入库 / .config 不入库�
   <提供商>_<模型>.config      #   连接信息 + 生成参数（含 api_key，不入库）
   <提供商>_<模型>.config.example   # 模板（入库）
   rag.config(.example)        #   文献知识库配置
-example.sh                    # 批量运行示例
+example.sh / example.bat      # 批量运行示例（bash / Windows 批处理，逐项等价）
+MRFCompress-3.sh / .bat       # 单问题运行示例
 drsr_420/                     # 单一顶层包（8 层，依赖方向自底向上）
   core/                       # 领域无关基础设施
     buffer.py                 #   经验缓冲（多岛 + 聚类抽样）
@@ -280,8 +282,8 @@ experiments/{problem}_{timestamp}/   # 本次运行产物
 >
 > **仓库根目录没有任何 `.py` 模块**：命令行入口是 `python -m drsr_420.cli.main`
 > （安装后等价于 `drsr420` 命令），`.idea/runConfigurations/` 的 4 个 MRF 运行配置、
-> `example.sh` 与 `MRFCompress-3.sh` 都以模块方式启动。因此包自包含、克隆即可运行，
-> 也不会被 PyPI 上的同名 `llm` 包劫持。
+> `example.sh` / `MRFCompress-3.sh` 与同名的 `.bat` 都以模块方式启动。因此包自包含、
+> 克隆即可运行，也不会被 PyPI 上的同名 `llm` 包劫持。
 
 ## 测试
 

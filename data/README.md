@@ -69,3 +69,14 @@
 ```bash
 LLM_CONFIG=deepseek_deepseek-v4-flash.config bash example.sh
 ```
+
+Windows 上用等价的 `example.bat`，可直接双击（会自动切到仓库根目录，并优先使用
+`.venv2\Scripts\python.exe`）：
+
+```bat
+set LLM_CONFIG=config/deepseek_deepseek-v4-flash.config
+example.bat
+```
+
+`.bat` 与 `.sh` 的逐项等价由 `tests/test_batch_scripts.py` 守住：问题名、数据路径、
+background 与全部命令行参数必须一致。

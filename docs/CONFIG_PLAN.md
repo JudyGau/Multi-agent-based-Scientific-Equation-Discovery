@@ -444,7 +444,7 @@ token。诊断文本经 `_clip` 强制 GBK 可编码：诊断工具不该因为"
 
 | 指标 | 阶段 8 结束时 | 现在 |
 |---|---|---|
-| 测试数 | 418 | **487** |
+| 测试数 | 418 | **495**（新增 8 条 `tests/test_batch_scripts.py`：`.bat` 与 `.sh` 逐项等价） |
 | 全局最长文件 | 482（`llm/client.py`） | **487**（`llm/client.py`；`rag_kb.py` 一度 517，已拆出 `rag_config.py`） |
 | `llm/` 层 | 9 文件 / 1818 行 | 11 文件 / 2331 行（`adapt.py` / `stream.py` 拆出） |
 | `knowledge/` 层 | 8 文件 / 1359 行 | 9 文件 / 1435 行（拆出 `rag_config.py`） |

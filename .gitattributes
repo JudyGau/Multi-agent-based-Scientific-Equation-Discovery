@@ -1,0 +1,6 @@
+# 换行策略：
+#   *.bat 必须是 CRLF —— cmd 的 call/goto 按字节偏移定位标签，LF-only 会找错标签或直接失败；
+#   *.sh  保持 LF —— CRLF 会让 bash 的 shebang 与反斜杠续行失效。
+# 入库时统一按 LF 存（避免仓库里混入 CRLF 差异），检出时按下面的规则还原。
+*.bat text eol=crlf
+*.sh  text eol=lf
