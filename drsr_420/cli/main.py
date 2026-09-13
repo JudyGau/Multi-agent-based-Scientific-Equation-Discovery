@@ -24,9 +24,13 @@ from argparse import ArgumentParser
 import numpy as np
 import pandas as pd
 
-from drsr_420 import llm as llm_mod
 from drsr_420.agents.evaluator_agent import LocalSandbox
 from drsr_420.agents.sampler_agent import SamplerAgent
+from drsr_420.cli.llm_setup import (
+    build_llm_client,
+    build_role_clients,
+    load_llm_config_file,
+)
 from drsr_420.core import config as config_lib
 from drsr_420.core import prompt_config as pc
 from drsr_420.runtime import pipeline
@@ -91,23 +95,9 @@ def equation({FEATURE_SIG}, params: np.ndarray) -> np.ndarray:
     return {LINEAR_SEED}
 '''
 
-#: ``--llm_config`` 指向的文件不存在时写入的默认配置模板（api_key 留空）。
-DEFAULT_LLM_CONFIG = {
-    # api_key 支持按提供商或完整模型配置不同 key；可留空（回退环境变量）
-    'api_key': {
-        'cstcloud': '',
-        'deepseek': '',
-        'siliconflow': '',
-        'blt': ''
-    },
-    # 强制要求带提供商前缀
-    'model': 'CSTCloud/gpt-oss-120b',
-    'host': 'https://uni-api.cstcloud.cn/v1',
-    'max_tokens': 1024,
-    'temperature': 0.6,
-    'top_p': 0.3,
-    # 'top_k': 30
-}
+#: 配置文件命名约定（**唯一权威是文件内的 model 字段**，文件名只是给人看的标签）：
+#: ``config/<提供商>_<模型>.config``（不入库，含密钥）与同名的 ``.example`` 模板（入库）。
+#: 「哪个角色用哪套」由 ``config/agents.config.json`` 声明，见 drsr_420.llm.roles。
 
 
 class _Tee:
@@ -163,8 +153,15 @@ def build_parser() -> ArgumentParser:
     parser.add_argument('--num_samplers', type=int, default=None,
                         help='并行采样器数量（多线程并行采样，默认 1）')
     # 算法私有参数
-    parser.add_argument('--llm_config', type=str, default='glm_glm-5.3-flash.config',
-                        help='LLM 配置文件路径（JSON 格式，默认按 提供商_模型.config 命名）')
+    parser.add_argument('--llm_config', type=str, default=None,
+                        help='默认 LLM 档案（config/<提供商>_<模型>.config 或档案 ID）。'
+                             '未在 config/agents.config.json 里绑定档案的角色共用它；'
+                             '省略时用注册表的 default')
+    parser.add_argument('--role-config', action='append', default=None,
+                        metavar='ROLE=FILE',
+                        help='按角色覆盖档案（可重复），如 --role-config '
+                             'explain=deepseek_deepseek-v4-pro；ROLE 用 * 表示所有角色。'
+                             '角色清单见 python -m drsr_420.llm.roles')
     parser.add_argument('--background', type=str, default=None, help='背景知识（可选）')
     parser.add_argument('--samples_per_iteration', type=int, default=None,
                         help='每轮生成的候选数量（覆盖 config 默认值）')
@@ -218,38 +215,6 @@ def configure_logging() -> None:
     except TypeError:
         # 兼容旧版 Python（无 force 参数）
         pylogging.basicConfig(**kwargs)
-
-
-def load_llm_config_file(path: str) -> dict:
-    """读取 LLM 配置；文件不存在时先写一份默认模板再读取。"""
-    if not os.path.exists(path):
-        try:
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump(DEFAULT_LLM_CONFIG, f, ensure_ascii=False, indent=2)
-            print(f"[INFO] Generated default LLM config at {path}")
-        except Exception as e:
-            print(f"[WARN] Failed to create default LLM config {path}: {e}")
-    with open(path, 'r', encoding='utf-8') as f:
-        return json.load(f)
-
-
-def build_llm_client(llm_config: dict):
-    """按配置构造 LLM 客户端；失败即退出（避免无客户端空转）。
-
-    模型名格式：``provider/model``（如 ``CSTCloud/gpt-oss-120b``）。provider 解析、
-    api_key 解析、base_url 与生成参数注入统一由 ``ClientFactory`` 完成。
-    """
-    try:
-        client = llm_mod.ClientFactory.from_config(llm_config)
-        print(f"[INFO] LLM client initialized: provider={client._provider_name()}, "
-              f"model={client.model}, kwargs={client.kwargs}")
-        return client
-    except Exception as e:
-        print(f"[FATAL] Failed to init LLM client: {e}")
-        print("[FATAL] 请检查 --llm_config 指定的配置文件是否存在、api_key 是否配置正确")
-        print("[FATAL] （可用配置示例：glm_glm-5.3-flash.config / deepseek_deepseek-v4-flash.config）")
-        print("[FATAL] 程序退出，避免在无 LLM 客户端的情况下空转。")
-        raise SystemExit(1)
 
 
 def load_csv(path: str):
@@ -381,6 +346,9 @@ def main(argv: list[str] | None = None) -> int:
 
     llm_config = load_llm_config_file(args.llm_config)
     client = build_llm_client(llm_config)
+    # 角色化的客户端池：sampling/analysis/experience/residual/explain/summary 各自
+    # 按 config/agents.config.json 解析（可用 --role-config 覆盖）
+    role_clients = build_role_clients(args.llm_config, args.role_config)
 
     # 最大采样数量：优先由 --niterations 推导；否则使用默认 1000
     if args.niterations is not None and args.niterations > 0:
@@ -433,6 +401,10 @@ def main(argv: list[str] | None = None) -> int:
             "host": (client.base_url if client else '') or llm_config.get('base_url', ''),
             "api_key": ("***" if (client and client.api_key) else ""),
             "kwargs": getattr(client, 'kwargs', None) if client else None,
+            # 每个角色最终生效的档案与来源（含 --role-config / 环境变量 / 注册表默认），
+            # 让"这次实验的 explain 到底用了哪个模型"可追溯——旧结构下这无从查起，
+            # 因为 explain 会自己硬编码另一个档案文件。
+            "roles": role_clients.describe(),
         },
         "results_root": results_root,
     })
@@ -447,6 +419,7 @@ def main(argv: list[str] | None = None) -> int:
         prompt_ctx=prompt_ctx,
         llm_client=client,
         llm_config=llm_config,
+        role_clients=role_clients,
         seed=args.seed,
     )
     return 0

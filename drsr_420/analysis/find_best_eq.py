@@ -99,11 +99,16 @@ def prune_and_visualize(results_root: str, func: str, params,
 
 
 def find_best_eq(results_root: str, threshold: float = 0.1,
-                 sample_range: tuple = (1, 14)):
+                 sample_range: tuple = (1, 14), role_clients=None):
     """收尾：寻找最优样本 → 生成物理解释 → 敏感度剪枝与可视化。
 
     主函数仅做扁平编排，具体逻辑拆分到 find_best_sample / explain_best_sample /
     prune_and_visualize，避免原先 try-with-for-if-try 的深嵌套。
+
+    Args:
+        role_clients: ``llm.roles.RoleClients``；物理解释按其中的 ``explain`` 角色
+            取客户端。省略时由 ``explain`` 模块自行按注册表解析（因此直接调用
+            本函数也能拿到正确档案，不再依赖硬编码文件名）。
     """
     best = find_best_sample(results_root)
     if best is None:
@@ -118,7 +123,8 @@ def find_best_eq(results_root: str, threshold: float = 0.1,
     if not order_match:
         print("[WARN] 无法从样本文件名解析 sample_order，跳过物理解释。")
     else:
-        explain_best_sample(results_root, func, order_match.group(1))
+        explain_best_sample(results_root, func, order_match.group(1),
+                            role_clients=role_clients)
 
     # 敏感度剪枝 + 表达式预览/树图
     prune_and_visualize(results_root, func, params, threshold, sample_range)

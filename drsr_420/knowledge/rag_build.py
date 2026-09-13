@@ -29,7 +29,8 @@ def main():
     parser.add_argument("--rebuild", action="store_true", help="重建 collection（删除后重新入库）")
     parser.add_argument("--query", default=None, help="检索关键词")
     parser.add_argument("--k", type=int, default=5, help="检索返回条数")
-    parser.add_argument("--config", default="rag.config", help="配置文件路径（默认 rag.config）")
+    parser.add_argument("--config", default=None,
+                        help="RAG 档案路径（默认 config/rag.config）")
     args = parser.parse_args()
 
     kb = RagKB(load_config(args.config))

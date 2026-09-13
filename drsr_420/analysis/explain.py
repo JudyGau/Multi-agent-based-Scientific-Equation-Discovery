@@ -132,11 +132,19 @@ def build_explain_content(func: str, exp: dict) -> str | None:
     return content
 
 
-def explain_best_sample(results_root: str, func: str, sample_order: str) -> None:
+def explain_best_sample(results_root: str, func: str, sample_order: str,
+                        role_clients=None) -> None:
     """按 sample_order 匹配 Good 经验条目，调用 LLM 生成物理解释并落盘 explain.txt。
 
     任意环节失败（无经验文件 / 无匹配条目 / 提示词构造失败 / LLM 初始化失败）
     均只告警并返回，不抛出，避免影响后续剪枝流程。
+
+    Args:
+        role_clients: ``llm.roles.RoleClients``；取其中的 ``explain`` 角色客户端。
+            省略时按 ``config/agents.config.json`` 自行解析——**不再硬编码档案
+            文件名**。旧实现在这里写死了 ``deepseek_deepseek-v4-flash.config``，
+            该文件在仓库中并不存在，异常被下面的 ``except`` 吞掉后静默写出空的
+            ``explain.txt``（物理解释长期失效且无人发现）。
     """
     exp_path = os.path.join(results_root, "experiences.json")
     try:
@@ -160,16 +168,20 @@ def explain_best_sample(results_root: str, func: str, sample_order: str) -> None
         print("[WARN] 构造物理解释提示词失败，跳过。")
         return
 
-    # 初始化 LLM 客户端（公式解释任务，由 ClientFactory 统一注入 provider/api_key/参数）
+    # 初始化 LLM 客户端（explain 角色；档案与参数由 config/agents.config.json 决定，
+    # 未注入 role_clients 时按注册表自行解析，因此直接调用本函数也能拿到正确档案）
     client = None
     try:
-        llm_config = llm.load_llm_config("deepseek_deepseek-v4-flash.config")
-        client = llm.ClientFactory.from_config(llm_config)
+        if role_clients is not None:
+            client = role_clients.get('explain')
+        else:
+            client = llm.build_role_client('explain')
         if client is not None:
-            client = client.clone_for_task('explain')
-        print(f"[INFO] LLM client initialized: provider={client._provider_name()}, model={client.model}, kwargs={client.kwargs}")
+            print(f"[INFO] LLM client initialized: provider={client._provider_name()}, "
+                  f"model={client.model}, kwargs={client.kwargs}")
     except Exception as e:
         print(f"[WARN] Failed to init LLM client: {e}")
+        print("[WARN] 提示：运行 `python -m drsr_420.llm.roles --check` 查看角色档案解析情况")
 
     explain = explain_re_act(client, content)
     print_block(explain if explain is not None else "")

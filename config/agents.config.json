@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "_comment": [
+    "角色 -> LLM 档案 的绑定。这是**唯一**回答「哪个 Agent 用哪套配置」的地方。",
+    "本文件不含任何密钥，因此随仓库入库；档案文件 config/<提供商>_<模型>.config 不入库。",
+    "",
+    "roles.<role>.config  该角色使用的档案 ID（不含 .config 后缀）；省略 = 沿用 default。",
+    "roles.<role>.params  该角色的参数覆盖；省略该字段即使用代码内置默认",
+    "                     （见 drsr_420/llm/roles.py 的 BUILTIN_ROLE_PARAMS）。",
+    "",
+    "可用角色（与 AgentSpec.llm_task 及两个非 Agent 调用方一一对应）：",
+    "  sampling    采样者 + 工具调用者",
+    "  analysis    数据分析者（初次数据分析 + RAG 注入）",
+    "  experience  经验总结者",
+    "  residual    残差分析者",
+    "  explain     收尾物理解释（analysis/explain.py，非 Agent）",
+    "  summary     文献摘要（MCP 工具 read_paper，非 Agent，跑在子进程里）",
+    "",
+    "默认全部角色共用 default 档案——零配置即可跑通，且与重构前行为一致。",
+    "要让某个角色单独用别的模型，加上一行 config 即可，例如：",
+    "    \"explain\": {\"config\": \"deepseek_deepseek-v4-pro\", \"params\": {...}}",
+    "    \"summary\": {\"config\": \"ollama_Qwen3.8-27B\",       \"params\": {...}}",
+    "（这两行正是仓库里那两个无人读取的 llm_explain.config / llm_summary.config",
+    " 想表达、而旧结构无法表达的意图；现在可以表达了。记得先用 config/ 下的",
+    ".example 模板建好对应档案。）",
+    "",
+    "覆盖优先级：--role-config > env DRSR_ROLE_CONFIG_<ROLE> > 本文件 roles.<role>.config",
+    "            > --llm_config > 本文件 default > 内置默认",
+    "自检：python -m drsr_420.llm.roles --check"
+  ],
+  "default": "glm_glm-5.3-flash",
+  "roles": {
+    "sampling": {
+      "params": {"reasoning_effort": "low"}
+    },
+    "analysis": {
+      "params": {"reasoning_effort": "high"}
+    },
+    "experience": {
+      "params": {
+        "reasoning_effort": "high",
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "frequency_penalty": 0.0
+      }
+    },
+    "residual": {
+      "params": {
+        "reasoning_effort": "high",
+        "temperature": 0.4,
+        "top_p": 0.9,
+        "frequency_penalty": 0.1
+      }
+    },
+    "explain": {
+      "params": {"reasoning_effort": "high"}
+    },
+    "summary": {
+      "params": {
+        "reasoning_effort": "high",
+        "temperature": 0.4,
+        "top_p": 0.9,
+        "frequency_penalty": 0.1
+      }
+    }
+  }
+}

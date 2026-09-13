@@ -19,9 +19,12 @@ import unittest
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 #: 需要面向 Windows GBK 控制台的典型入口（argv 里第一个元素是展示名）。
+#: 注意这里只用**必然返回 0**的形态：例如 `drsr_420.llm.roles` 不带 `--check`
+#: ——`--check` 在"本机还没建好档案"时会返回 1，那是部署状态而非编码问题。
 _ENTRY_POINTS = (
     ("agents 组织图", ["-m", "drsr_420.agents"]),
     ("agents 契约自检", ["-m", "drsr_420.agents", "--check"]),
+    ("LLM 角色配置表", ["-m", "drsr_420.llm.roles"]),
     ("剪枝演示", ["-m", "drsr_420.analysis.prune_demo"]),
     ("剪枝 verbose 日志", ["-m", "drsr_420.analysis.sensitivity_prune"]),
     ("CLI --help", ["-m", "drsr_420.cli.main", "--help"]),

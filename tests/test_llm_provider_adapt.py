@@ -175,11 +175,15 @@ class CloneForTaskTest(unittest.TestCase):
 
 
 class ClientFactoryTaskParamsTest(unittest.TestCase):
-    """ClientFactory：从配置 tasks 字段解析 task_params。"""
+    """ClientFactory：从配置 ``tasks`` 字段（旧格式）解析 task_params。
+
+    角色化的参数现由 :mod:`drsr_420.llm.roles` 经 ``task_params=`` 传入（优先级更高），
+    这里守的是**向后兼容**：老档案文件里的 ``tasks`` 字段仍然生效。
+    """
 
     def test_from_config_injects_task_params(self):
-        # 不再读用户的真实配置文件（glm_glm-5.3-flash.config 的 api_key 为空、
-        # 依赖 ZHIPU_API_KEY 环境变量）——那会让本测试只在特定机器上通过。
+        # 不读用户的真实档案（config/ 下的 *.config 含密钥且不入库，
+        # 新克隆的仓库里根本不存在）——那会让本测试只在特定机器上通过。
         # 用内联构造的配置，令测试与本机凭据解耦。
         cfg = {
             'host': 'https://open.bigmodel.cn/api/paas/v4',

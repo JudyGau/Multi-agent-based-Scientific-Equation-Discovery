@@ -34,12 +34,20 @@ _ENV_PASSTHROUGH = (
     "DEEPINFRA_API_KEY", "OPENAI_API_KEY", "UNPAYWALL_EMAIL",
 )
 
+#: 项目自有环境变量前缀：也要透传给子进程。
+#: 其中 ``DRSR_ROLE_CONFIG_<ROLE>`` 承载「角色 → 档案」的解析结果——子进程里的
+#: read_paper 拿不到父进程的对象，只能靠它继承父进程选定的 summary 档案。
+_ENV_PREFIXES = ("DRSR_",)
+
 
 def _server_env() -> dict:
     env = {"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
     for name in _ENV_PASSTHROUGH:
         value = os.environ.get(name)
         if value:
+            env[name] = value
+    for name, value in os.environ.items():
+        if value and name.startswith(_ENV_PREFIXES):
             env[name] = value
     return env
 

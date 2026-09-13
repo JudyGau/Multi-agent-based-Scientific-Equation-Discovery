@@ -3,18 +3,21 @@
 #
 # 用法：
 #   bash example.sh                      # 使用默认配置与 python
-#   LLM_CONFIG=deepseek_deepseek-v4-flash.config bash example.sh
+#   LLM_CONFIG=config/deepseek_deepseek-v4-pro.config bash example.sh
 #   PYTHON=.venv2/Scripts/python.exe bash example.sh   # Windows venv
 #
-# 依赖：需存在 LLM 配置文件（默认 glm_glm-5.3-flash.config），且 api_key 已填或
+# 依赖：需存在 LLM 档案（默认 config/glm_glm-5.3-flash.config），且 api_key 已填或
 # 对应环境变量已设置（如 ZHIPU_API_KEY / DEEPSEEK_API_KEY）。
+# 首次使用：cp config/glm_glm-5.3-flash.config.example config/glm_glm-5.3-flash.config
+# 角色 → 档案 的绑定声明在 config/agents.config.json；自检：
+#   python -m drsr_420.llm.roles --check
 #
 # 入口为 `python -m drsr_420.cli.main`（需在仓库根目录执行）；等价于安装后的
 # `drsr420` 命令，以及 IDE 里 4 个 MRF* 运行配置（同样以模块方式启动）。
 set -u
 
 PYTHON="${PYTHON:-python3}"
-LLM_CONFIG="${LLM_CONFIG:-glm_glm-5.3-flash.config}"
+LLM_CONFIG="${LLM_CONFIG:-config/glm_glm-5.3-flash.config}"
 
 if ! command -v "$PYTHON" >/dev/null 2>&1 && [ ! -x "$PYTHON" ]; then
   echo "[ERROR] 找不到可执行的 Python：$PYTHON（可用 PYTHON 环境变量指定）" >&2
@@ -22,8 +25,8 @@ if ! command -v "$PYTHON" >/dev/null 2>&1 && [ ! -x "$PYTHON" ]; then
 fi
 
 if [ ! -f "$LLM_CONFIG" ]; then
-  echo "[ERROR] 未找到 LLM 配置文件：$LLM_CONFIG" >&2
-  echo "        请提供 提供商_模型.config（含 api_key），或用 LLM_CONFIG 指定。" >&2
+  echo "[ERROR] 未找到 LLM 档案：$LLM_CONFIG" >&2
+  echo "        请从 config/ 下的 .example 模板复制一份并填入 api_key，或用 LLM_CONFIG 指定。" >&2
   exit 1
 fi
 

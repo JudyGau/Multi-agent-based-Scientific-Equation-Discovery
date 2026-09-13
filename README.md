@@ -54,41 +54,72 @@ python -m drsr_420.cli.main --problem_name oscillator1 --data_csv ./data/oscilla
 
 批量示例见根目录 `example.sh`。
 
-## LLM 配置（按 提供商_模型.config 命名）
+## LLM 配置：角色 → 档案
 
-根目录提供按 `提供商_模型.config` 命名的 JSON 配置文件（如 `glm_glm-5.3-flash.config`、`deepseek_deepseek-v4-flash.config`），用于配置大模型访问与采样参数：
+配置分三层，**扩展名就是保密边界**：
+
+```
+config/
+├── agents.config.json                      # 入库（无密钥）：角色 → 档案 + 参数覆盖
+├── <提供商>_<模型>.config                  # 不入库（含密钥）：连接信息 + 生成参数
+└── <提供商>_<模型>.config.example          # 入库：模板（api_key 留空）
+```
+
+**「哪个 Agent 用哪套配置」只在一个地方声明**——`config/agents.config.json`：
 
 ```json
 {
-  "host": "api.deepseek.com",
-  "api_key": "xxx",
-  "model": "deepseek/deepseek-v4-flash",
-  "max_tokens": 65536,
-  "temperature": 0.7,
-  "top_p": 0.95,
-  "tasks": {
-    "sampling": {"reasoning_effort": "low"},
-    "analysis": {"reasoning_effort": "high"},
-    "summary": {"reasoning_effort": "high"},
-    "experience": {"reasoning_effort": "high"},
-    "residual": {"reasoning_effort": "high"},
-    "explain": {"reasoning_effort": "high"}
+  "default": "glm_glm-5.3-flash",
+  "roles": {
+    "sampling":   {"params": {"reasoning_effort": "low"}},
+    "analysis":   {"params": {"reasoning_effort": "high"}},
+    "experience": {"params": {"reasoning_effort": "high", "temperature": 0.0}},
+    "residual":   {"params": {"reasoning_effort": "high", "temperature": 0.4}},
+    "explain":    {"config": "deepseek_deepseek-v4-pro"},   // 可给单个角色换模型
+    "summary":    {"config": "ollama_Qwen3.8-27B"}
   }
 }
 ```
 
-- `api_key` 请替换为真实密钥，否则会报"未提供令牌"。
-- 仓库提供 `llm.config.example` 作为模板：真实配置文件受 `.gitignore` 的 `llm.config` / `*.config` 规则保护不会入库，故模板以 `.example` 结尾以便随仓库分发。新克隆的仓库执行 `cp llm.config.example llm.config` 并填入密钥即可运行；`.idea/runConfigurations/` 下的 IDE 运行配置默认使用 `--llm_config llm.config`。
-- `model` 使用 `provider/model` 形式。支持提供商：`deepseek`、`siliconflow`、`deepinfra`、`ollama`、`blt`（柏拉图）、`cstcloud`（科技云）、`glm`（智谱）。
-- 配置文件按提供商与模型命名（`提供商_模型.config`），与具体任务解耦：任务级私有参数（如思考强度）统一放在 `tasks` 字段中按任务声明。
-- 切换模型直接修改对应配置文件名即可（如 `deepseek_deepseek-v4-flash.config`）；`api_key` 留空时回退读取对应环境变量（如 `DEEPSEEK_API_KEY`、`ZHIPU_API_KEY`、`SILICONFLOW_API_KEY`）。
-- 运行时每个任务实例化一个 LLM Client 并全程复用，并行任务互不影响。
+6 个角色：`sampling`（采样者+工具调用者）、`analysis`（数据分析者）、`experience`（经验总结者）、
+`residual`（残差分析者）、`explain`（收尾物理解释）、`summary`（文献摘要，跑在 MCP 子进程里）。
+省略 `config` 即沿用 `default`。
+
+```bash
+python -m drsr_420.llm.roles            # 打印「角色 → 档案（生效来源）」
+python -m drsr_420.llm.roles --check    # 自检：档案存在、model 合法、密钥可达
+```
+
+**档案文件**（`config/<提供商>_<模型>.config`）配置连接与生成参数：
+
+```json
+{
+  "host": "open.bigmodel.cn",
+  "api_key": "xxx",
+  "model": "glm/glm-5.3-flash",
+  "max_tokens": 65536,
+  "temperature": 0.7,
+  "top_p": 0.95
+}
+```
+
+首次使用：`cp config/glm_glm-5.3-flash.config.example config/glm_glm-5.3-flash.config` 并填入密钥。
+
+- 文件名的唯一权威是文件内的 `model` 字段（`provider/model` 形式，会做格式校验）；**代码不解析文件名**，写错只会"读不到文件"而不会静默连错模型。
+- 支持提供商：`deepseek`、`siliconflow`、`deepinfra`、`ollama`、`blt`（柏拉图）、`cstcloud`（科技云）、`glm`（智谱）；别名（`zhipu`/`bigmodel`/`cst`/`bltcy`…）会自动归一。
+- `api_key` 留空时回退对应环境变量（`ZHIPU_API_KEY`、`DEEPSEEK_API_KEY`、`SILICONFLOW_API_KEY` 等）。
+- **一次性覆盖**：`--llm_config <档案>` 改的是"默认档案"（未绑定档案的角色共用它）；`--role-config explain=<档案>` 精确覆盖某个角色，`--role-config '*=<档案>'` 强制所有角色。每次实验的解析结果都记进 `config_snapshot.json` 的 `llm.roles`。
+- `.idea/runConfigurations/` 的 4 个 MRF 运行配置显式指定 `--llm_config config/glm_glm-5.3-flash.config`。
+
+> 配置层设计（为什么这样分、与 CrewAI/AutoGen 的对照）见
+> [`docs/CONFIG_PLAN.md`](docs/CONFIG_PLAN.md)。
 
 ## RAG 文献知识库
 
 项目内置 Chroma 持久化向量库（`knowledge_base/chroma_db`），用于检索文献背景注入提示词。
 
-- 配置：`rag.config`（嵌入后端 `local`/`api`、API 主机/密钥/模型、分块大小、检索 `k` 等）。
+- 配置：`config/rag.config`（嵌入后端 `local`/`api`、API 主机/密钥/模型、分块大小、检索 `k` 等）。
+  首次使用：`cp config/rag.config.example config/rag.config`。
 - 默认 `backend=api` 走 OpenAI 兼容嵌入接口（如智谱 `embedding-3`、SiliconFlow `BAAI/bge-m3`）；`api_key` 留空时按主机回退环境变量。
 
 入库文献：
@@ -158,7 +189,11 @@ python -m drsr_420.agents --check    # 契约自检：上下游引用 / 可达�
 ## 仓库结构
 
 ```
-glm_glm-5.3-flash.config / deepseek_deepseek-v4-flash.config / rag.config   # 配置文件（不入库）
+config/                       # 配置目录（.json 入库 / .config 不入库，扩展名即保密边界）
+  agents.config.json          #   ★ 角色 → LLM 档案 + 参数覆盖（唯一声明处，无密钥）
+  <提供商>_<模型>.config      #   连接信息 + 生成参数（含 api_key，不入库）
+  <提供商>_<模型>.config.example   # 模板（入库）
+  rag.config(.example)        #   文献知识库配置
 example.sh                    # 批量运行示例
 drsr_420/                     # 单一顶层包（8 层，依赖方向自底向上）
   core/                       # 领域无关基础设施
@@ -172,7 +207,8 @@ drsr_420/                     # 单一顶层包（8 层，依赖方向自底向�
   llm/                        # LLM 接入层
     client.py                 #   LLMClient：请求/重试/流式/参数适配/记账
     providers.py              #   各提供商子类
-    factory.py                #   ClientFactory / 配置加载与归一化
+    factory.py                #   ClientFactory / 档案定位与归一化（Q1+Q2）
+    roles.py                  #   ★ 角色 → 档案 解析（Q3，唯一声明处）
     tools_schema.py           #   工具调用 schema
   evaluation/                 # 评估执行机制
     problems.py               #   多起点 least_squares 拟合与打分
@@ -207,6 +243,7 @@ drsr_420/                     # 单一顶层包（8 层，依赖方向自底向�
     pipeline.py               #   实验主流程编排
   cli/
     main.py                   #   命令行入口：python -m drsr_420.cli.main（拆分为可测函数）
+    llm_setup.py              #   档案加载 / 角色客户端池（配置没准备好时给出可操作报错）
 specs/                        # 历史静态 spec（动态模式已不使用，保留备查）
 experiments/{problem}_{timestamp}/   # 本次运行产物
 ```

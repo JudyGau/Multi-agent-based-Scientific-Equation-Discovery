@@ -1,6 +1,6 @@
 {
-  "host": "open.bigmodel.cn",
-  "api_key": "<在此填入你的 API Key>",
+  "host": "https://open.bigmodel.cn/api/ants/v1",
+  "api_key": "",
   "model": "glm/glm-5.3-flash",
   "max_tokens": 65536,
   "temperature": 0.7,

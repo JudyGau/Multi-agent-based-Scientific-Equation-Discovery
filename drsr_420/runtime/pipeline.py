@@ -149,6 +149,7 @@ def _run_initial_analysis(
 ):
     """初次数据分析：先评估初始模板，再由 DataAnalyzerAgent 分析数据集（含 RAG 注入）。"""
     llm_client = kwargs.get('llm_client', None)
+    role_clients = kwargs.get('role_clients', None)
     seed = kwargs.get('seed', None)
     results_root = kwargs.get('results_root', None) or config.results_root
 
@@ -158,7 +159,10 @@ def _run_initial_analysis(
     evaluators[0].analyze(EvaluationRequest(
         sample=initial, island_id=None, version_generated=None, profiler=profiler))
 
-    # 创建 DataAnalyzerAgent 实例（也写入统一结果目录，直接使用 results_root）
+    # 创建 DataAnalyzerAgent 实例（也写入统一结果目录，直接使用 results_root）。
+    # 客户端按角色取：analysis 在 config/agents.config.json 里可绑定独立档案。
+    if role_clients is not None:
+        llm_client = role_clients.get('analysis')
     analyzer = DataAnalyzerAgent(timeout=600, base_dir=results_root, llm_client=llm_client, seed=seed)
 
     # PromptContext 用于动态渲染初次数据分析/残差分析提示（变量名、因变量、输出格式均动态化）
@@ -214,6 +218,7 @@ def _launch_samplers(
     """
     llm_client = kwargs.get('llm_client', None)
     prompt_ctx = kwargs.get('prompt_ctx', None)
+    role_clients = kwargs.get('role_clients', None)
 
     samplers = []
     for _ in range(config.num_samplers):
@@ -230,6 +235,8 @@ def _launch_samplers(
             prompt_ctx=prompt_ctx,
             llm_client=llm_client,
             llm_api=None,
+            # 角色化的客户端（sampling / experience / residual）由 cli.main 解析后注入
+            role_clients=role_clients,
         ))
 
     # 多线程并行启动多个 sampler：共享经验缓冲（内部加锁），并行调用 LLM 提升吞吐。
@@ -288,4 +295,4 @@ def main(
         database, template, function_to_evolve, function_to_run,
         inputs, config, max_sample_nums, class_config, kwargs, profiler)
 
-    find_best_eq(results_root)
+    find_best_eq(results_root, role_clients=kwargs.get('role_clients'))

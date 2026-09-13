@@ -282,5 +282,7 @@ analyzer.analyze(data_source, custom_prompt=None, max_rows=None, verbose=True) -
   `experiences.json` / `residual_analyze.json` / `checkpoint.json` 的读-改-写；
 - 每个 Sampler 线程**独享一份** `EvaluatorAgent` 列表（避免 `LocalSandbox._last_params`
   等实例状态竞态）；`ExperienceBuffer` 由所有线程共享（内部自带上锁）；
-- LLM 客户端按任务克隆独立副本（`clone_llm_client`），采样/经验/残差互不影响；
+- LLM 客户端按角色取独立副本（`llm.role_clients.RoleClients.get(role)`：采样 / 经验 /
+  残差互不影响；"哪个角色用哪套配置"声明在 `config/agents.config.json`，
+  见 [`docs/CONFIG_PLAN.md`](../../docs/CONFIG_PLAN.md)）；
 - 包内 `__init__.py` 用 PEP 562 惰性导出，顶层不 import 子模块（避免循环导入）。

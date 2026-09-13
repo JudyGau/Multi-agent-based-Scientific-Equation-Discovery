@@ -33,6 +33,7 @@ from drsr_420.core import config as config_lib
 from drsr_420.core import prompt_config as pc
 from drsr_420.core.console import print_block
 from drsr_420.llm import LLMClient
+from drsr_420.llm.role_clients import RoleClients
 
 from drsr_420.agents.sampler_agent import LLM, SamplerAgent
 from drsr_420.agents.evaluator_agent import EvaluatorAgent
@@ -72,11 +73,11 @@ def atomic_write_json(path: str, data) -> None:
 def clone_llm_client(client, task=None, **kwargs_overrides):
     """基于现有 LLMClient 复制一份独立实例，使各实例 kwargs 互不影响。
 
-    原先对同一个 llm_client 连续执行 kwargs.update，导致采样/经验/残差三个用途
-    的生成参数互相覆盖（最终全部变成 temperature=0.4），并覆盖了配置文件（如
-    glm_glm-5.3-flash.config）中用户配置的温度。这里通过浅拷贝 + 独立 kwargs 字典修复。
-    ``task`` 不为 None 时，先按任务注入配置声明的私有参数（如思考强度），
-    再叠加 ``kwargs_overrides`` 覆盖（temperature 等）。
+    .. deprecated::
+        已由 :class:`drsr_420.llm.roles.RoleClients` 取代——"哪个角色用哪套配置"
+        现在由 ``config/agents.config.json`` 声明，克隆与参数注入统一走
+        ``RoleClients.get(role)``（角色参数也不再写死在本模块的实参里）。
+        保留本函数仅为兼容外部调用；库内代码请勿再使用。
     """
     if client is None:
         return None
@@ -133,35 +134,27 @@ class CoordinatorAgent(BaseAgent):
             prompt_ctx: pc.PromptContext | None = None,
             llm_client: LLMClient | None = None,
             llm_api: dict | None = None,
+            role_clients: Any | None = None,
     ):
         self._samples_per_prompt = samples_per_prompt
         self._database = database
         self._evaluators = evaluators
         self._prompt_ctx = prompt_ctx
-        # 每个 sampler 克隆一份基础客户端，多线程并行时统计计数互不干扰。
-        # 采样（骨架生成）+ 工具调用仅需轻量思考，思考强度在配置文件（如
-        # glm_glm-5.3-flash.config）的 tasks.sampling 中声明（默认为 low），
-        # 避免 max 强度下长时间推理阻塞并行采样。
-        self._llm_client = clone_llm_client(llm_client, task='sampling') if llm_client else None
 
-        # 采样、经验分析、残差分析各自使用独立 temperature 的客户端副本，
-        # 避免原地修改同一个 llm_client 的 kwargs 互相覆盖（并覆盖配置文件用户设置）。
-        # 思考强度分别从 tasks.experience / tasks.residual 声明（默认为 high）
-        self._llm_client_experience = clone_llm_client(
-            llm_client,
-            task='experience',
-            temperature=float(0.0),
-            top_p=float(1.0),
-            frequency_penalty=float(0.0),
+        # 三种用途（采样+工具调用 / 经验总结 / 残差分析）各用**独立**的客户端实例：
+        # LLMClient.kwargs 是实例可变状态，共用一个实例会让生成参数互相覆盖
+        # （历史上真的发生过——三者最后全变成 temperature=0.4）。
+        #
+        # 「哪个角色用哪套配置」由 config/agents.config.json 声明，本模块不再写死
+        # 任何参数（原先 experience/residual 的 temperature 等直接写在这里的实参中）。
+        # 未注入 role_clients 的调用方（测试、旧代码）由 RoleClients.single 兜底：
+        # 只给一个客户端时所有角色共用它，参数仍按注册表注入。
+        self._role_clients = (
+            role_clients if role_clients is not None else RoleClients.single(llm_client)
         )
-        # 残差分析需识别结构指导修正，使用 high 思考强度
-        self._llm_client_residual = clone_llm_client(
-            llm_client,
-            task='residual',
-            temperature=float(0.4),
-            top_p=float(0.9),
-            frequency_penalty=float(0.1),
-        )
+        self._llm_client = self._role_clients.get('sampling')
+        self._llm_client_experience = self._role_clients.get('experience')
+        self._llm_client_residual = self._role_clients.get('residual')
 
         # 经验总结与残差分析组件
         self._summarizer = ExperienceSummarizerAgent(

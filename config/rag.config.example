@@ -1,0 +1,12 @@
+{
+  "backend": "api",
+  "api_host": "https://api.siliconflow.cn/v1",
+  "api_key": "",
+  "api_model": "BAAI/bge-m3",
+  "embed_batch_size": 32,
+  "embed_max_retries": 8,
+  "embed_backoff_base": 2.0,
+  "embed_batch_interval": 0.5,
+  "embed_file_interval": 1.0,
+  "default_query": "磁流变 颗粒 本构 屈服应力 压缩"
+}

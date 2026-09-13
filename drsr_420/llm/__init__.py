@@ -89,11 +89,58 @@ __all__ = [
     "DeepInfraClient", "CSTCloudClient", "OllamaClient", "BltClient", "ZhipuClient",
     "GLMClient", "reset_global_tokens", "get_global_tokens", "reset_global_time",
     "get_global_time", "tools", "owner_module",
+    # 角色 → 档案（Q3）
+    "roles", "TASKS", "RoleClients", "resolve_roles", "load_role_config",
+    "describe_roles", "check_roles",
 ]
 
 
+#: 角色 → 档案（Q3）相关名字：**惰性**转发到对应的子模块。
+#:
+#: 刻意不在这里 eager import 子模块：`python -m drsr_420.llm.roles` 会先执行本
+#: `__init__`，若此处已把 roles 放进 sys.modules，runpy 会报
+#: "found in sys.modules after import of package ... prior to execution"。
+#: 走 PEP 562 惰性解析后，`from drsr_420.llm import RoleClients` 与
+#: `llm.roles.describe_roles()` 都照常可用，且 `-m` 入口干净。
+_LAZY_ROLES_API: dict[str, str] = {
+    # 子模块本身 + 声明与解析（roles.py）
+    "roles": "drsr_420.llm.roles",
+    "role_clients": "drsr_420.llm.role_clients",
+    "role_diagnostics": "drsr_420.llm.role_diagnostics",
+    "TASKS": "drsr_420.llm.roles",
+    "RoleEntry": "drsr_420.llm.roles",
+    "RoleRegistry": "drsr_420.llm.roles",
+    "RoleResolution": "drsr_420.llm.roles",
+    "resolve_roles": "drsr_420.llm.roles",
+    "resolve_params": "drsr_420.llm.roles",
+    "profile_path": "drsr_420.llm.roles",
+    "registry_path": "drsr_420.llm.roles",
+    "list_profiles": "drsr_420.llm.roles",
+    "list_templates": "drsr_420.llm.roles",
+    "BUILTIN_ROLE_PARAMS": "drsr_420.llm.roles",
+    "DEFAULT_PROFILE": "drsr_420.llm.roles",
+    "ENV_ROLE_PREFIX": "drsr_420.llm.roles",
+    # 客户端构造（role_clients.py）
+    "RoleClients": "drsr_420.llm.role_clients",
+    "load_role_config": "drsr_420.llm.role_clients",
+    "build_role_client": "drsr_420.llm.role_clients",
+    # 渲染与自检（role_diagnostics.py）
+    "describe_roles": "drsr_420.llm.role_diagnostics",
+    "check_roles": "drsr_420.llm.role_diagnostics",
+}
+
+
+#: 属于"子模块本身"的名字（其余按属性从归属模块取）。
+#: 必须显式列出而不是后缀匹配——``resolve_roles`` 也以 "roles" 结尾。
+_LAZY_SUBMODULES = frozenset({"roles", "role_clients", "role_diagnostics"})
+
+
 def __getattr__(name: str):
-    """惰性解析私有名与模块级状态（见模块文档字符串）。"""
+    """惰性解析角色 API、私有名与模块级状态（见模块文档字符串）。"""
+    owner = _LAZY_ROLES_API.get(name)
+    if owner is not None:
+        module = importlib.import_module(owner)
+        return module if name in _LAZY_SUBMODULES else getattr(module, name)
     module = owner_module(name)
     if module is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
@@ -101,4 +148,4 @@ def __getattr__(name: str):
 
 
 def __dir__() -> list[str]:
-    return sorted(set(globals()) | set(__all__))
+    return sorted(set(globals()) | set(__all__) | set(_LAZY_ROLES_API))

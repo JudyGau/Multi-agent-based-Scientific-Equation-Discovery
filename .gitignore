@@ -4,12 +4,12 @@ experiments
 *.pyc
 error.log
 
-# 配置文件（含 API 密钥，不入库）
-llm.config
+# 配置文件（含 API 密钥，不入库）。
+# 边界由**扩展名**划分：config/<提供商>_<模型>.config 不入库；
+# 同名的 .config.example 模板与 config/agents.config.json（无密钥）入库。
 *.config
 
 # 下载的文献 PDF
-/drsr_420/tools/pdf_downloads/
 /pdf_downloads/
 
 # 知识库（Chroma 持久化目录）

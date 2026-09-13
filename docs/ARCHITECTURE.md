@@ -49,7 +49,7 @@ CoordinatorAgent.run()  while 未达采样上限/时长上限:
 | 层 | 位置 | 职责 |
 |---|---|---|
 | `core` | `drsr_420/core/` | 领域无关基础设施：经验记忆（多岛 + 聚类抽样）、AST 与程序拼装、配置、线程前缀输出、样本/进度记录、提示词模板、全局 token 统计 |
-| `llm` | `drsr_420/llm/` | LLM 接入：客户端（重试/流式/参数适配/记账）、提供商子类、客户端工厂与配置、工具调用 schema |
+| `llm` | `drsr_420/llm/` | LLM 接入：客户端（重试/流式/参数适配/记账）、提供商子类、客户端工厂与档案定位、**角色 → 档案 解析**（`roles.py` / `role_clients.py` / `role_diagnostics.py`）、工具调用 schema |
 | `evaluation` | `drsr_420/evaluation/` | 评估执行**机制**：多起点拟合打分、常驻子进程沙箱（超时重建）、可选 numba 加速 |
 | `knowledge` | `drsr_420/knowledge/` | 外部知识：Chroma RAG 知识库与入库 CLI、MCP 工具（文献检索/阅读）与其 stdio 服务器 |
 | `agents` | `drsr_420/agents/` | ★ **多 Agent 角色层**：7 个 Agent + 契约（`base.py`）+ 消息（`messages.py`）+ 层内部件（`skeleton.py` / `prompt_injection.py`） |
@@ -67,15 +67,15 @@ CoordinatorAgent.run()  while 未达采样上限/时长上限:
 | 层 | 文件 | 行数 | 实际依赖 |
 |---|---|---|---|
 | `core/` | 8 | 1857 | —（最底层） |
-| `llm/` | 6 | 965 | `core` |
+| `llm/` | 9 | 1818 | `core` |
 | `evaluation/` | 4 | 615 | `core` |
-| `knowledge/` | 8 | 1343 | `llm` |
-| `agents/` | 13 | 2663 | `core`, `evaluation`, `knowledge`, `llm` |
-| `analysis/` | 9 | 1286 | `core`, `knowledge`, `llm` |
-| `runtime/` | 2 | 292 | `agents`, `analysis`, `core`, `knowledge` |
-| `cli/` | 2 | 456 | `agents`, `core`, `evaluation`, `llm`, `runtime` |
+| `knowledge/` | 8 | 1359 | `llm` |
+| `agents/` | 13 | 2656 | `core`, `evaluation`, `knowledge`, `llm` |
+| `analysis/` | 9 | 1304 | `core`, `knowledge`, `llm` |
+| `runtime/` | 2 | 299 | `agents`, `analysis`, `core`, `knowledge` |
+| `cli/` | 3 | 542 | `agents`, `core`, `evaluation`, `llm`, `runtime` |
 
-包内实现共 9,477 行；顶层只剩 `__init__.py`（0 行实现）。
+包内实现共 10,450 行；顶层只剩 `__init__.py`（0 行实现）。全局最长文件 `llm/client.py` 482 行。
 
 ---
 
@@ -315,6 +315,10 @@ $env:ZHIPU_API_KEY='dummy-test-key'
 python -m drsr_420.agents --check
 python -m drsr_420.agents
 
+# 角色 → LLM 档案（唯一声明处：config/agents.config.json）
+python -m drsr_420.llm.roles
+python -m drsr_420.llm.roles --check      # 档案存在 / model 合法 / 密钥可达
+
 # 命令行入口（两者等价；安装后还可用 console script `drsr420`）
 python -m drsr_420.cli.main --help
 drsr420 --help
@@ -336,7 +340,71 @@ python -m drsr_420.analysis.prune_demo
 | Agent 契约 | 7 个 Agent 都继承 `BaseAgent`、`SPEC` 自洽、规范入口不用英式拼写 |
 | 评估子系统边界 | 角色文件不得再含进程池痕迹；机制符号仍可从角色模块导入（同对象） |
 | 控制台编码 | 以 `PYTHONIOENCODING=gbk` 跑典型入口，打印内容必须能被 GBK 编码 |
+| 配置无硬编码档案名 | 库代码里不得出现写死的 `*.config` 文件名（须经角色解析）；注册表无密钥；每个已建档案都要有入库模板 |
 
 行为测试（`tests/test_sampler_agent.py`、`tests/test_agent_behavior.py`）覆盖各 Agent
 的**行为**而非结构：骨架提取与重采样上界、经验/残差注入策略、工具循环收敛、
 反思失败兜底、协调者的质量判定与归属字段计算。
+
+---
+
+## 10. 配置：角色 → 档案
+
+一份"配置"其实在回答三个寿命与保密等级都不同的问题，本系统按此把它们**分成三层**：
+
+| | 问题 | 在哪 | 是否入库 |
+|---|---|---|---|
+| Q1 | 连接谁？用哪把钥匙？ | `config/<提供商>_<模型>.config` 的 `host` / `api_key` | ✗（`*.config` 被 `.gitignore` 忽略） |
+| Q2 | 生成参数是什么？ | 同一档案的 `model` / `temperature` / `max_tokens` … | 随 Q1 同文件 |
+| Q3 | **哪个角色用哪套？覆盖什么？** | `config/agents.config.json` | ✓（无密钥，需 review） |
+
+**扩展名本身就是保密边界**：`.json` 可入库、`.config` 不入库、`.config.example` 是模板。
+
+### 10.1 六个角色
+
+| 角色 | 使用者 |
+|---|---|
+| `sampling` | SamplerAgent + ToolCallerAgent |
+| `analysis` | DataAnalyzerAgent |
+| `experience` | ExperienceSummarizerAgent |
+| `residual` | ResidualAnalyzerAgent |
+| `explain` | `analysis/explain.py`（非 Agent） |
+| `summary` | MCP 工具 `read_paper`（非 Agent，跑在子进程里） |
+
+角色表是代码常量（`llm/roles.py::TASKS`），`AgentSpec.llm_task` 必须落在其中（有护栏）。
+
+### 10.2 解析优先级
+
+```
+--role-config <role>=<file>            (最高：命令行精确覆盖，'*' 表示所有角色)
+  > 环境变量 DRSR_ROLE_CONFIG_<ROLE>   (容器 / CI / 子进程传递)
+  > agents.config.json 的 roles.<role>.config
+  > --llm_config                       (CLI 指定的**默认**档案)
+  > agents.config.json 的 default
+  > 内置 DEFAULT_PROFILE               (最低：保证永不"无配置")
+```
+
+第 3 步高于第 4 步是刻意的：`--llm_config` 的语义是"**默认**档案"（未绑定档案的角色
+共用它）。若反过来，IDE 运行配置里那句 `--llm_config` 会把注册表的角色绑定永久屏蔽
+——**这正是旧结构下"给 explain 换模型"无法生效的根因**。
+
+参数按角色合并：`内置 BUILTIN_ROLE_PARAMS` < `档案 tasks[role]`（旧格式，兼容）<
+`注册表 roles[role].params`。
+
+### 10.3 子进程与可追溯
+
+`read_paper` 跑在 MCP server 子进程里，拿不到父进程的对象，因此
+`cli.main` 会把每个角色的解析结果**回写环境变量** `DRSR_ROLE_CONFIG_<ROLE>`，
+`tool_runner._server_env()` 再把它并入子进程环境（`mcp` SDK 默认只透传系统级白名单）。
+每次实验的解析结果都写进 `config_snapshot.json` 的 `llm.roles`，让"这次实验的 explain
+到底用了哪个模型"可查。
+
+### 10.4 一条硬约束：代码不得解析文件名
+
+档案文件名的唯一权威是文件内的 `model` 字段（`ClientFactory` 校验 `provider/model`
+格式），文件名只是给人看的标签。因此文件名写错**不会**静默连错模型，只会让"读不到
+文件"尽早暴露。护栏（`tests/test_config_roles.py`）直接扫描库代码里的字符串字面量：
+出现写死的 `*.config` 文件名即失败——这条堵死的正是"explain 硬编码了一个不存在的
+档案、异常被吞、`explain.txt` 长期为空"那类故障的成因。
+
+设计与迁移过程见 [`CONFIG_PLAN.md`](./CONFIG_PLAN.md)。

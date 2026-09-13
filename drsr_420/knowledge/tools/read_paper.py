@@ -22,17 +22,25 @@ from drsr_420.knowledge.tools.search_paper import search_paper
 
 # ── 客户端（懒加载，避免模块导入时创建客户端而崩溃）────
 def _load_llm_config():
-    """读取 LLM 配置文件（如 glm_glm-5.3-flash.config）。"""
-    return llm.load_llm_config("glm_glm-5.3-flash.config")
+    """读取 ``summary`` 角色的 LLM 档案。
+
+    本模块跑在 **MCP 服务器子进程**里（由 ``knowledge/tool_runner`` 以 stdio 拉起），
+    拿不到父进程的解析结果，只能靠环境变量 ``DRSR_ROLE_CONFIG_SUMMARY`` 继承父进程
+    解析出的档案路径；该变量缺失时按 ``config/agents.config.json`` 自行解析。
+    档案选择不接受硬编码文件名——库代码里出现字面量文件名有专门的护栏拦。
+    """
+    return llm.load_role_config("summary")
 
 
 def _build_client(config):
-    """基于模型配置文件（如 glm_glm-5.3-flash.config）构建项目自身的 LLM 客户端（复用 llm.ClientFactory）。
+    """构建 ``summary`` 角色客户端（含该角色声明的私有参数）。
 
     使用项目自研客户端（基于 requests），兼容 api_key 为空串的本地服务；
-    host/base_url 双键与 scheme 补齐由 ClientFactory 内部统一规范化。
+    host/base_url 双键与 scheme 补齐由 ClientFactory 内部统一规范化；
+    ``temperature`` / ``top_p`` 之类的角色参数来自配置注册表，不再写死在本文件里。
     """
-    return llm.ClientFactory.from_config(config)
+    return llm.ClientFactory.from_config(
+        config, task_params={"summary": llm.resolve_params("summary")})
 
 
 _reader_client = None
@@ -60,15 +68,14 @@ def _summarize_text(client, cfg, full_text):
     # 输出上限优先读 max_completion_tokens，缺失则回退 max_tokens：
     # 直接 cfg.get("max_completion_tokens") 会把 None 写进 kwargs，
     # 而 llm 的 glm 分支会用该 None 覆盖已配置好的 max_tokens（请求 400）。
+    # （temperature / top_p / frequency_penalty 曾在此写死，已迁到
+    #   config/agents.config.json 的 roles.summary.params）
     max_out = cfg.get("max_completion_tokens") or cfg.get("max_tokens")
-    overrides = {
-        'temperature': 0.4,
-        'frequency_penalty': 0.1,
-        'top_p': 0.9,
-    }
+    overrides = {}
     if isinstance(max_out, int) and max_out > 0:
         overrides['max_completion_tokens'] = max_out
-    client.kwargs.update(overrides)
+    if overrides:
+        client.kwargs.update(overrides)
     response = client.chat([
         {"role": "system", "content": "You are a helpful assistant, you need to read literature and summarize."},
         {"role": "user", "content": f"{full_text}"}
