@@ -68,26 +68,27 @@ config/
 └── <提供商>_<模型>.config.example          # 入库：模板（api_key 留空）
 ```
 
-**「哪个 Agent 用哪套配置」只在一个地方声明**——`config/agents.config.json`：
+**「哪个 Agent 用哪套配置」只在一个地方声明**——`config/agents.config.json`（下面节选）：
 
 ```json
 {
   "default": "glm_glm-5.3-flash",
   "roles": {
-    "sampling":   {"params": {"reasoning_effort": "low"}},
-    "analysis":   {"params": {"reasoning_effort": "high"}},
-    "experience": {"params": {"reasoning_effort": "high", "temperature": 0.0}},
-    "residual":   {"params": {"reasoning_effort": "high", "temperature": 0.4}},
-    "explain":    {"config": "deepseek_deepseek-v4-flash"},  // 给单个角色换模型
-    "summary":    {"config": "ustc_deepseek-v4-flash"}       // 自定义提供商（校内网关）
+    "sampling":   {"params": {"reasoning_effort": "high"}},
+    "analysis":   {"params": {"reasoning_effort": "low"}},
+    "experience": {"params": {"reasoning_effort": "low", "temperature": 0.0}},
+    "residual":   {"params": {"reasoning_effort": "low", "temperature": 0.4}},
+    "explain":    {"config": "glm_glm-5.3-flash"},      // 显式绑定，当前 = default（不换模型）
+    "summary":    {"config": "ustc_deepseek-v4-flash"}  // 自定义提供商（校内网关）
   }
 }
 ```
 
 6 个角色：`sampling`（采样者+工具调用者）、`analysis`（数据分析者）、`experience`（经验总结者）、
 `residual`（残差分析者）、`explain`（收尾物理解释）、`summary`（文献摘要，跑在 MCP 子进程里）。
-省略 `config` 即沿用 `default`。上面前两个角色单独绑定，是因为"给某个角色换模型"在旧结构里
-**原理上无法表达**（详见 `docs/CONFIG_PLAN.md`）。
+省略 `config` 即沿用 `default`。上面只有 `summary` 真正换了模型（走自定义提供商）；
+`explain` 那行与 `default` 相同，因此当前不产生效果——这个"给某个角色换模型"的能力在旧结构里
+**原理上无法表达**（详见 `docs/CONFIG_PLAN.md`），所以位置留着，用不用由注册表决定。
 
 ```bash
 python -m drsr_420.llm.roles            # 打印「角色 → 档案（生效来源）」

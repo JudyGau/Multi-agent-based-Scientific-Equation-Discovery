@@ -328,6 +328,10 @@ env["DRSR_ROLE_CONFIG_SUMMARY"] = <resolver 解析出的绝对路径>
 > 阅读提示：§1–§9 是阶段 8 的设计稿与落地记录，其中出现的 `deepseek_deepseek-v4-pro`
 > 是**当时**的目标档案名；阶段 9 起它已下线，`explain` 改用 `deepseek_deepseek-v4-flash`
 > （官方端点）。历史段落保留原样，以免抹掉判断过程。
+>
+> **后续变更**：`explain` 的绑定在 §10.11 已被改回内置的 `glm_glm-5.3-flash`，
+> 角色参数也在同一次调整里改过。上面那句"`explain` 用官方 DeepSeek 端点"只描述
+> 阶段 9 当时的决定。
 
 ### 10.1 为什么"自定义提供商"是个能力问题，不是加一行配置
 
@@ -517,4 +521,31 @@ ClientFactory.from_config({"model": "deepseek/deepseek-reasoner", "api_key": key
 | 客户端类数量 | 8（`LLMClient` + 7 子类） | **1**（`LLMClient`） |
 | `llm/` 层 | 11 文件 / 2331 行 | **10 文件 / 2176 行**（删除 `providers.py` 73 行，`client.py` 487 → 479 行） |
 | 包内最长文件 | `llm/client.py` 487 行 | **`agents/coordinator_agent.py` 480 行**（仍 < 500 行预算） |
+
+### 10.11 角色绑定与参数的一次调整（追加）
+
+provider 归并之后，注册表 `config/agents.config.json` 被调整过一次（提交 `0b317e6`），
+文档随之同步——这类"改配置不改代码"的调整最容易让文档悄悄过期，所以在此留档：
+
+| 项 | 调整前 | 调整后 |
+|---|---|---|
+| `sampling.reasoning_effort` | `low` | **`high`** |
+| `analysis.reasoning_effort` | `high` | **`low`** |
+| `experience.reasoning_effort` | `high` | **`low`** |
+| `residual.reasoning_effort` | `high` | **`low`** |
+| `explain.config` | `deepseek_deepseek-v4-flash`（官方端点） | **`glm_glm-5.3-flash`**（内置） |
+
+两个后果值得记下来：
+
+1. **`explain` 那一行现在是完全冗余的**：`config` 等于 `default`，`params`
+   （`reasoning_effort=high`）也等于 `BUILTIN_ROLE_PARAMS` 里的值。它不再演示"给某个
+   角色换模型"。护栏 `test_explain_and_summary_do_not_share_a_profile` 仍然通过
+   （explain ≠ summary），但"为什么单绑 explain"这个理由当前不成立——要么给它绑一份
+   不同的档案，要么删掉这一行。
+2. **`summary` 成了唯一使用自定义提供商的角色**，因此 §10.1–§10.5 那套"零代码接
+   OpenAI 兼容端点"的演示仍有真实消费者：`config/ustc_deepseek-v4-flash.config.example`
+   与 `ShippedCustomProviderTest` 都还锁着它。`ShippedCustomProviderTest` 刻意不写死
+   厂商名，所以"把 summary 换回内置提供商"会被它拦下——那是设计变更，应当显式改测试。
+
+无需改代码：`--check` 与快照都会立刻反映新绑定，全量测试 509 项保持通过。
 
