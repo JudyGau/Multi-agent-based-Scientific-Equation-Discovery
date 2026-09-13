@@ -37,14 +37,14 @@
   "default": "glm_glm-5.3-flash",
   "roles": {
     "sampling": {
-      "params": {"reasoning_effort": "low"}
+      "params": {"reasoning_effort": "high"}
     },
     "analysis": {
-      "params": {"reasoning_effort": "high"}
+      "params": {"reasoning_effort": "low"}
     },
     "experience": {
       "params": {
-        "reasoning_effort": "high",
+        "reasoning_effort": "low",
         "temperature": 0.0,
         "top_p": 1.0,
         "frequency_penalty": 0.0
@@ -52,14 +52,14 @@
     },
     "residual": {
       "params": {
-        "reasoning_effort": "high",
+        "reasoning_effort": "low",
         "temperature": 0.4,
         "top_p": 0.9,
         "frequency_penalty": 0.1
       }
     },
     "explain": {
-      "config": "deepseek_deepseek-v4-flash",
+      "config": "glm_glm-5.3-flash",
       "params": {"reasoning_effort": "high"}
     },
     "summary": {
