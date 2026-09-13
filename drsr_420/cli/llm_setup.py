@@ -14,8 +14,11 @@
 * :func:`build_llm_client` —— 由档案 dict 构造客户端，失败即退出；
 * :func:`build_role_clients` —— 构造角色客户端池，并把解析结果回写环境变量。
 
-三者都以 ``SystemExit`` 终止"配置没准备好"的情况（而不是抛异常让实验在半路炸），
-与重构前的行为一致。
+三者中只有**解析期**的"配置没准备好"会以 ``SystemExit`` 终止（``--role-config`` 写错角色名
+之类，任何角色都无从谈起）。**单份档案**暂时不可用（缺文件、密钥没填、端点写错）不再拦住
+启动：客户端是按需构造的，用不到的档案不该拖死这次实验——但也不能装作没看见，所以
+:func:`build_role_clients` 会在启动时跑一遍离线自检并逐条 ``[WARN]``，真正用到该角色时
+再带着同样的说明报错。
 """
 from __future__ import annotations
 
@@ -80,16 +83,18 @@ def build_llm_client(llm_config: dict):
 
 
 def build_role_clients(llm_config: str | None, role_overrides):
-    """按「角色 → 档案」注册表构造各角色的 LLM 客户端。
+    """按「角色 → 档案」注册表解析各角色的 LLM 客户端（**按需构造**，此处不建连接）。
 
     角色化的解析见 :mod:`drsr_420.llm.roles`：``--llm_config`` 只是**默认档案**
     （未绑定档案的角色共用它），``--role-config`` 可按角色精确覆盖甚至换模型。
+    本函数只做三件事：解析、回写环境变量、把不可用的档案**告警**出来。
 
     Raises:
-        SystemExit: 任一角色的档案缺失或无法构造客户端——尽早退出，避免无客户端空转。
+        SystemExit: 仅在**解析期**失败时（角色名拼错、``--role-config`` 格式错）。
+            单份档案不可用不再退出——见模块文档"按需构造"。
     """
     from drsr_420.llm.role_clients import RoleClients
-    from drsr_420.llm.role_diagnostics import describe_roles
+    from drsr_420.llm.role_diagnostics import check_roles, describe_roles
 
     try:
         role_clients = RoleClients.from_registry(
@@ -104,6 +109,14 @@ def build_role_clients(llm_config: str | None, role_overrides):
         print(describe_roles(cli_default=llm_config, cli_overrides=role_overrides))
     except Exception as e:
         print(f"[WARN] 渲染角色配置失败: {e}")
+
+    # 离线自检：**只告警、不退出**。某份档案现在不可用不该挡住这次实验（可能根本用不到
+    # 那个角色），但提前说出来比等到半路报错好；真正用到该角色时 get() 会带同样的说明。
+    try:
+        for problem in check_roles(cli_default=llm_config, cli_overrides=role_overrides):
+            print(f"[WARN] {problem}")
+    except Exception as e:
+        print(f"[WARN] 角色配置自检失败: {e}")
 
     # 把解析结果回写环境变量：MCP 子进程（read_paper）只能靠环境变量继承父进程
     # 选定的档案；同时保证本进程内后续任何 resolve_roles() 看到同一份结果。

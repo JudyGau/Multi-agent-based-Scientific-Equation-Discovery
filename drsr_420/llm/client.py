@@ -8,12 +8,13 @@ import json
 import os
 import threading
 import time
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 import requests
 
 from drsr_420.core.llm_stats import _accumulate_global_stats
 from drsr_420.llm.adapt import adapt_payload
+from drsr_420.llm.stream import accumulate_stream_delta, assemble_tool_calls
 from drsr_420.llm.tools_schema import tools
 
 
@@ -81,6 +82,34 @@ def _post_with_retry(url, headers, payload,
             print(f"[LLM] 请求异常: {e}，{wait:.1f}s 后重试（{attempt}/{max_retries}）")
             time.sleep(wait)
 
+
+def gateway_error_detail(response_data) -> str:
+    """从"不是标准 OpenAI 响应"的错误信封里提取一句人能读的说明。
+
+    真实案例：端点路径写错时，智谱网关返回 **HTTP 200** +
+    ``{"code":500,"msg":"404 NOT_FOUND","success":false}``。旧实现只在 print 里留下原始
+    JSON，异常信息永远是 ``API response missing choices``——排查时极易误判成模型名或
+    密钥的问题（我自己就这么绕过一圈）。
+
+    兼容三种信封：``{"code","msg","success"}``（智谱等网关）、``{"message"/"detail"}``、
+    ``{"error": {...}}``。取不到就返回空串，调用方据此决定要不要附加说明。
+    """
+    if not isinstance(response_data, dict):
+        return ""
+    code = response_data.get("code")
+    for key in ("msg", "message", "detail"):
+        value = response_data.get(key)
+        if isinstance(value, str) and value.strip():
+            text = value.strip()
+            return f"{text} (code={code})" if code not in (None, "") else text
+    err = response_data.get("error")
+    if isinstance(err, dict):
+        text = err.get("message") or err.get("msg") or ""
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+    if isinstance(err, str) and err.strip():
+        return err.strip()
+    return ""
 
 
 class LLMClient:
@@ -298,16 +327,16 @@ class LLMClient:
                     delta = chunk['choices'][0].get('delta') or {}
                 else:
                     delta = {}
-                self._accumulate_stream_delta(acc_content, acc_reasoning, acc_tool_calls, delta)
+                accumulate_stream_delta(acc_content, acc_reasoning, acc_tool_calls, delta)
                 yield {
                     'content': ''.join(acc_content),
                     'reasoning_content': ''.join(acc_reasoning),
-                    'tool_calls': self._assemble_tool_calls(acc_tool_calls),
+                    'tool_calls': assemble_tool_calls(acc_tool_calls),
                 }
 
             full = self._finalize_response(
                 ''.join(acc_content), ''.join(acc_reasoning),
-                self._assemble_tool_calls(acc_tool_calls), usage, start_time)
+                assemble_tool_calls(acc_tool_calls), usage, start_time)
             yield {**full, 'final': True}
 
         except requests.exceptions.RequestException as e:
@@ -374,10 +403,14 @@ class LLMClient:
             })
             raise requests.exceptions.HTTPError(f"API error: {err}")
 
-        # 保护性判断：缺少 choices 时打印提示
+        # 保护性判断：缺少 choices 时打印提示。网关把错误包在 HTTP 200 里也走这条
+        # （见 gateway_error_detail）：把它那句 msg 带进异常，别只留在 print 里。
         if 'choices' not in response_data or not response_data['choices']:
+            detail = gateway_error_detail(response_data)
             print("API 响应不包含 choices 字段或为空：", str(response_data)[:500])
-            raise requests.exceptions.HTTPError("API response missing choices")
+            raise requests.exceptions.HTTPError(
+                "API response missing choices"
+                + (f"（服务端返回：{detail}）" if detail else ""))
 
         message = response_data['choices'][0].get('message', {})
         content = message.get('content', '') or ''
@@ -452,40 +485,3 @@ class LLMClient:
             },
             "tool_calls": tool_calls,
         }
-
-    @staticmethod
-    def _accumulate_stream_delta(acc_content: List[str], acc_reasoning: List[str],
-                                 acc_tool_calls: Dict[int, dict], delta: dict) -> None:
-        """把单个 SSE chunk 的 delta 累积到缓冲区。"""
-        c = delta.get('content')
-        if c:
-            acc_content.append(c)
-        r = delta.get('reasoning_content')
-        if r:
-            acc_reasoning.append(r)
-        for tc in delta.get('tool_calls') or []:
-            idx = tc.get('index', 0)
-            slot = acc_tool_calls.setdefault(idx, {'id': '', 'name': '', 'arguments': []})
-            if tc.get('id'):
-                slot['id'] = tc['id']
-            fn = tc.get('function') or {}
-            if fn.get('name'):
-                slot['name'] = fn['name']
-            if fn.get('arguments'):
-                slot['arguments'].append(fn['arguments'])
-
-    @staticmethod
-    def _assemble_tool_calls(acc_tool_calls: Dict[int, dict]) -> list:
-        """把累积的 tool_calls 增量拼成 OpenAI 兼容的完整 tool_calls 列表。"""
-        calls = []
-        for idx in sorted(acc_tool_calls):
-            slot = acc_tool_calls[idx]
-            calls.append({
-                "id": slot['id'],
-                "type": "function",
-                "function": {
-                    "name": slot['name'],
-                    "arguments": ''.join(slot['arguments']),
-                },
-            })
-        return calls

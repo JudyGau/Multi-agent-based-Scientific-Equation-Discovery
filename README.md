@@ -88,8 +88,13 @@ config/
 
 ```bash
 python -m drsr_420.llm.roles            # 打印「角色 → 档案（生效来源）」
-python -m drsr_420.llm.roles --check    # 自检：档案存在、model 合法、密钥可达
+python -m drsr_420.llm.roles --check    # 离线自检：档案存在、model 合法、密钥可达
+python -m drsr_420.llm.roles --ping     # 联网自检：每份档案发一次真实请求（消耗少量 token）
 ```
+
+`--check` 不联网（给 CI / 预检用），`--ping` 才会真的打端点；两者都会指出问题落在哪份档案、
+哪个角色。客户端是**按需构造**的：一份档案暂时不可用（密钥没填、端点写错）只会让**用到它的
+那个角色**报错，不会拦住整个实验；启动时会跑一遍离线自检并逐条 `[WARN]`。
 
 **档案文件**（`config/<提供商>_<模型>.config`）配置连接与生成参数：
 

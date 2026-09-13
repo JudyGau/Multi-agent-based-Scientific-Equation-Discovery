@@ -1014,12 +1014,28 @@ Q1（连接谁 / 用哪把钥匙），按 §14 的三层分红本就归档案。
 
 | 指标 | 阶段 8 结束时 | 现在 |
 |---|---|---|
-| 测试数 | 418 | **463**（`tests/test_llm_custom_provider.py` 27 项 + 模板可构造/密钥报错/列宽/键名与端点格式等） |
-| 全局最长文件 | 482（`llm/client.py`） | **491**（`llm/client.py`，新增 `require_absolute_url`） |
-| `llm/` 层 | 9 文件 / 1818 行 | 10 文件 / 2027 行（新增 `adapt.py`） |
+| 测试数 | 418 | **487** |
+| 全局最长文件 | 482（`llm/client.py`） | **487**（`llm/client.py`；`rag_kb.py` 一度 517，已拆出 `rag_config.py`） |
+| `llm/` 层 | 9 文件 / 1818 行 | 11 文件 / 2331 行（新增 `adapt.py` / `stream.py`） |
 | 入库的配置模板 | 4 | **5** |
 | 建档即可接入的端点 | 7 个内置 | **任意 OpenAI Chat Completions 兼容端点** |
 | 端点的键名/写法 | `host` / `base_url` / `api_host`，且允许裸主机 | **`base_url` / `api_base_url`，必须完整 URL** |
+| 一份坏档案的后果 | 整个实验起不来 | **只影响用到它的角色**（启动告警，`--ping` 可提前查出） |
+
+### 15.2 收尾：按可用性实测暴露出的三件事（追加）
+
+逐份档案发真实请求之后，暴露的问题都不是"配置写错"那种，而是**故障可诊断性**：
+
+* 网关把错误包在 HTTP 200 里时，异常只说 `API response missing choices`，
+  真正有用的 `404 NOT_FOUND` 留在了 print 里 → `client.gateway_error_detail` 把它带进异常；
+* 一份用不到的档案（`summary` 缺密钥）会让整个实验起不来 → `RoleClients` 改为**按需构造**，
+  `cli.llm_setup` 启动时只告警；严格闸门仍是 `--check`；
+* 只有"结构校验"没有"连通性校验" → 新增 `python -m drsr_420.llm.roles --ping`（按档案去重、
+  用首个角色的参数与方言、不重试、输出上限 16 token）。
+
+顺带修掉 `locate_config` 把 `config/x.config` 拼成 `config/config/x.config` 的报错路径；
+并把 `rag_kb.py` 顶部的档案部分拆到 `knowledge/rag_config.py`（加完端点校验后 517 行，
+破了 500 行预算，拆分后 420 行）。
 
 完整设计与取舍见 [`CONFIG_PLAN.md`](./CONFIG_PLAN.md) §10，架构摘要见
 [`ARCHITECTURE.md`](./ARCHITECTURE.md) §10.5。

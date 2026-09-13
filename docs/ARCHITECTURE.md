@@ -67,15 +67,17 @@ CoordinatorAgent.run()  while 未达采样上限/时长上限:
 | 层 | 文件 | 行数 | 实际依赖 |
 |---|---|---|---|
 | `core/` | 8 | 1857 | —（最底层） |
-| `llm/` | 10 | 2027 | `core` |
+| `llm/` | 11 | 2331 | `core` |
 | `evaluation/` | 4 | 615 | `core` |
-| `knowledge/` | 8 | 1359 | `llm` |
+| `knowledge/` | 9 | 1435 | `llm` |
 | `agents/` | 13 | 2656 | `core`, `evaluation`, `knowledge`, `llm` |
 | `analysis/` | 9 | 1304 | `core`, `knowledge`, `llm` |
 | `runtime/` | 2 | 299 | `agents`, `analysis`, `core`, `knowledge` |
-| `cli/` | 3 | 542 | `agents`, `core`, `evaluation`, `llm`, `runtime` |
+| `cli/` | 3 | 555 | `agents`, `core`, `evaluation`, `llm`, `runtime` |
 
-包内实现共 10,733 行；顶层只剩 `__init__.py`（0 行实现）。全局最长文件 `llm/client.py` 491 行。
+包内共 60 个模块、11,073 行（含顶层 `__init__.py` 的文档串；各层实现合计 11,052 行）。
+全局最长文件 `llm/client.py` 487 行——500 行预算是硬指标，`knowledge/rag_kb.py` 一度
+冲到 517 行，于是配置部分被拆到 `knowledge/rag_config.py`。
 
 ---
 
@@ -317,7 +319,8 @@ python -m drsr_420.agents
 
 # 角色 → LLM 档案（唯一声明处：config/agents.config.json）
 python -m drsr_420.llm.roles
-python -m drsr_420.llm.roles --check      # 档案存在 / model 合法 / 密钥可达
+python -m drsr_420.llm.roles --check      # 离线：档案存在 / model 合法 / 密钥可达
+python -m drsr_420.llm.roles --ping       # 联网：每份档案发一次真实请求
 python -m drsr_420.llm.roles --profiles --templates   # 本机已有档案 / 随仓库模板
 
 # 命令行入口（两者等价；安装后还可用 console script `drsr420`）
@@ -457,5 +460,34 @@ provider 段**不在**这张表里时不再报错，而是走**自定义提供�
 护栏：`tests/test_llm_custom_provider.py` 锁住"未知 provider + base_url 即可用"与密钥
 解析规则；`tests/test_config_roles.py` 要求**每个模板填上占位密钥后都能构造出客户端**，
 并跳过不含 `model` 的模板（`rag.config` 是知识库配置，不是 LLM 档案）。
+
+### 10.6 按需构造与两级自检
+
+**客户端按需构造**（`llm/role_clients.py`）：`RoleClients.from_registry` 只解析
+「角色 → 档案 → 参数规则」，不读档案、不建连接；第一次 `get(role)` 时才构造该角色所在
+档案的客户端并按档案缓存。这样：
+
+* 解析期错误（角色名拼错、`--role-config` 格式错）仍然**立即致命**；
+* 单份档案不可用（缺文件、密钥没填、端点写错）只在**真正用到那个角色时**报错，
+  错误信息含角色名与档案路径 —— 一份暂时用不上的 `summary` 档案不该让整个实验起不来；
+* 代价是"错误从启动时推迟到用到时"，所以 `cli.llm_setup.build_role_clients` 启动时会跑
+  一遍离线自检并逐条 `[WARN]`（不再 `[FATAL]`/`SystemExit`）：推迟不等于看不见。
+  `python -m drsr_420.llm.roles --check` 仍是严格的预检闸门（有问题即退出码 1）。
+
+**两级自检**分工明确：
+
+| 命令 | 联网 | 覆盖 |
+|---|---|---|
+| `--check` | ✗ | 档案可解析、文件存在、`model` 合法、密钥可达（能构造出客户端） |
+| `--ping` | ✓ | 每份**档案**发一次真实请求（用它首个角色的参数与方言），报告状态码/耗时/端点 |
+
+`--ping` 按**档案**去重（6 个角色常共用一份档案，不该发 6 次）、不重试（要的是"现在通不通"，
+指数退避只会让一条命令卡几分钟）、输出上限压到 16 token。CI 与预检继续用 `--check`，
+不引入外网依赖。
+
+**失败要说人话**：网关常常把错误包在 **HTTP 200** 里（实测智谱对错误路径返回
+`{"code":500,"msg":"404 NOT_FOUND","success":false}`）。`client.gateway_error_detail`
+把这类信封里的原话带进异常信息与 `--ping` 的失败原因里——否则异常永远是
+`API response missing choices`，排查时容易误判成模型名或密钥的问题。
 
 设计与迁移过程见 [`CONFIG_PLAN.md`](./CONFIG_PLAN.md)。

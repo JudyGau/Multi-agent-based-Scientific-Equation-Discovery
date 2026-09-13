@@ -379,7 +379,7 @@ env["DRSR_ROLE_CONFIG_SUMMARY"] = <resolver 解析出的绝对路径>
 RAG 侧是 `api_host`。现在统一为 `base_url` / `api_base_url`，**旧拼写一律报错**：
 
 * `normalize_llm_config`：出现 `host` → `ValueError`，错误信息里带"改名为 base_url"；
-* `rag_kb.load_config`：出现 `api_host` → `ValueError`（`_RENAMED_KEYS` 表驱动）。
+* `rag_config.load_config`：出现 `api_host` → `ValueError`（`_RENAMED_KEYS` 表驱动）。
 
 **为什么是报错而不是静默兼容？** 因为静默忽略旧键的后果不是"少个功能"，而是
 **连到别的地方去**：内置提供商自带默认端点，档案里的 `host` 被忽略后请求会悄悄打到
@@ -397,7 +397,7 @@ RAG 侧是 `api_host`。现在统一为 `base_url` / `api_base_url`，**旧拼�
 * **不再替用户补 scheme**。这段"宽容"正是两种写法长期并存的成因：`api.deepseek.com`
   既没有 scheme 也没有路径，从配置上看不出会打到哪个端点；
 * 空串仍是"用内置默认端点"（老写法，保留）；`backend="api"` 的 RAG 端点缺失或裸主机
-  同样报错（`rag_kb._validate_endpoint`）；
+  同样报错（`rag_config._validate_endpoint`）；
 * 内置默认端点与随仓库分发的档案一并统一成带路径的形状，`deepseek` 的 spec 默认值改为
   `https://api.deepseek.com/v1`（官方两种都收，项目内只保留一种）。
 
@@ -407,13 +407,48 @@ RAG 侧是 `api_host`。现在统一为 `base_url` / `api_base_url`，**旧拼�
 `test_llm_custom_provider.BaseUrlNamingTest` 覆盖裸主机被拒、空串回退、环境变量通道；
 `test_mcp_and_rag_cli.RagConfigNamingTest` 覆盖 RAG 侧键名迁移与端点校验。
 
-### 10.7 指标
+### 10.7 可用性：网关错误、`--ping`、按需构造（追加）
+
+起因是逐份档案**实测**（真实请求，而不是只看配置）：读到了两个真问题。
+
+**① 端点写错时，最有用的那句话进不了异常。** 智谱对错误路径返回 **HTTP 200** +
+`{"code":500,"msg":"404 NOT_FOUND","success":false}`；旧实现只因"响应里没有 choices"而抛
+`API response missing choices`，网关那句原话只留在一行 `print` 里——排查时会先去怀疑模型名
+或密钥。现在 `client.gateway_error_detail` 兼容 `{code,msg,success}` / `{message}` /
+`{detail}` / `{error:{...}}` 四种信封，把原话带进异常；**取不到就不编造**（保持原样，
+不在异常里塞空括号）。
+
+**② 一份用不到的档案会拦住整个实验。** `cli.llm_setup` 原本一启动就构造所有档案并
+`SystemExit`；`summary` 绑定的档案缺密钥时，一次完全不读文献的实验连启动都起不来。
+现在 `RoleClients` **按需构造**：`from_registry` 只解析，首次 `get(role)` 才建该角色所在
+档案的客户端并按档案缓存。解析期错误仍然立即致命；单份档案不可用只在真正用到时报错，
+信息含角色名与档案路径。CLI 启动改为跑一遍离线自检并逐条 `[WARN]`——"错误推迟"不等于
+"看不见"，严格的闸门仍是 `--check`（退出码 1）。
+
+**③ 两级自检。** `--check` 离线（档案在不在、model 合法、密钥可达），`--ping` 联网
+（每份档案一次真实请求）。`--ping` 的设计：按**档案**去重（6 个角色常共用一份档案，发 6 次
+纯属浪费）、用该档案**首个角色**的参数与方言（顺带验证 requests 体与方言）、`max_retries=0`
++ 明确超时（探测要的是"现在通不通"，指数退避只会让一条命令卡几分钟）、输出上限压到 16
+token。诊断文本经 `_clip` 强制 GBK 可编码：诊断工具不该因为"要诊断的东西"里有个 emoji 而
+在 Windows 控制台上崩掉。
+
+顺带修掉：`locate_config` 找不到档案时会把 `config/x.config` 拼成 `config/config/x.config`，
+报错里的路径本身就是错的（会先把排查带偏）。
+
+另外，加完端点校验后 `knowledge/rag_kb.py` 涨到 **517 行**，破了 500 行预算，于是把档案
+部分（`DEFAULT_CONFIG` / 定位 / 读取 / 校验）拆成 `knowledge/rag_config.py` 并在 `rag_kb`
+转发，历史导入路径（`rag_kb.load_config` / `rag_kb.DEFAULT_CONFIG` / `rag_kb._REPO_ROOT`）
+全部照旧可用；这也与 LLM 侧（配置在 factory、运行在 client）形成对称。
+
+### 10.8 指标
 
 | 指标 | 阶段 8 结束时 | 现在 |
 |---|---|---|
-| 测试数 | 418 | **463** |
-| 全局最长文件 | 482（`llm/client.py`） | **491**（`llm/client.py`，新增 `require_absolute_url`） |
-| `llm/` 层 | 9 文件 / 1818 行 | 10 文件 / 2027 行 |
+| 测试数 | 418 | **487** |
+| 全局最长文件 | 482（`llm/client.py`） | **487**（`llm/client.py`；`rag_kb.py` 一度 517，已拆出 `rag_config.py`） |
+| `llm/` 层 | 9 文件 / 1818 行 | 11 文件 / 2331 行（`adapt.py` / `stream.py` 拆出） |
+| `knowledge/` 层 | 8 文件 / 1359 行 | 9 文件 / 1435 行（拆出 `rag_config.py`） |
 | 入库的配置模板 | 4 | **5**（新增 USTC 自定义提供商；`deepseek-v4-pro` 按用户要求下线、换成 `deepseek-v4-flash`） |
 | 建档无需改代码即可接入的端点 | 7（内置） | **任意 OpenAI 兼容端点** |
 | 端点的键名/写法 | `host` / `base_url` / `api_host`，且允许裸主机 | **`base_url` / `api_base_url`，必须完整 URL**（旧拼写报错） |
+| 一份坏档案的后果 | 整个实验起不来 | **只影响用到它的角色**（启动告警） |

@@ -5,6 +5,7 @@
 - chat() 默认流式且返回结构与非流式一致
 - stream=False 显式回退非流式
 - 网关忽略 stream 参数直接返回完整 JSON 时的单块兜底
+- 网关把错误包在 HTTP 200 里（``code``/``msg``/``success`` 信封）时的异常信息
 
 全部通过 mock 定义处的 ``_post_with_retry`` 完成，不发起真实网络请求。
 （打桩必须落在定义该名字的 ``drsr_420.llm.client`` 上：``LLMClient.chat`` 在
@@ -12,6 +13,8 @@
 """
 import unittest
 from unittest import mock
+
+import requests
 
 from drsr_420 import llm
 
@@ -197,6 +200,58 @@ class ChatStreamTest(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertTrue(out[0]['final'])
         self.assertEqual(out[0]['content'], 'full')
+
+
+class GatewayErrorEnvelopeTest(unittest.TestCase):
+    """网关把错误包在 **HTTP 200** 里时，异常信息必须带上它那句原话。
+
+    真实案例（本轮实测撞到）：档案里的端点路径写成了 ``/api/ants/v1``，智谱网关返回
+
+        HTTP 200 + {"code":500,"msg":"404 NOT_FOUND","success":false}
+
+    旧实现只在 print 里留下原始 JSON，异常永远是 ``API response missing choices``——只看
+    异常的人会去怀疑模型名或密钥，而真正该改的是路径。所以网关的 ``msg`` 必须进异常。
+    """
+
+    def _client(self):
+        return llm.LLMClient(api_key='k', model='m', base_url='http://h/v1')
+
+    def _chat_with(self, payload):
+        resp = _FakeResponse(json_data=payload, content_type='application/json')
+        with mock.patch('drsr_420.llm.client._post_with_retry', return_value=resp), \
+             mock.patch('builtins.print'):
+            return self._client().chat([{'role': 'user', 'content': 'hi'}])
+
+    def test_gateway_code_msg_envelope_reaches_the_exception(self):
+        with self.assertRaises(requests.exceptions.HTTPError) as ctx:
+            self._chat_with({"code": 500, "msg": "404 NOT_FOUND", "success": False})
+        message = str(ctx.exception)
+        self.assertIn("404 NOT_FOUND", message)
+        self.assertIn("code=500", message)
+
+    def test_error_key_envelope_reaches_the_exception(self):
+        with self.assertRaises(requests.exceptions.HTTPError) as ctx:
+            self._chat_with({"error": {"message": "invalid api key",
+                                       "type": "auth_error", "code": "401"}})
+        self.assertIn("invalid api key", str(ctx.exception))
+
+    def test_message_key_envelope_reaches_the_exception(self):
+        with self.assertRaises(requests.exceptions.HTTPError) as ctx:
+            self._chat_with({"message": "model not found"})
+        self.assertIn("model not found", str(ctx.exception))
+
+    def test_unrecognised_body_keeps_the_plain_message(self):
+        """认不出的响应体不该编造原因——保持原样，别在异常里塞空括号。"""
+        with self.assertRaises(requests.exceptions.HTTPError) as ctx:
+            self._chat_with({"foo": 1})
+        self.assertEqual(str(ctx.exception), "API response missing choices")
+
+    def test_helper_extracts_nothing_from_non_dict(self):
+        from drsr_420.llm.client import gateway_error_detail
+
+        for value in (None, "text", [], 3):
+            with self.subTest(value=value):
+                self.assertEqual(gateway_error_detail(value), "")
 
 
 if __name__ == '__main__':

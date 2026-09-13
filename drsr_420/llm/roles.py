@@ -379,15 +379,23 @@ def resolve_params(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """``python -m drsr_420.llm.roles [--check] [--profiles] [--templates]``。"""
-    from drsr_420.llm.role_diagnostics import check_roles, describe_roles
+    """``python -m drsr_420.llm.roles [--check] [--ping] [--profiles] [--templates]``。"""
+    from drsr_420.llm.role_diagnostics import (
+        check_roles,
+        describe_roles,
+        format_ping,
+        ping_problems,
+        ping_roles,
+    )
 
     parser = argparse.ArgumentParser(
         prog="python -m drsr_420.llm.roles",
         description="打印与校验「角色 → LLM 档案」的绑定关系",
     )
     parser.add_argument("--check", action="store_true",
-                        help="自检：档案可解析、文件存在、密钥可达")
+                        help="离线自检：档案可解析、文件存在、model 合法、密钥可达（不联网）")
+    parser.add_argument("--ping", action="store_true",
+                        help="连通性自检：每份档案发一次真实请求（联网，消耗少量 token）")
     parser.add_argument("--llm_config", default=None,
                         help="默认档案（未在注册表中绑定档案的角色用它）")
     parser.add_argument("--role-config", action="append", default=None, metavar="ROLE=FILE",
@@ -407,24 +415,39 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"随仓库分发的模板（{len(found)}）: "
               + (", ".join(found) if found else "(无)"))
     if args.profiles or args.templates:
-        if not args.check:
+        if not (args.check or args.ping):
             return 0
 
     print(describe_roles(registry=registry, cli_default=args.llm_config,
                          cli_overrides=args.role_config))
 
-    if not args.check:
+    if not (args.check or args.ping):
         return 0
 
-    problems = check_roles(registry=registry, cli_default=args.llm_config,
-                           cli_overrides=args.role_config)
-    if problems:
+    if args.check:
+        problems = check_roles(registry=registry, cli_default=args.llm_config,
+                               cli_overrides=args.role_config)
+        if problems:
+            print()
+            for problem in problems:
+                print(f"[WARN] {problem}")
+            return 1
         print()
-        for problem in problems:
-            print(f"[WARN] {problem}")
-        return 1
-    print()
-    print("OK: 全部角色都有可用档案")
+        print("OK: 全部角色都有可用档案（离线校验）")
+
+    if args.ping:
+        outcomes = ping_roles(registry=registry, cli_default=args.llm_config,
+                              cli_overrides=args.role_config)
+        print()
+        print(format_ping(outcomes))
+        problems = ping_problems(outcomes)
+        if problems:
+            print()
+            for problem in problems:
+                print(f"[WARN] {problem}")
+            return 1
+        print()
+        print("OK: 每份档案都真实响应了")
     return 0
 
 

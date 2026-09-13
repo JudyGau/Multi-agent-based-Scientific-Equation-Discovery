@@ -87,8 +87,10 @@ def locate_config(path: str | os.PathLike | None = None) -> Path:
             hit = (base / name).resolve()
             if hit.exists():
                 return hit
-    # 都不存在：返回最可能的位置，让调用方拿到清晰的 FileNotFoundError
-    return (config_dir() / names[-1]).resolve()
+    # 都不存在：返回最可能的位置，让调用方拿到清晰的 FileNotFoundError。
+    # 只取**文件名**再拼：否则 "config/x.config" 这种（已经带了目录的）写法会被拼成
+    # config/config/x.config，报错里的路径本身就是错的，排查时会先被它带偏。
+    return (config_dir() / Path(names[-1]).name).resolve()
 
 
 def load_llm_config(path: str | os.PathLike | None = None) -> dict:

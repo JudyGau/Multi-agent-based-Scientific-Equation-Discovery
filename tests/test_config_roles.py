@@ -24,7 +24,9 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import copy
+import io
 import json
 import os
 import pathlib
@@ -37,6 +39,7 @@ from unittest import mock
 
 from drsr_420.llm import factory as factory_mod
 from drsr_420.llm import role_clients as role_clients_mod
+from drsr_420.llm import role_diagnostics as diag_mod
 from drsr_420.llm import roles as roles_mod
 from drsr_420.llm.role_clients import RoleClients
 from drsr_420.llm.role_diagnostics import check_roles, describe_roles
@@ -379,6 +382,20 @@ class RoleParamResolutionTest(unittest.TestCase):
         self.assertNotIn("temperature", params)
 
 
+class ConfigLocationTest(unittest.TestCase):
+    """档案定位：找不到时给出的路径必须是对的（报错里的路径写错会把人带偏）。"""
+
+    def test_missing_relative_path_does_not_double_the_config_dir(self):
+        resolved = factory_mod.locate_config("config/definitely_missing.config")
+        self.assertEqual(resolved.parent, factory_mod.config_dir())
+        self.assertEqual(resolved.name, "definitely_missing.config")
+
+    def test_missing_bare_name_lands_in_the_config_dir(self):
+        resolved = factory_mod.locate_config("no_such_profile_at_all")
+        self.assertEqual(resolved.parent, factory_mod.config_dir())
+        self.assertEqual(resolved.name, "no_such_profile_at_all.config")
+
+
 class RoleClientsTest(unittest.TestCase):
     """客户端池：独立克隆、参数注入、单客户端兜底。"""
 
@@ -421,12 +438,19 @@ class RoleClientsTest(unittest.TestCase):
         self.assertIsNotNone(single.get("summary"))
 
     def test_one_base_client_per_distinct_profile(self):
-        """6 个角色共用一份档案时只建一个底层客户端（不建 6 套连接）。"""
+        """6 个角色共用一份档案时只建一个底层客户端（不建 6 套连接）。
+
+        构造是**按需**的：``from_registry`` 只解析，第一次 ``get()`` 才建。
+        """
         with mock.patch.object(role_clients_mod, "load_llm_config",
                                return_value={"model": "fake/model"}), \
              mock.patch.object(role_clients_mod.ClientFactory, "from_config",
                                return_value=_FakeClient()) as build:
             clients = RoleClients.from_registry(registry=self.registry, environ={})
+            self.assertEqual(build.call_count, 0,
+                             "from_registry 不该建连接——那会让用不到的角色拖死启动")
+            clients.get("sampling")
+            clients.get("analysis")
         self.assertEqual(build.call_count, 1)
         self.assertEqual(len(clients._base_by_profile), 1)
 
@@ -439,6 +463,101 @@ class RoleClientsTest(unittest.TestCase):
                 self.assertIn("source", info)
                 self.assertNotIn("api_key", info)
         self.assertEqual(set(self.clients.resolved_profiles()), set(roles_mod.TASKS))
+
+
+class LazyClientConstructionTest(unittest.TestCase):
+    """按需构造：一份坏档案不该拖死用不到它的角色。
+
+    动机是真实场景——``summary`` 绑定了一份密钥没填好的档案，结果一次完全不读文献的
+    实验连启动都起不来（``cli.llm_setup`` 原本一启动就构造所有档案并 SystemExit）。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = pathlib.Path(self._tmp.name)
+        # 好档案：能真的构造出客户端（glm 有内置端点，构造不发网络请求）
+        self.good = _write_json(self.tmp / "good.config",
+                                {"model": "glm/glm-x", "api_key": "k"})
+        # 坏档案：**确定性**失败，不依赖环境变量（未知 provider 且没给 base_url）。
+        # 不用"密钥没填"当坏例子——那会被 ZHIPU_API_KEY 之类的环境变量救活，
+        # 测试就跑在与真实部署不同的分支上。
+        self.bad = _write_json(self.tmp / "bad.config", {"model": "typo-provider/x"})
+        self.registry = roles_mod.RoleRegistry.load(_write_json(
+            self.tmp / "agents.config.json",
+            {"default": str(self.good),
+             "roles": {"summary": {"config": str(self.bad)}}}))
+
+    def _clients(self):
+        return RoleClients.from_registry(registry=self.registry, environ={})
+
+    def test_resolution_does_not_read_or_build_anything(self):
+        with mock.patch.object(role_clients_mod, "load_llm_config") as loader, \
+             mock.patch.object(role_clients_mod.ClientFactory, "from_config") as build:
+            self._clients()
+        loader.assert_not_called()
+        build.assert_not_called()
+
+    def test_only_the_needed_profile_is_built(self):
+        """核心行为：坏档案只影响它自己的角色，别的角色照常可用。"""
+        clients = self._clients()
+        with mock.patch.object(role_clients_mod.ClientFactory, "from_config",
+                               return_value=_FakeClient()) as build:
+            self.assertIsNotNone(clients.get("sampling"))
+        self.assertEqual(build.call_count, 1)
+        self.assertEqual([pathlib.Path(k).name for k in clients._base_by_profile],
+                         ["good.config"])
+
+    def test_broken_profile_raises_on_use_with_role_and_path_in_the_message(self):
+        clients = self._clients()
+        with self.assertRaises(RuntimeError) as ctx:
+            clients.get("summary")
+        message = str(ctx.exception)
+        self.assertIn("summary", message)                  # 哪个角色
+        self.assertIn("bad.config", message)               # 哪份档案
+        self.assertIn("不支持的提供商", message)             # 原始原因（ClientFactory 的可操作提示）
+        self.assertIn("--check", message)                  # 下一步怎么查
+
+    def test_healthy_role_still_works_after_a_broken_one_failed(self):
+        clients = self._clients()
+        with self.assertRaises(RuntimeError):
+            clients.get("summary")
+        self.assertIsNotNone(clients.get("sampling"))
+
+    def test_successful_construction_is_cached(self):
+        clients = self._clients()
+        first = clients.get("sampling")
+        second = clients.get("sampling")
+        self.assertEqual(len(clients._base_by_profile), 1, "同一档案只建一次")
+        self.assertIsNot(first, second, "但每次 get 都必须是独立克隆")
+
+    def test_build_role_client_only_touches_its_own_profile(self):
+        """收尾分析（explain）这类"只用一份档案"的调用方不该被别的档案牵连。"""
+        from drsr_420.llm.role_clients import build_role_client
+
+        with mock.patch.object(role_clients_mod.RoleRegistry, "load",
+                               return_value=self.registry), \
+             mock.patch.object(role_clients_mod.ClientFactory, "from_config",
+                               return_value=_FakeClient()) as build:
+            self.assertIsNotNone(build_role_client("sampling"))
+        self.assertEqual(build.call_count, 1)
+        self.assertEqual(build.call_args[0][0].get("model"), "glm/glm-x")
+
+    def test_cli_startup_warns_but_does_not_exit_on_a_broken_profile(self):
+        """CLI 启动只把坏档案**告警**出来，不 SystemExit——否则用不到它也得起不来。"""
+        from drsr_420.cli.llm_setup import build_role_clients
+
+        out = io.StringIO()
+        with mock.patch.object(roles_mod.RoleRegistry, "load",
+                               return_value=self.registry), \
+             mock.patch.dict(os.environ, {}, clear=True), \
+             contextlib.redirect_stdout(out):
+            clients = build_role_clients(None, None)      # 不抛 SystemExit
+        text = out.getvalue()
+        self.assertIn("[WARN]", text)
+        self.assertIn("不支持的提供商", text)
+        self.assertIn("bad.config", text)
+        self.assertEqual(set(clients.resolved_profiles()), set(roles_mod.TASKS))
 
 
 class RoleDiagnosticsTest(unittest.TestCase):
@@ -673,6 +792,174 @@ class RolesCliSmokeTest(unittest.TestCase):
         self.assertNotIn("RuntimeWarning", proc.stderr or "")
         for role in roles_mod.TASKS:
             self.assertIn(role, proc.stdout or "")
+
+
+class PingRolesTest(unittest.TestCase):
+    """``--ping``：每份被引用的档案发一次**真实**请求。
+
+    这里用假 transport 验证逻辑（不联网）：去重、按首个角色取参数、状态码与网关信封
+    的呈现、输出上限、以及"坏档案不联网也能报出来"。
+    """
+
+    class _Resp:
+        def __init__(self, status_code=200, payload=None, text=None):
+            self.status_code = status_code
+            self._payload = payload
+            self.text = text if text is not None else json.dumps(payload or {},
+                                                                 ensure_ascii=False)
+
+        def json(self):
+            if self._payload is None:
+                raise ValueError("not json")
+            return self._payload
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = pathlib.Path(self._tmp.name)
+
+    def _write_registry(self, *, with_bad=True, max_tokens=None):
+        good = _write_json(self.tmp / "good.config",
+                           {"model": "glm/glm-x", "api_key": "k",
+                            **({"max_tokens": max_tokens} if max_tokens else {})})
+        other = _write_json(self.tmp / "other.config",
+                            {"model": "deepseek/dx", "api_key": "k"})
+        roles = {"explain": {"config": str(other)}}
+        if with_bad:
+            bad = _write_json(self.tmp / "bad.config", {"model": "typo-provider/x"})
+            roles["summary"] = {"config": str(bad)}
+        path = _write_json(self.tmp / "agents.config.json",
+                           {"default": str(good), "roles": roles})
+        return roles_mod.RoleRegistry.load(path)
+
+    def _ping(self, registry, resp):
+        with mock.patch.object(diag_mod, "_post_with_retry", return_value=resp) as post:
+            outcomes = diag_mod.ping_roles(registry=registry, environ={})
+        return outcomes, post
+
+    def _ok_payload(self):
+        return {"choices": [{"message": {"content": "pong"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+
+    def test_ping_dedupes_by_profile_and_skips_unbuildable_ones(self):
+        """4 个角色共用 default，但只发一次请求；坏档案连网都不联。"""
+        registry = self._write_registry()
+        outcomes, post = self._ping(registry, self._Resp(payload=self._ok_payload()))
+        self.assertEqual(len(outcomes), 3, "3 份档案：default / explain / summary")
+        self.assertEqual(post.call_count, 2,
+                         "可用的两份各一次；坏档案在构造阶段就失败了，不该发请求")
+
+    def test_ping_marks_results_and_problems(self):
+        registry = self._write_registry()
+        outcomes, _post = self._ping(registry, self._Resp(payload=self._ok_payload()))
+        by_profile = {o.profile: o for o in outcomes}
+        self.assertTrue(by_profile["good"].ok)
+        self.assertTrue(by_profile["other"].ok)
+        self.assertFalse(by_profile["bad"].ok)
+        self.assertIn("不支持的提供商", by_profile["bad"].detail)
+
+        problems = diag_mod.ping_problems(outcomes)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("bad", problems[0])
+        self.assertIn("summary", problems[0])
+
+    def test_ping_reports_http_status_and_body(self):
+        registry = self._write_registry(with_bad=False)
+        outcomes, _post = self._ping(
+            registry, self._Resp(status_code=401, payload=None, text="bad key"))
+        self.assertTrue(all(not o.ok for o in outcomes))
+        self.assertIn("HTTP 401", outcomes[0].detail)
+        self.assertIn("bad key", outcomes[0].detail)
+        self.assertIn("http", outcomes[0].detail)      # 端点也带上，便于直接改档案
+
+    def test_ping_reports_gateway_envelope_inside_http_200(self):
+        """网关把 404 包在 200 里 —— 正是本轮实测撞到的那种。"""
+        registry = self._write_registry(with_bad=False)
+        envelope = {"code": 500, "msg": "404 NOT_FOUND", "success": False}
+        outcomes, _post = self._ping(registry, self._Resp(payload=envelope))
+        self.assertTrue(all(not o.ok for o in outcomes))
+        self.assertIn("404 NOT_FOUND", outcomes[0].detail)
+        self.assertIn("没有 choices", outcomes[0].detail)
+
+    def test_ping_caps_tokens_and_disables_stream(self):
+        registry = self._write_registry(with_bad=False, max_tokens=65536)
+        _outcomes, post = self._ping(registry, self._Resp(payload=self._ok_payload()))
+        # 第一次调用就是 default 档案（首个角色 sampling）；call_args 是*最后一次*调用
+        payload = post.call_args_list[0][0][2]
+        self.assertIs(payload["stream"], False)
+        self.assertEqual(payload["max_tokens"], diag_mod.PING_MAX_TOKENS)
+
+    def test_ping_uses_the_first_role_of_the_profile(self):
+        """default 档案的首个角色是 sampling（TASKS 顺序）→ 带上它的 thinking 方言。"""
+        registry = self._write_registry(with_bad=False)
+        _outcomes, post = self._ping(registry, self._Resp(payload=self._ok_payload()))
+        payload = post.call_args_list[0][0][2]
+        self.assertEqual(payload.get("thinking"), {"type": "enabled"})
+
+    def test_format_ping_is_gbk_encodable_even_with_hostile_error_text(self):
+        """诊断输出要能在 Windows 控制台（GBK）打出来，服务端回什么都得兜住。"""
+        registry = self._write_registry(with_bad=False)
+        outcomes, _post = self._ping(
+            registry, self._Resp(status_code=500, payload=None, text="boom 🧨 é"))
+        text = diag_mod.format_ping(outcomes)
+        text.encode("gbk")                       # 不抛 UnicodeEncodeError
+        self.assertIn("boom", text)
+
+    def test_format_ping_lists_profiles_and_roles(self):
+        registry = self._write_registry()
+        outcomes, _post = self._ping(registry, self._Resp(payload=self._ok_payload()))
+        text = diag_mod.format_ping(outcomes)
+        self.assertIn("good", text)
+        self.assertIn("summary", text)           # 角色列
+        self.assertIn("OK", text)
+        self.assertIn("FAIL", text)
+
+
+class PingCliTest(unittest.TestCase):
+    """``python -m drsr_420.llm.roles --ping`` 的退出码与输出。"""
+
+    class _Resp:
+        def __init__(self, payload):
+            self.status_code = 200
+            self._payload = payload
+            self.text = json.dumps(payload, ensure_ascii=False)
+
+        def json(self):
+            return self._payload
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = pathlib.Path(self._tmp.name)
+        good = _write_json(self.tmp / "good.config",
+                           {"model": "glm/glm-x", "api_key": "k"})
+        bad = _write_json(self.tmp / "bad.config", {"model": "typo-provider/x"})
+        self.registry_path = _write_json(
+            self.tmp / "agents.config.json",
+            {"default": str(good), "roles": {"summary": {"config": str(bad)}}})
+
+    def _run(self, argv):
+        out = io.StringIO()
+        with mock.patch.object(diag_mod, "_post_with_retry",
+                               return_value=self._Resp({"choices": [{"message": {"content": "pong"}}]})), \
+             contextlib.redirect_stdout(out):
+            code = roles_mod.main(argv)
+        return code, out.getvalue()
+
+    def test_ping_returns_1_and_names_the_broken_profile(self):
+        code, text = self._run(["--ping", "--registry", str(self.registry_path)])
+        self.assertEqual(code, 1)
+        self.assertIn("bad", text)
+        self.assertIn("连通性自检失败", text)
+
+    def test_ping_returns_0_when_only_healthy_profiles_exist(self):
+        good = _write_json(self.tmp / "good.config",
+                           {"model": "glm/glm-x", "api_key": "k"})
+        path = _write_json(self.tmp / "ok.json", {"default": str(good)})
+        code, text = self._run(["--ping", "--registry", str(path)])
+        self.assertEqual(code, 0)
+        self.assertIn("OK", text)
+        self.assertIn("每份档案都真实响应了", text)
 
 
 if __name__ == "__main__":
