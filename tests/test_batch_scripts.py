@@ -188,6 +188,37 @@ class RunConfigurationParityTest(unittest.TestCase):
                 shape = name.rsplit("-", 1)[-1].lower()  # cuboid / ellipsoid
                 self.assertIn(shape, bg.lower(), f"{name} 的 background 把粒子形状写错了")
 
+    def test_background_matches_the_backgrounds_txt(self):
+        """backgrounds/<名>.txt 是背景提示词的规范源：.bat/.sh 必须与它逐字一致。
+
+        历史上这份 txt 是没人消费的死副本——脚本里全是内联文本，改 txt 不改脚本
+        会让下一次实验静默用回旧提示词。本测试把 txt 升级为规范源，防止再漂移。
+        """
+        for bat in _MRF_BATS:
+            name = bat.stem
+            bg = _flags(_read(bat), _default_llm_config(_read(bat)))["background"].strip()
+            txt = (_REPO_ROOT / "backgrounds" / f"{name}.txt").read_text(
+                encoding="utf-8").strip()
+            with self.subTest(config=name):
+                self.assertEqual(bg, txt,
+                                 f"{name}: 脚本里的 background 与 backgrounds/{name}.txt 不一致")
+
+    def test_example_scripts_use_the_canonical_backgrounds_too(self):
+        """example.sh/bat 里 4 个 MRF 问题的 background 同样以 backgrounds/*.txt 为准。"""
+        canonical = {p.stem: p for p in (_REPO_ROOT / "backgrounds").glob("MRF*.txt")
+                     if p.stem in {b.stem for b in _MRF_BATS}}
+        self.assertEqual(len(canonical), 4, "4 组 MRF 配置都应有对应的 backgrounds/*.txt")
+        checked = 0
+        for name, _csv, bg in _sh_problems():
+            if name not in canonical:
+                continue
+            checked += 1
+            txt = canonical[name].read_text(encoding="utf-8").strip()
+            with self.subTest(problem=name):
+                self.assertEqual(bg.strip(), txt,
+                                 f"{name}: example 脚本里的 background 与 backgrounds/{name}.txt 不一致")
+        self.assertEqual(checked, 4, "example 脚本里应包含全部 4 个 MRF 问题")
+
     def test_llm_config_defaults_match(self):
         sh = _default_llm_config(_sh_text(_EXAMPLE_SH))
         for path in _ALL_BATS:
