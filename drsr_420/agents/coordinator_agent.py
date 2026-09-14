@@ -70,6 +70,11 @@ def atomic_write_json(path: str, data) -> None:
     os.replace(tmp, path)
 
 
+#: round_progress.csv 的列定义（正常行 stop_reason 留空；早停终止行填原因）
+_PROGRESS_COLUMNS = ["timestamp", "wall_elapsed_s", "island_id",
+                     "best_score", "global_sample_nums", "stop_reason"]
+
+
 def _captured_order(batch: SampleBatch, index: int) -> int:
     """取第 ``index`` 个样本（0-based）在评估阶段领到的全局采样序号。
 
@@ -144,6 +149,15 @@ class CoordinatorAgent(BaseAgent):
 
     _global_samples_nums: int = 1
 
+    # ---- 收敛型早停的共享状态（类属性 + _SAMPLER_LOCK，多 sampler 线程任一判定
+    # 停止、全体一起停；计数均为"全局批次"口径，与 _global_samples_nums 同理跨线程累加）----
+    _early_stop_batches_done: int = 0
+    _early_stale_batches: int = 0        # 距上次（容差内的）全局最优改进的全局批次数
+    _early_failed_batches: int = 0       # 连续"所有样本评估失败"的全局批次数
+    _early_last_global_best: float | None = None
+    _early_stop_reason: str | None = None
+    _early_stop_row_written: bool = False
+
     def __init__(
             self,
             database: buffer.ExperienceBuffer,
@@ -156,6 +170,7 @@ class CoordinatorAgent(BaseAgent):
             llm_client: LLMClient | None = None,
             llm_api: dict | None = None,
             role_clients: Any | None = None,
+            target_score: float | None = None,
     ):
         self._samples_per_prompt = samples_per_prompt
         self._database = database
@@ -196,11 +211,28 @@ class CoordinatorAgent(BaseAgent):
         self._max_sample_nums = max_sample_nums
         self.config = config
 
+        # ---- 收敛型早停配置（全部默认关闭，预算型条件照常兜底）----
+        # target_score 由 runtime 层按 var(outputs) 从 config.target_nmse 换算：
+        # score = -MSE，NMSE = MSE/var(outputs) ⇒ target_score = -target_nmse·var。
+        self._target_score = target_score
+        self._early_stop_patience = config.early_stop_patience
+        # warmup 缺省取岛屿数：保证每座岛至少轮到一次采样机会之前不判平台期
+        # （实测一次运行曾连续 18 批无全局改进、之后才出现全场最优，patience
+        # 与 warmup 都必须给足，否则会在探索低谷把好 run 掐死）。
+        self._early_stop_min_batches = (
+            config.min_batches_before_early_stop
+            if config.min_batches_before_early_stop is not None
+            else config.experience_buffer.num_islands)
+        self._early_stop_max_failed = config.max_failed_batches
+        # 类级计数器随新实验归零：同一进程里先后跑多个实验（或测试）时不串台
+        self._reset_early_stop_state()
+
     # ------------------------------------------------------------------
     # 主循环
     # ------------------------------------------------------------------
     def sample(self, profiler: Any = None) -> None:
-        """运行"采样→评估→反思→持久化"主循环，直至达到全局采样数上限或实验时长上限。
+        """运行"采样→评估→反思→持久化"主循环，直至预算上限（时长/样本数）
+        或收敛型早停（目标 NMSE / 平台期 / 失败熔断）触发。
 
         Args:
             profiler: ``profile.Profiler`` 实例（样本/进度记录）。参数原先是一个
@@ -227,16 +259,133 @@ class CoordinatorAgent(BaseAgent):
             # 每轮采样结束后保存 checkpoint（断点续跑）与进度（可观测性）
             self._save_checkpoint()
             self._append_progress(island_id, start_time)
+            # 收敛型早停计数：批次收尾时更新共享状态（目标/平台期/熔断）
+            self._record_batch_for_early_stop(batch)
+
+        # 循环结束后：若因早停退出，在进度 CSV 里留一行终止记录（原因可追溯）
+        self._write_early_stop_row(start_time)
 
     def _should_stop(self, start_time: float) -> bool:
-        """达到实验时长上限或全局采样数上限时停止。"""
+        """预算型条件（墙钟 / 样本数）与收敛型条件（早停）任一满足即停。"""
         wall_limit = getattr(self.config, 'wall_time_limit_seconds', None)
         if wall_limit is not None and (time.time() - start_time) >= wall_limit:
             print(f'到达实验时长上限：{wall_limit} 秒，停止采样。')
             return True
         if self._max_sample_nums and self._get_global_sample_nums() >= self._max_sample_nums:
             return True
-        return False
+        return self._early_stop_triggered()
+
+    # ------------------------------------------------------------------
+    # 收敛型早停：绝对目标（target_nmse）/ 平台期（patience）/ 失败熔断
+    # ------------------------------------------------------------------
+    @classmethod
+    def _reset_early_stop_state(cls) -> None:
+        with _SAMPLER_LOCK:
+            cls._early_stop_batches_done = 0
+            cls._early_stale_batches = 0
+            cls._early_failed_batches = 0
+            cls._early_last_global_best = None
+            cls._early_stop_reason = None
+            cls._early_stop_row_written = False
+
+    def _global_best_score(self) -> float | None:
+        """跨岛全局最优分（各岛 best 的最大值）；尚无有效分时返回 None。
+
+        ``_best_score_per_island`` 在真实 ExperienceBuffer 里是 **list**（按下标
+        取岛），测试替身里则常见 dict——两种容器都按"取全部值"兼容。
+        """
+        with _SAMPLER_LOCK:
+            per_island = self._database._best_score_per_island
+            vals = per_island.values() if isinstance(per_island, dict) else per_island
+            bests = [s for s in vals
+                     if isinstance(s, (int, float)) and s != float('-inf')]
+            return max(bests) if bests else None
+
+    def _early_stop_triggered(self) -> bool:
+        """判定收敛型早停；命中时把原因写入共享状态并打印一次。"""
+        with _SAMPLER_LOCK:
+            cls = self.__class__
+            if cls._early_stop_reason:
+                return True    # 别的 sampler 线程已判停：跟随停止，不重复打印
+
+            def _trigger(reason: str) -> bool:
+                cls._early_stop_reason = reason
+                print(f'[早停] {reason}')
+                return True
+
+            # ① 绝对目标：全局最优分已达到 target_nmse 换算出的目标分
+            if self._target_score is not None:
+                best = self._global_best_score()   # RLock 可重入，锁内调用安全
+                if best is not None and best >= self._target_score:
+                    return _trigger(f'全局最优 {best:.6g} 已达目标分 '
+                                    f'{self._target_score:.6g}（target_nmse），停止采样。')
+            # ② 失败熔断：连续 N 批全部样本评估失败（API 故障/解析崩坏不再烧预算）
+            if (self._early_stop_max_failed is not None
+                    and cls._early_failed_batches >= self._early_stop_max_failed):
+                return _trigger(f'连续 {cls._early_failed_batches} 个批次所有样本评估失败'
+                                '（熔断），停止采样。')
+            # ③ 平台期：warmup 之后，连续 N 批无（容差内的）全局最优改进
+            if (self._early_stop_patience is not None
+                    and cls._early_stop_batches_done >= self._early_stop_min_batches
+                    and cls._early_stale_batches >= self._early_stop_patience):
+                return _trigger(f'连续 {cls._early_stale_batches} 个批次无全局最优改进'
+                                '（平台期），停止采样。')
+            return False
+
+    def _record_batch_for_early_stop(self, batch: SampleBatch) -> None:
+        """批次收尾时更新早停计数器（全局口径，跨 sampler 线程累加）。
+
+        改进判定带容差：``best > prev + max(1e-12, 1e-9·|prev|)`` 才算真改进。
+        没有容差的话，参数优化在 1e-13 量级的抖动（实测 run.err 里同一分数
+        连续三次"increased"）会把平台期计数器永远清零，机制形同虚设。
+        """
+        with _SAMPLER_LOCK:
+            cls = self.__class__
+            cls._early_stop_batches_done += 1
+            # 失败熔断计数：本批有任一有效分即视为系统健康、清零
+            if any(s is not None for s in batch.scores):
+                cls._early_failed_batches = 0
+            else:
+                cls._early_failed_batches += 1
+            best = self._global_best_score()
+            if best is None:
+                return
+            prev = cls._early_last_global_best
+            tol = 0.0 if prev is None else max(1e-12, 1e-9 * abs(prev))
+            if prev is None or best > prev + tol:
+                cls._early_last_global_best = best
+                cls._early_stale_batches = 0
+            else:
+                cls._early_stale_batches += 1
+
+    def _write_early_stop_row(self, start_time: float) -> None:
+        """因早停退出时在 round_progress.csv 追加一行终止记录（只写一次）。"""
+        with _SAMPLER_LOCK:
+            cls = self.__class__
+            if not cls._early_stop_reason or cls._early_stop_row_written:
+                return
+            cls._early_stop_row_written = True
+            reason = cls._early_stop_reason
+        try:
+            with _SAMPLER_LOCK:
+                path = os.path.join(self.config.results_root or ".", "round_progress.csv")
+                write_header = not os.path.exists(path)
+                best = self._global_best_score()
+                with open(path, "a", encoding="utf-8", newline="") as f:
+                    writer = csv.writer(f)
+                    if write_header:
+                        writer.writerow(_PROGRESS_COLUMNS)
+                    writer.writerow([
+                        time.strftime("%Y-%m-%d %H:%M:%S"),
+                        f"{(time.time() - start_time):.1f}",
+                        "",    # island_id：终止行不属于任何岛
+                        f"{best:.6g}" if best is not None else "",
+                        self._get_global_sample_nums(),
+                        reason,
+                    ])
+                print(f"[INFO] 早停原因已写入 {path}")
+        except Exception as e:
+            print(f"[WARN] 写入早停终止记录失败: {e}")
 
     def _sample_batch(self, prompt: buffer.Prompt) -> SampleBatch:
         """从 LLM 采样一批方程骨架并封装为 SampleBatch（含平均采样耗时）。"""
@@ -467,14 +616,14 @@ class CoordinatorAgent(BaseAgent):
                 with open(path, "a", encoding="utf-8", newline="") as f:
                     writer = csv.writer(f)
                     if write_header:
-                        writer.writerow(["timestamp", "wall_elapsed_s", "island_id",
-                                         "best_score", "global_sample_nums"])
+                        writer.writerow(_PROGRESS_COLUMNS)
                     writer.writerow([
                         time.strftime("%Y-%m-%d %H:%M:%S"),
                         f"{(time.time() - start_time):.1f}",
                         island_id,
                         f"{best:.6f}" if best is not None and best != float('-inf') else "",
                         self._get_global_sample_nums(),
+                        "",    # stop_reason：正常批次行留空，终止行由 _write_early_stop_row 写
                     ])
         except Exception as e:
             print(f"[WARN] 写入 progress.csv 失败: {e}")

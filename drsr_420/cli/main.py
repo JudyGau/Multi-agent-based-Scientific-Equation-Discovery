@@ -166,6 +166,20 @@ def build_parser() -> ArgumentParser:
     parser.add_argument('--background', type=str, default=None, help='背景知识（可选）')
     parser.add_argument('--samples_per_iteration', type=int, default=None,
                         help='每轮生成的候选数量（覆盖 config 默认值）')
+    # 收敛型早停（全部默认关闭；预算型条件 --niterations/--timeout_in_seconds 照常兜底）
+    parser.add_argument('--target_nmse', type=float, default=None,
+                        help='早停目标：全局最优 NMSE 达到该值即停（None=关闭）。'
+                             '对 MRF 类问题建议 1e-6 量级——实测一 run 第 7 批即达 1e-6，'
+                             '之后 20 批纯属浪费')
+    parser.add_argument('--early_stop_patience', type=int, default=None,
+                        help='平台期早停：连续 N 个全局批次无全局最优改进即停（None=关闭）。'
+                             '必须给足（建议 >= 2×num_islands）：实测有 run 连续 18 批无改进'
+                             '后才出现全场最优')
+    parser.add_argument('--min_batches', type=int, default=None,
+                        help='平台期 warmup：全局完成批次数达到该值前不判平台期'
+                             '（默认自动取 num_islands，保证每座岛至少轮到一次）')
+    parser.add_argument('--max_failed_batches', type=int, default=None,
+                        help='失败熔断：连续 N 个批次所有样本评估失败即停（None=关闭）')
     return parser
 
 
@@ -328,6 +342,21 @@ def main(argv: list[str] | None = None) -> int:
                      else config_lib.ExperienceBufferConfig().num_islands))
     num_samplers = int(args.num_samplers) if args.num_samplers and args.num_samplers > 0 else 1
 
+    # 收敛型早停参数（None = 关闭）
+    early_stop_cfg = dict(
+        target_nmse=(float(args.target_nmse)
+                     if args.target_nmse and args.target_nmse > 0 else None),
+        early_stop_patience=(int(args.early_stop_patience)
+                             if args.early_stop_patience and args.early_stop_patience > 0
+                             else None),
+        min_batches_before_early_stop=(int(args.min_batches)
+                                       if args.min_batches and args.min_batches > 0
+                                       else None),
+        max_failed_batches=(int(args.max_failed_batches)
+                            if args.max_failed_batches and args.max_failed_batches > 0
+                            else None),
+    )
+
     # 注意：局部变量名用 exp_config，绝不再覆盖 config 模块名（重构前的真实陷阱）
     if args.samples_per_iteration is not None and args.samples_per_iteration > 0:
         exp_config = config_lib.Config(
@@ -336,6 +365,7 @@ def main(argv: list[str] | None = None) -> int:
             wall_time_limit_seconds=wall_limit_seconds,
             experience_buffer=eb_cfg,
             num_samplers=num_samplers,
+            **early_stop_cfg,
         )
     else:
         exp_config = config_lib.Config(
@@ -343,6 +373,7 @@ def main(argv: list[str] | None = None) -> int:
             wall_time_limit_seconds=wall_limit_seconds,
             experience_buffer=eb_cfg,
             num_samplers=num_samplers,
+            **early_stop_cfg,
         )
 
     llm_config = load_llm_config_file(args.llm_config)
@@ -395,6 +426,12 @@ def main(argv: list[str] | None = None) -> int:
         "samples_per_prompt": exp_config.samples_per_prompt,
         "max_sample_nums": global_max_sample_num,
         "wall_time_limit_seconds": wall_limit_seconds,
+        "early_stop": {
+            "target_nmse": exp_config.target_nmse,
+            "early_stop_patience": exp_config.early_stop_patience,
+            "min_batches_before_early_stop": exp_config.min_batches_before_early_stop,
+            "max_failed_batches": exp_config.max_failed_batches,
+        },
         "background": background,
         "llm": {
             "provider": client._provider_name() if client else None,

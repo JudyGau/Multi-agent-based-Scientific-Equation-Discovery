@@ -96,6 +96,19 @@ class Config:
     results_root: str | None = None
     # 实验总时长上限（秒）；None 表示不限制
     wall_time_limit_seconds: int | None = None
+    ####################################################
+    # 收敛型早停（与上面的预算型条件"或"关系，任一满足即停；全部 None = 关闭）。
+    # 依据（experiments/MRFCompress-Cuboid 两次实测）：一run第 7 批即达 NMSE≈1e-6
+    # 后又空跑 20 批；另一run曾连续 18 批无全局改进后才出现全场最优——
+    # 因此绝对目标是省钱主力，平台期 patience 必须设得足够宽（>= 2×num_islands）。
+    # 全局最优 NMSE 目标：达到即停。runtime 层按 var(outputs) 换算成目标分数。
+    target_nmse: float | None = None
+    # 平台期：连续多少个**全局批次**内无（容差内的）全局最优改进即停。
+    early_stop_patience: int | None = None
+    # 平台期 warmup：全局完成批次数达到该值前不判平台期；None = 自动取 num_islands。
+    min_batches_before_early_stop: int | None = None
+    # 熔断：连续多少个批次所有样本评估失败（score 全 None）即停。
+    max_failed_batches: int | None = None
 
 
 @dataclasses.dataclass()

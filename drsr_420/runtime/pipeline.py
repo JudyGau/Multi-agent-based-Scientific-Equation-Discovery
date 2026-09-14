@@ -88,6 +88,43 @@ def _init_experience_buffer(
     return database, template, function_to_evolve, function_to_run
 
 
+def _extract_target_variance(inputs: Sequence[Any]) -> float | None:
+    """从数据集中取因变量方差 var(outputs)；取不到或方差非正时返回 None。"""
+    try:
+        if hasattr(inputs, 'values'):
+            any_dataset = next(iter(inputs.values()))
+            if isinstance(any_dataset, dict) and 'outputs' in any_dataset:
+                y = np.asarray(any_dataset['outputs'], dtype=float)
+                if y.size > 0:
+                    var = float(np.var(y))
+                    return var if var > 0 else None
+    except Exception:
+        pass
+    return None
+
+
+def _target_score_from_config(config: config_lib.Config,
+                              inputs: Sequence[Any]) -> float | None:
+    """把 ``config.target_nmse`` 换算成协调器可用的目标分数。
+
+    评分约定（evaluation/problems.py）：``score = -MSE``，``NMSE = MSE/var(outputs)``，
+    因此 ``target_score = -target_nmse · var(outputs)``。方差取不到时早停目标
+    静默不生效（预算型条件照常兜底），只告警一次。
+    """
+    if getattr(config, 'target_nmse', None) is None:
+        return None
+    var = _extract_target_variance(inputs)
+    if var is None:
+        print("[WARN] 无法从数据计算 var(outputs)，--target_nmse 早停不生效")
+        return None
+    target = -(float(config.target_nmse) * var)
+    # 打印一律用 ASCII 比较符：GBK 控制台无法编码 ⇔/≤ 之类的数学符号，
+    # UnicodeEncodeError 会直接拖垮调用方（evaluation/problems.py 有同款教训）。
+    print(f"[INFO] 早停目标：全局最优 NMSE <= {config.target_nmse:g} "
+          f"(即 score >= {target:.6g}) 时停止采样")
+    return target
+
+
 def _init_profiler(
         inputs: Sequence[Any],
         config: config_lib.Config,
@@ -95,16 +132,7 @@ def _init_profiler(
         results_root: str,
 ):
     """根据数据方差与配置构造 Profiler（记录样本与中间结果）。"""
-    target_variance = None
-    try:
-        if hasattr(inputs, 'values'):
-            any_dataset = next(iter(inputs.values()))
-            if isinstance(any_dataset, dict) and 'outputs' in any_dataset:
-                y = np.asarray(any_dataset['outputs'])
-                if y.size > 0:
-                    target_variance = float(np.var(y))
-    except Exception:
-        target_variance = None
+    target_variance = _extract_target_variance(inputs)
     # Profiler：直接基于 results_root（不再使用 logs 子目录）
     profiler = profile.Profiler(
         results_root,
@@ -219,6 +247,8 @@ def _launch_samplers(
     llm_client = kwargs.get('llm_client', None)
     prompt_ctx = kwargs.get('prompt_ctx', None)
     role_clients = kwargs.get('role_clients', None)
+    # target_nmse → 目标分（score = -MSE，NMSE = MSE/var(outputs)）
+    target_score = _target_score_from_config(config, inputs)
 
     samplers = []
     for _ in range(config.num_samplers):
@@ -237,6 +267,7 @@ def _launch_samplers(
             llm_api=None,
             # 角色化的客户端（sampling / experience / residual）由 cli.main 解析后注入
             role_clients=role_clients,
+            target_score=target_score,
         ))
 
     # 多线程并行启动多个 sampler：共享经验缓冲（内部加锁），并行调用 LLM 提升吞吐。
