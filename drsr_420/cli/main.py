@@ -322,23 +322,32 @@ def save_config_snapshot(results_root: str, payload: dict) -> None:
         print(f"[WARN] Failed to save config snapshot: {e}")
 
 
+def resolve_background(parser: ArgumentParser, args) -> str | None:
+    """解析背景词：--background（内联文本）与 --background_file（规范源文件）二选一。
+
+    ``--background_file`` 读 UTF-8 文本并去首尾空白——backgrounds/*.txt 是规范源，
+    脚本只传路径，txt 改动即刻生效；文件不存在或为空直接终止，绝不让实验
+    在"没有背景词"的状态下静默开跑。
+    """
+    if args.background and args.background_file:
+        parser.error('--background 与 --background_file 只能二选一')
+    if not args.background_file:
+        return args.background
+    if not os.path.isfile(args.background_file):
+        raise SystemExit(f'[ERROR] 背景词文件不存在: {args.background_file}')
+    with open(args.background_file, 'r', encoding='utf-8') as f:
+        text = f.read().strip()
+    if not text:
+        raise SystemExit(f'[ERROR] 背景词文件为空: {args.background_file}')
+    print(f"[INFO] 背景词已从 {args.background_file} 读取（{len(text)} 字符）")
+    return text
+
+
 def main(argv: list[str] | None = None) -> int:
     """完整运行一次方程发现实验。返回进程退出码。"""
     parser = build_parser()
     args = parser.parse_args(argv)
-
-    # --background（内联文本）与 --background_file（规范源文件）互斥
-    if args.background and args.background_file:
-        parser.error('--background 与 --background_file 只能二选一')
-    background = args.background
-    if args.background_file:
-        if not os.path.isfile(args.background_file):
-            raise SystemExit(f'[ERROR] 背景词文件不存在: {args.background_file}')
-        with open(args.background_file, 'r', encoding='utf-8') as f:
-            background = f.read().strip()
-        if not background:
-            raise SystemExit(f'[ERROR] 背景词文件为空: {args.background_file}')
-        print(f"[INFO] 背景词已从 {args.background_file} 读取（{len(background)} 字符）")
+    background = resolve_background(parser, args)
 
     class_config = config_lib.ClassConfig(
         llm_class=SamplerAgent, sandbox_class=LocalSandbox)
