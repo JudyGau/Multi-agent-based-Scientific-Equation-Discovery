@@ -164,6 +164,10 @@ def build_parser() -> ArgumentParser:
                              'explain=<档案ID>；ROLE 用 * 表示所有角色。'
                              '角色清单与当前绑定见 python -m drsr_420.llm.roles')
     parser.add_argument('--background', type=str, default=None, help='背景知识（可选）')
+    parser.add_argument('--background_file', type=str, default=None,
+                        help='背景知识来源文件（UTF-8 文本，如 backgrounds/MRFCompress-Cuboid.txt）。'
+                             '与 --background 互斥；脚本推荐用本参数只传路径——'
+                             'txt 是规范源，改动即刻生效，不存在脚本内联副本失步的问题')
     parser.add_argument('--samples_per_iteration', type=int, default=None,
                         help='每轮生成的候选数量（覆盖 config 默认值）')
     # 收敛型早停（全部默认关闭；预算型条件 --niterations/--timeout_in_seconds 照常兜底）
@@ -320,7 +324,21 @@ def save_config_snapshot(results_root: str, payload: dict) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     """完整运行一次方程发现实验。返回进程退出码。"""
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    # --background（内联文本）与 --background_file（规范源文件）互斥
+    if args.background and args.background_file:
+        parser.error('--background 与 --background_file 只能二选一')
+    background = args.background
+    if args.background_file:
+        if not os.path.isfile(args.background_file):
+            raise SystemExit(f'[ERROR] 背景词文件不存在: {args.background_file}')
+        with open(args.background_file, 'r', encoding='utf-8') as f:
+            background = f.read().strip()
+        if not background:
+            raise SystemExit(f'[ERROR] 背景词文件为空: {args.background_file}')
+        print(f"[INFO] 背景词已从 {args.background_file} 读取（{len(background)} 字符）")
 
     class_config = config_lib.ClassConfig(
         llm_class=SamplerAgent, sandbox_class=LocalSandbox)
@@ -390,9 +408,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         global_max_sample_num = 1000
 
-    # 加载 CSV（强制使用 data_csv 模式）
     X, y, feature_names, y_name = load_csv(args.data_csv)
-    background = args.background
 
     specification = render_spec(
         n_features=X.shape[1],
@@ -433,6 +449,7 @@ def main(argv: list[str] | None = None) -> int:
             "max_failed_batches": exp_config.max_failed_batches,
         },
         "background": background,
+        "background_file": args.background_file,
         "llm": {
             "provider": client._provider_name() if client else None,
             "model": client.model if client else llm_config.get('model', ''),

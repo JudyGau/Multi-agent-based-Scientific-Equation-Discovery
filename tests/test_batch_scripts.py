@@ -42,9 +42,13 @@ _XMLS = sorted(_XML_DIR.glob("*.xml"))
 
 #: bash 侧一行调用：run_problem <问题名> <csv> '<或">background<引号>
 _PROBLEM_RE = re.compile(r"^\s*run_problem\s+(\S+)\s+(\S+)\s+(['\"])(.*)\3\s*$")
+#: bash 侧文件形态：run_problem_file <问题名> <csv> <backgrounds/*.txt 路径>
+_PROBLEM_FILE_RE = re.compile(r"^\s*run_problem_file\s+(\S+)\s+(\S+)\s+(\S+)\s*$")
 #: 批处理侧：set "BACKGROUND=..." 紧跟着 call :run_problem <问题名> "<csv>"
 _SET_BG_RE = re.compile(r'^set "BACKGROUND=(.*)"$')
 _CALL_RE = re.compile(r"^call :run_problem\s+(\S+)\s+(\S+)\s*$")
+#: 批处理侧文件形态：call :run_problem_file <问题名> "<csv>" "<backgrounds/*.txt>"
+_CALL_FILE_RE = re.compile(r'^call :run_problem_file\s+(\S+)\s+"([^"]+)"\s+"([^"]+)"\s*$')
 #: --flag value（value 可能是带引号的一整段）
 _FLAG_RE = re.compile(r"(--\w+)\s+(\"[^\"]*\"|'[^']*'|\S+)")
 
@@ -111,8 +115,17 @@ def _csv_columns(problem: str) -> set[str]:
 
 
 def _sh_problems() -> list[tuple[str, str, str]]:
+    """example.sh 的 (问题名, csv, 背景词)。
+
+    background 两种形态：run_problem 的内联文本原样返回；
+    run_problem_file 的文件引用返回 ``file:<路径>`` 标记（与 bat 侧逐字节比对用）。
+    """
     out = []
     for line in _sh_text(_EXAMPLE_SH).splitlines():
+        m = _PROBLEM_FILE_RE.match(line)
+        if m:
+            out.append((m.group(1), m.group(2), "file:" + m.group(3)))
+            continue
         m = _PROBLEM_RE.match(line)
         if m:
             out.append((m.group(1), m.group(2), m.group(4)))
@@ -120,13 +133,22 @@ def _sh_problems() -> list[tuple[str, str, str]]:
 
 
 def _bat_problems() -> list[tuple[str, str, str]]:
-    """example.bat 的 (问题名, csv, background)；background 取自紧邻上一行的 set。"""
+    """example.bat 的 (问题名, csv, 背景词)。
+
+    background 两种形态：``set BACKGROUND`` + ``call :run_problem``（内联文本，
+    取自紧邻上一行的 set）；``call :run_problem_file ... <路径>``（文件引用，
+    返回 ``file:<路径>`` 标记）。
+    """
     out: list[tuple[str, str, str]] = []
     background: str | None = None
     for line in _read(_EXAMPLE_BAT).splitlines():
         m = _SET_BG_RE.match(line)
         if m:
             background = m.group(1)
+            continue
+        m = _CALL_FILE_RE.match(line)
+        if m:
+            out.append((m.group(1), _unquote(m.group(2)), "file:" + _unquote(m.group(3))))
             continue
         m = _CALL_RE.match(line)
         if m:
@@ -173,11 +195,23 @@ class RunConfigurationParityTest(unittest.TestCase):
             with self.subTest(config=bat.stem):
                 self.assertEqual(expected, actual, f"{bat.name} 的参数与 {sh.name} 不一致")
 
+    def _canonical_background_text(self, bat: Path) -> str:
+        """取某 .bat 实际生效的背景词文本：必须走 --background_file 读规范源。"""
+        flags = _flags(_read(bat), _default_llm_config(_read(bat)))
+        self.assertNotIn("background", flags,
+                         f"{bat.name} 还在用内联 background——背景词应以 "
+                         f"backgrounds/*.txt 为规范源，脚本只传 --background_file 路径")
+        ref = flags.get("background_file")
+        self.assertIsNotNone(ref, f"{bat.name} 缺 --background_file")
+        path = _REPO_ROOT / ref
+        self.assertTrue(path.is_file(), f"{bat.name} 指向的背景词文件不存在：{ref}")
+        return path.read_text(encoding="utf-8").strip()
+
     def test_background_matches_the_dataset(self):
         """background 描述的列必须真的存在——XML 里曾把 ellipsoid 写成 lambda12+lambda23。"""
         for bat in _MRF_BATS:
             name = bat.stem
-            bg = _flags(_read(bat), _default_llm_config(_read(bat)))["background"]
+            bg = self._canonical_background_text(bat)
             columns = _csv_columns(name)
             with self.subTest(config=name):
                 for var in ("lambda12", "lambda23"):
@@ -188,36 +222,35 @@ class RunConfigurationParityTest(unittest.TestCase):
                 shape = name.rsplit("-", 1)[-1].lower()  # cuboid / ellipsoid
                 self.assertIn(shape, bg.lower(), f"{name} 的 background 把粒子形状写错了")
 
-    def test_background_matches_the_backgrounds_txt(self):
-        """backgrounds/<名>.txt 是背景提示词的规范源：.bat/.sh 必须与它逐字一致。
-
-        历史上这份 txt 是没人消费的死副本——脚本里全是内联文本，改 txt 不改脚本
-        会让下一次实验静默用回旧提示词。本测试把 txt 升级为规范源，防止再漂移。
-        """
+    def test_scripts_point_at_the_canonical_backgrounds_txt(self):
+        """--background_file 必须指向 backgrounds/<名>.txt（规范源），三份等价物一致。"""
         for bat in _MRF_BATS:
             name = bat.stem
-            bg = _flags(_read(bat), _default_llm_config(_read(bat)))["background"].strip()
-            txt = (_REPO_ROOT / "backgrounds" / f"{name}.txt").read_text(
-                encoding="utf-8").strip()
+            expected = f"backgrounds/{name}.txt"
             with self.subTest(config=name):
-                self.assertEqual(bg, txt,
-                                 f"{name}: 脚本里的 background 与 backgrounds/{name}.txt 不一致")
+                self.assertEqual(
+                    _flags(_read(bat), _default_llm_config(_read(bat))).get("background_file"),
+                    expected, f"{bat.name} 的 --background_file 路径不对")
+                self.assertEqual(
+                    _flags(_sh_text(_REPO_ROOT / f"{name}.sh")).get("background_file"),
+                    expected, f"{name}.sh 的 --background_file 路径不对")
+                xml = _REPO_ROOT / ".idea" / "runConfigurations" / f"{name.replace('-', '_')}.xml"
+                self.assertEqual(
+                    _flags(_xml_option(xml, "PARAMETERS")).get("background_file"),
+                    expected, f"{xml.name} 的 --background_file 路径不对")
 
-    def test_example_scripts_use_the_canonical_backgrounds_too(self):
-        """example.sh/bat 里 4 个 MRF 问题的 background 同样以 backgrounds/*.txt 为准。"""
-        canonical = {p.stem: p for p in (_REPO_ROOT / "backgrounds").glob("MRF*.txt")
-                     if p.stem in {b.stem for b in _MRF_BATS}}
-        self.assertEqual(len(canonical), 4, "4 组 MRF 配置都应有对应的 backgrounds/*.txt")
-        checked = 0
-        for name, _csv, bg in _sh_problems():
-            if name not in canonical:
-                continue
-            checked += 1
-            txt = canonical[name].read_text(encoding="utf-8").strip()
+    def test_example_scripts_reference_the_canonical_backgrounds_too(self):
+        """example.sh/bat 里 4 个 MRF 问题必须走 run_problem_file + backgrounds/*.txt。"""
+        expected = {b.stem: f"backgrounds/{b.stem}.txt" for b in _MRF_BATS}
+        sh, bat = _sh_problems(), _bat_problems()
+        sh_by_name = {p[0]: p[2] for p in sh}
+        bat_by_name = {p[0]: p[2] for p in bat}
+        for name, ref in expected.items():
             with self.subTest(problem=name):
-                self.assertEqual(bg.strip(), txt,
-                                 f"{name}: example 脚本里的 background 与 backgrounds/{name}.txt 不一致")
-        self.assertEqual(checked, 4, "example 脚本里应包含全部 4 个 MRF 问题")
+                self.assertEqual(sh_by_name.get(name), "file:" + ref,
+                                 f"{name}: example.sh 应以 run_problem_file 引用 {ref}")
+                self.assertEqual(bat_by_name.get(name), "file:" + ref,
+                                 f"{name}: example.bat 应以 run_problem_file 引用 {ref}")
 
     def test_llm_config_defaults_match(self):
         sh = _default_llm_config(_sh_text(_EXAMPLE_SH))

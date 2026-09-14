@@ -96,20 +96,16 @@ rem ── 磁流变（MRF）：剪切 / 压缩 × 3 构型 ──────�
 set "BACKGROUND=Find the mathematical function skeleton that represents magnetorheological effect in shear mode, given data on lambda12(L1/L2), lambda23(L2/L3), and alpha(the parameter that controls the surface curvature of the particles). L1, L2, and L3 are the long axis, medium axis, and short axis of the cuboid bounding of superellipse particle."
 call :run_problem MRFShear-3 "data/MRFShear-3/train.csv"
 
-set "BACKGROUND=Find the mathematical function skeleton that represents the magnetorheological effect of a magnetorheological fluid (MRF) in shear mode. An MRF is a suspension of micron-scale magnetizable particles in a non-magnetizable carrier fluid; under an applied magnetic field the particles magnetize and assemble into chain-like or columnar microstructures along the field direction, which markedly increases the stress the fluid can transmit, and this field-induced strengthening is the magnetorheological effect. The data describe how this effect depends on the shape of the cuboid particle through two axis-length ratios: L1, L2 and L3 denote the long-axis, medium-axis and short-axis lengths of the cuboid particle; lambda12 = L1/L2 is the ratio of the long-axis length to the medium-axis length; lambda23 = L2/L3 is the ratio of the medium-axis length to the short-axis length. Both ratios equal 1 for a shape-isotropic (cubic) particle, and their product lambda12 times lambda23 equals L1/L3, the overall long-to-short aspect ratio of the particle. Find how the measured shear response miu under the magnetorheological effect depends on these two axis-length ratios."
-call :run_problem MRFShear-Cuboid "data/MRFShear-Cuboid/train.csv"
+call :run_problem_file MRFShear-Cuboid "data/MRFShear-Cuboid/train.csv" "backgrounds/MRFShear-Cuboid.txt"
 
-set "BACKGROUND=Find the mathematical function skeleton that represents the magnetorheological effect of a magnetorheological fluid (MRF) in shear mode. An MRF is a suspension of micron-scale magnetizable particles in a non-magnetizable carrier fluid; under an applied magnetic field the particles magnetize and assemble into chain-like or columnar microstructures along the field direction, which markedly increases the stress the fluid can transmit, and this field-induced strengthening is the magnetorheological effect. The data describe how this effect depends on the shape of the ellipsoid particle through one axis-length ratio: L1 and L2 denote the long-axis and short-axis lengths of the ellipsoid particle, and lambda12 = L1/L2 is the ratio of the long-axis length to the short-axis length, that is, the elongation of the particle relative to a sphere, with lambda12 = 1 for a spherical particle. Find how the measured shear response miu under the magnetorheological effect depends on this axis-length ratio of the particle."
-call :run_problem MRFShear-Ellipsoid "data/MRFShear-Ellipsoid/train.csv"
+call :run_problem_file MRFShear-Ellipsoid "data/MRFShear-Ellipsoid/train.csv" "backgrounds/MRFShear-Ellipsoid.txt"
 
 set "BACKGROUND=Find the mathematical function skeleton that represents magnetorheological effect in compress mode, given data on lambda12(L1/L2), lambda23(L2/L3), and alpha(the parameter that controls the surface curvature of the particles). L1, L2, and L3 are the long axis, medium axis, and short axis of the cuboid bounding of superellipse particle. The superellipsoid equation was selected as the construction constraint equation: \left(\frac{x}{L_1}\right)^{\frac{2}{\alpha}} + \left(\frac{y}{L_2}\right)^{\frac{2}{\alpha}} + \left(\frac{z}{L_3}\right)^{\frac{2}{\alpha}} = 1"
 call :run_problem MRFCompress-3 "data/MRFCompress-3/train.csv"
 
-set "BACKGROUND=Find the mathematical function skeleton that represents the magnetorheological effect of a magnetorheological fluid (MRF) in compress mode. An MRF is a suspension of micron-scale magnetizable particles in a non-magnetizable carrier fluid; under an applied magnetic field the particles magnetize and assemble into chain-like or columnar microstructures along the field direction, which markedly increases the stress the fluid can transmit, and this field-induced strengthening is the magnetorheological effect. The data describe how this effect depends on the shape of the cuboid particle through two axis-length ratios: L1, L2 and L3 denote the long-axis, medium-axis and short-axis lengths of the cuboid particle; lambda12 = L1/L2 is the ratio of the long-axis length to the medium-axis length; lambda23 = L2/L3 is the ratio of the medium-axis length to the short-axis length. Both ratios equal 1 for a shape-isotropic (cubic) particle, and their product lambda12 times lambda23 equals L1/L3, the overall long-to-short aspect ratio of the particle. Find how the measured stress sigma under the magnetorheological effect depends on these two axis-length ratios."
-call :run_problem MRFCompress-Cuboid "data/MRFCompress-Cuboid/train.csv"
+call :run_problem_file MRFCompress-Cuboid "data/MRFCompress-Cuboid/train.csv" "backgrounds/MRFCompress-Cuboid.txt"
 
-set "BACKGROUND=Find the mathematical function skeleton that represents the magnetorheological effect of a magnetorheological fluid (MRF) in compress mode. An MRF is a suspension of micron-scale magnetizable particles in a non-magnetizable carrier fluid; under an applied magnetic field the particles magnetize and assemble into chain-like or columnar microstructures along the field direction, which markedly increases the stress the fluid can transmit, and this field-induced strengthening is the magnetorheological effect. The data describe how this effect depends on the shape of the ellipsoid particle through one axis-length ratio: L1 and L2 denote the long-axis and short-axis lengths of the ellipsoid particle, and lambda12 = L1/L2 is the ratio of the long-axis length to the short-axis length, that is, the elongation of the particle relative to a sphere, with lambda12 = 1 for a spherical particle. Find how the measured stress sigma under the magnetorheological effect depends on this axis-length ratio of the particle."
-call :run_problem MRFCompress-Ellipsoid "data/MRFCompress-Ellipsoid/train.csv"
+call :run_problem_file MRFCompress-Ellipsoid "data/MRFCompress-Ellipsoid/train.csv" "backgrounds/MRFCompress-Ellipsoid.txt"
 
 rem ── 汇总 ──────────────────────────────────────────────────────
 echo ================================================================
@@ -148,6 +144,32 @@ echo [FAIL] %NAME%（退出码 %errorlevel%）
 set /a FAILED+=1
 exit /b 0
 
+
+rem run_problem_file：参数1=问题名，参数2=train.csv 路径，参数3=背景词文件路径。
+rem 背景词以 backgrounds/*.txt 为规范源，脚本只传路径：txt 改动即刻生效，
+rem 不再有「脚本内联副本忘了同步」的问题。
+:run_problem_file
+set "NAME=%~1"
+set "CSV=%~2"
+set "BGFILE=%~3"
+set /a TOTAL+=1
+if not exist "%CSV%" (
+  echo [SKIP] %NAME%：数据文件不存在 - "%CSV%"
+  set /a FAILED+=1
+  exit /b 0
+)
+echo ================================================================
+echo === [%TOTAL%] %NAME%
+echo ================================================================
+"%PYTHON%" -m drsr_420.cli.main --problem_name "%NAME%" --data_csv "%CSV%" --llm_config "%LLM_CONFIG%" --background_file "%BGFILE%"
+if errorlevel 1 goto :run_problem_file_failed
+echo [OK] %NAME%
+exit /b 0
+
+:run_problem_file_failed
+echo [FAIL] %NAME%（退出码 %errorlevel%）
+set /a FAILED+=1
+exit /b 0
 
 rem maybe_pause：双击运行时暂停，避免窗口一闪而过；从已有命令行调用则不暂停，
 rem 便于把本脚本串进别的脚本里。

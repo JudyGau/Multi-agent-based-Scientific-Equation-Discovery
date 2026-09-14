@@ -51,7 +51,7 @@ echo ================================================================
   --llm_config "%LLM_CONFIG%" ^
   --niterations 6 ^
   --samples_per_iteration 4 ^
-  --background "Find the mathematical function skeleton that represents the magnetorheological effect of a magnetorheological fluid (MRF) in shear mode. An MRF is a suspension of micron-scale magnetizable particles in a non-magnetizable carrier fluid; under an applied magnetic field the particles magnetize and assemble into chain-like or columnar microstructures along the field direction, which markedly increases the stress the fluid can transmit, and this field-induced strengthening is the magnetorheological effect. The data describe how this effect depends on the shape of the ellipsoid particle through one axis-length ratio: L1 and L2 denote the long-axis and short-axis lengths of the ellipsoid particle, and lambda12 = L1/L2 is the ratio of the long-axis length to the short-axis length, that is, the elongation of the particle relative to a sphere, with lambda12 = 1 for a spherical particle. Find how the measured shear response miu under the magnetorheological effect depends on this axis-length ratio of the particle."
+  --background_file backgrounds/MRFShear-Ellipsoid.txt
 set "RC=%errorlevel%"
 if not "%RC%"=="0" echo [FAIL] MRFShear-Ellipsoid（退出码 %RC%）
 if "%RC%"=="0" echo [OK] MRFShear-Ellipsoid
