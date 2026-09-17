@@ -15,7 +15,8 @@
       └── prune_and_visualize()
             ├── expr_parse.expr_substitution()   骨架字符串 → SymPy 表达式
             ├── sensitivity_prune.SensitivityPruner.prune()  敏感度剪枝
-            └── expr_viz.safe_preview() / render_expr_trees()  预览图与树图
+            ├── expr_viz.safe_preview() / render_expr_trees()  预览图与树图
+            └── expr_curves.plot_data_curves()  剪枝前后曲线 + 数据点（可失败，仅告警）
 
 本模块只做"取样本 + 步骤编排 + 兜底告警"，具体逻辑见上表各自的模块。
 """
@@ -88,14 +89,25 @@ def prune_and_visualize(results_root: str, func: str, params,
         pruned_expr = pruner.prune(expr, verbose=True)
     except Exception as e:
         print(f"[WARN] 剪枝失败: {e}")
-        return
+        pruned_expr = None
 
-    pruned_expr = pruned_expr.n(2)
-    print(f"剪枝后的表达式为 {dependent} =")
-    sp.pprint(pruned_expr)
-    safe_preview(pruned_expr, f'{results_root}/prunedExpr.png')
+    if pruned_expr is not None:
+        # n(2) 仅用于控制台打印/预览图的观感；曲线绘制必须用全精度表达式
+        # （2 位有效数字会在 ~2000 量级的项上引入 ±30 的偏差，见 expr_parse 的教训）
+        display_expr = pruned_expr.n(2)
+        print(f"剪枝后的表达式为 {dependent} =")
+        sp.pprint(display_expr)
+        safe_preview(display_expr, f'{results_root}/prunedExpr.png')
 
     render_expr_trees(results_root, expr, pruned_expr)
+
+    # 剪枝完成 → 剪枝前后表达式曲线 + 数据点（每个自变量一幅，人工检查贴合度）。
+    # 与 expr.png 同级别的"给人看"产物：失败只告警，不拖垮收尾流程。
+    try:
+        from drsr_420.analysis.expr_curves import plot_data_curves
+        plot_data_curves(results_root, dependent, sym_names, expr, pruned_expr)
+    except Exception as e:
+        print(f"[WARN] 剪枝前后曲线图生成失败（跳过）: {e}")
 
 
 def find_best_eq(results_root: str, threshold: float = 0.1,

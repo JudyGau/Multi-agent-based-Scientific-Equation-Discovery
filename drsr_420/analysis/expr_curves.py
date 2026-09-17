@@ -37,49 +37,32 @@ from drsr_420.analysis.sensitivity_prune import SensitivityPruner
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def _resolve_csv(data_csv: str) -> str | None:
-    """config_snapshot 里的 data_csv 相对项目根；兼容绝对路径与 cwd 相对路径。"""
-    for base in (_REPO_ROOT, os.getcwd()):
-        p = data_csv if os.path.isabs(data_csv) else os.path.join(base, data_csv)
+def _resolve_csv(data_csv: str, results_root: str = "") -> str | None:
+    """data_csv 依次按 results_root、项目根、cwd 解析；兼容绝对路径。
+
+    config_snapshot 里通常存项目根相对路径（./data/...），自包含实验目录
+    （如测试夹具）则是 results_root 相对路径——两处都要试。
+    """
+    if os.path.isabs(data_csv):
+        return data_csv if os.path.isfile(data_csv) else None
+    for base in (results_root, _REPO_ROOT, os.getcwd()):
+        p = os.path.join(base, data_csv)
         if os.path.isfile(p):
             return p
     return None
 
 
-def plot_expr_curves(results_root: str, threshold: float = 0.1,
-                     sample_range: tuple = (1, 14)) -> list[str]:
-    """对最优样本画剪枝前/后表达式曲线 + 数据散点（每个自变量一幅）。
+def plot_data_curves(results_root: str, dependent: str, sym_names: list[str],
+                     expr, pruned=None) -> list[str]:
+    """核心绘图：按训练数据路径画剪枝前/后表达式曲线 + 数据散点。
 
-    返回成功写出的图片路径列表；任何一步失败只告警并返回已完成的路径。
+    供两处调用：``prune_and_visualize``（剪枝完成后自动触发）与本模块的
+    ``plot_expr_curves``（对既有实验目录独立补跑）。返回成功写出的图片路径；
+    失败只告警，不抛异常——曲线是"给人看的"产物，不该拖垮收尾流程。
     """
     import matplotlib
     matplotlib.use("Agg")            # 无头环境；必须在 pyplot 之前
     import matplotlib.pyplot as plt
-
-    best = find_best_sample(results_root)
-    if best is None:
-        print("[WARN] 未找到有效样本，跳过曲线绘制。")
-        return []
-    _score, _path, func, params = best
-    parsed = _parse_symbols(func)
-    if parsed is None:
-        print("[WARN] 无法解析 Dependent/Independents，跳过曲线绘制。")
-        return []
-    dependent, sym_names = parsed
-
-    expr = expr_substitution(func, params)
-    if expr is None:
-        print("[WARN] 表达式解析失败，跳过曲线绘制。")
-        return []
-
-    # 剪枝：与 prune_and_visualize 同一套参数，保证曲线与实验产物同源
-    pruner = SensitivityPruner(symbols=sp.symbols(sym_names),
-                               threshold=threshold, sample_range=sample_range)
-    try:
-        pruned = pruner.prune(expr, verbose=False)
-    except Exception as e:
-        print(f"[WARN] 剪枝失败，只画剪枝前曲线: {e}")
-        pruned = None
 
     # 训练数据（CSV 列名 = 自变量名 + 因变量名）
     snap_path = os.path.join(results_root, "config_snapshot.json")
@@ -89,7 +72,7 @@ def plot_expr_curves(results_root: str, threshold: float = 0.1,
     except Exception as e:
         print(f"[WARN] 读取 config_snapshot.json 失败，跳过曲线绘制: {e}")
         return []
-    csv_path = _resolve_csv(data_csv)
+    csv_path = _resolve_csv(data_csv, results_root)
     if csv_path is None:
         print(f"[WARN] 数据文件不存在: {data_csv}，跳过曲线绘制。")
         return []
@@ -154,6 +137,41 @@ def plot_expr_curves(results_root: str, threshold: float = 0.1,
         finally:
             plt.close(fig)
     return written
+
+
+def plot_expr_curves(results_root: str, threshold: float = 0.1,
+                     sample_range: tuple = (1, 14)) -> list[str]:
+    """对既有实验目录独立补跑：最优样本 → 剪枝 → 核心绘图。
+
+    供 ``python -m drsr_420.analysis.expr_curves`` CLI 使用；实验管线内的自动
+    绘图走 ``prune_and_visualize → plot_data_curves``，不经过这里（避免重复剪枝）。
+    """
+    best = find_best_sample(results_root)
+    if best is None:
+        print("[WARN] 未找到有效样本，跳过曲线绘制。")
+        return []
+    _score, _path, func, params = best
+    parsed = _parse_symbols(func)
+    if parsed is None:
+        print("[WARN] 无法解析 Dependent/Independents，跳过曲线绘制。")
+        return []
+    dependent, sym_names = parsed
+
+    expr = expr_substitution(func, params)
+    if expr is None:
+        print("[WARN] 表达式解析失败，跳过曲线绘制。")
+        return []
+
+    # 剪枝：与 prune_and_visualize 同一套参数，保证曲线与实验产物同源
+    pruner = SensitivityPruner(symbols=sp.symbols(sym_names),
+                               threshold=threshold, sample_range=sample_range)
+    try:
+        pruned = pruner.prune(expr, verbose=False)
+    except Exception as e:
+        print(f"[WARN] 剪枝失败，只画剪枝前曲线: {e}")
+        pruned = None
+
+    return plot_data_curves(results_root, dependent, sym_names, expr, pruned)
 
 
 if __name__ == "__main__":
