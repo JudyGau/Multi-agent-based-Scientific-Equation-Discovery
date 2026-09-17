@@ -239,6 +239,56 @@ def _unwrap_outer_parens(expr_str: str) -> str:
     return ' '.join(expr_str[1:end_idx].splitlines())
 
 
+_TUPLE_UNPACK_RE = re.compile(
+    r"^\s*([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s*=\s*params(?:\[[^\]]*\])?\s*$")
+_PAREN_OPEN = re.compile(r"[(\[{]")
+_PAREN_CLOSE = re.compile(r"[)\]}]")
+
+
+def _paren_delta(line: str) -> int:
+    """一行内未闭合的括号数（正 = 还有括号没关上）。"""
+    return len(_PAREN_OPEN.findall(line)) - len(_PAREN_CLOSE.findall(line))
+
+
+def _normalize_statements(func: str, params: list) -> str:
+    """语句级预处理，替 return 的符号消解扫清两种 LLM 常见写法：
+
+    ① **元组解包** ``p0, p1, ..., p9 = params[:10]``：旧流程只会替换
+       ``params[i]`` 形式，解包出来的名字全部留在表达式里成为自由符号，
+       ``return sigma`` 的 sigma 无处可解，最终"表达式"退化为裸符号——
+       剪枝率恒 0、曲线报 Cannot convert expression to float
+       （实测 MRFCompress-Cuboid_20260917-194203）。按位置把每个名字
+       替换为数值后，后续流程照常工作。
+    ② **多行赋值** ``sigma = (\\n  p0\\n  + p1 ...)``：赋值正则按单行匹配，
+       只能看到 ``sigma = (`` 就 EOF 报错被跳过，同样退化为裸符号。
+       按括号配对把续行合并回单行（对多行 ``return (`` 同样生效）。
+    """
+    name_map: dict[str, str] = {}
+    out_lines: list[str] = []
+    lines = func.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = _TUPLE_UNPACK_RE.match(line)
+        if m:
+            names = [n.strip() for n in m.group(1).split(",")]
+            for j, name in enumerate(names):
+                if j < len(params):
+                    name_map[name] = str(params[j])
+            i += 1
+            continue
+        merged = line.strip()
+        while _paren_delta(merged) > 0 and i + 1 < len(lines):
+            i += 1
+            merged = merged + " " + lines[i].strip()
+        out_lines.append(merged)
+        i += 1
+    text = "\n".join(out_lines)
+    for name, value in name_map.items():
+        text = re.sub(rf"\b{re.escape(name)}\b", value, text)
+    return text
+
+
 def expr_substitution(func: str, params: list) -> sp.Expr | None:
     """把 LLM 返回的函数骨架字符串替换为具体参数值，解析为 SymPy 表达式。
 
@@ -270,6 +320,11 @@ def expr_substitution(func: str, params: list) -> sp.Expr | None:
     # 去除注释部分 """...""" 和 #...
     pattern = "\"\"\"(.*?)\"\"\"|#[^\n]*"  # 非贪婪匹配
     func = re.sub(pattern, "", func, flags=re.DOTALL)  # 将匹配到的内容替换为""
+
+    # 语句级预处理（两项写法在 MRFCompress-Cuboid_20260917-194203 双双踩中，
+    # 后果都是 return 的符号无处可解、最终"表达式"退化为裸符号 sigma——
+    # 剪枝率 0%、曲线报 Cannot convert expression to float）：
+    func = _normalize_statements(func, params)
 
     # 去掉 numpy 前缀，并把 maximum/minimum 别名映射到 SymPy 的 Max/Min。
     # 用 \b 限定标识符边界：原来的 str.replace 会把 `maximum_likelihood` 之类的

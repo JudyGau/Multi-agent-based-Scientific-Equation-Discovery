@@ -58,6 +58,49 @@ class ExprSubstitutionTest(_ExprTestCase):
         expr = expr_substitution(func, [2.3456])
         self.assertEqual(sp.simplify(expr - sp.Rational(235, 100) * X1), 0)
 
+    def test_tuple_unpacking_of_params(self):
+        """回归：p0, p1, ... = params[:n] 解包写法必须按位置代参
+        （实测 194203：旧流程留下自由符号，表达式退化为裸 sigma）。"""
+        func = _spec([
+            "p0, p1, p2 = params[:3]",
+            "return p0*x1 + p1*x1**2 + p2",
+        ])
+        expr = expr_substitution(func, [2.0, 3.0, 5.0])
+        self.assertEqual(sp.simplify(expr - (2 * X1 + 3 * X1**2 + 5)), 0)
+
+    def test_multiline_assignment_is_merged(self):
+        """回归：sigma = ( 换行续写的多行赋值必须合并成单行再解析。"""
+        func = _spec([
+            "sigma = (",
+            "    params[0]*x1",
+            "    + params[1]",
+            ")",
+            "return sigma",
+        ])
+        expr = expr_substitution(func, [2.0, 3.0])
+        self.assertEqual(sp.simplify(expr - (2 * X1 + 3)), 0)
+
+    def test_194203_shape_tuple_unpack_plus_multiline_sigma(self):
+        """194203 实际失败形态：解包 + 中间变量 + 多行赋值 + return sigma。"""
+        func = _spec([
+            "p0, p1, p2, p3 = params[:4]",
+            "",
+            "d12 = x1 - 1.0",
+            "",
+            "sigma = (",
+            "    p0",
+            "    + p1 * d12",
+            "    + p2 * d12**2",
+            "    + p3 / x1",
+            ")",
+            "return sigma",
+        ], sig="equation(x1, params)")
+        expr = expr_substitution(func, [193.05, 357.8, -78.38, 12.5])
+        self.assertIsNotNone(expr)
+        self.assertEqual(expr.free_symbols, {X1})   # 不再退化为裸符号
+        v = float(expr.subs(X1, 2.0))
+        self.assertAlmostEqual(v, 193.05 + 357.8 - 78.38 + 6.25, places=6)
+
     def test_numpy_prefix_removed(self):
         func = _spec(["return np.sin(params[0]*x1)"])
         expr = expr_substitution(func, [2.0])
