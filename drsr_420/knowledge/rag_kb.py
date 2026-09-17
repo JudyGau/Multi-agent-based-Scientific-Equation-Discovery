@@ -220,14 +220,52 @@ def _safe_id(name: str) -> str:
     return re.sub(r"[^0-9A-Za-z_-]", "_", name)
 
 
-def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]:
-    """按空行分段，合并到约 chunk_size；相邻块保留 overlap 字符（含超长段硬切）。"""
-    text = (text or "").strip()
-    if not text:
-        return []
+def _is_section_heading(line: str) -> bool:
+    """判断一行是否为文献小节标题（启发式，宁缺勿滥：误判只会多切一刀，漏判回退整段合并）。
+
+    识别五类常见形态：
+    - Markdown 标题（``## Methods``）；
+    - 数字编号（``1. Introduction`` / ``2.1 Materials``）；
+    - 罗马数字编号（``II. EXPERIMENTAL``）；
+    - 全大写行（PDF 提取常见的 ``INTRODUCTION``）；
+    - 常见节名整行（Abstract / Conclusions / References ...，大小写不敏感）。
+    """
+    s = line.strip()
+    if not s or len(s) > 80:                      # 标题都是短行，长行是正文/列表项
+        return False
+    if re.match(r"^---\s*Page \d+\s*---$", s):    # extract_pdf_text 的页码标记
+        return False
+    if s.rstrip(".").isdigit():                   # 纯数字行是页码/公式，不是标题
+        return False
+    if any(p.match(s) for p in _SECTION_HEADING_RES):
+        return True
+    return bool(_SECTION_NAME_RE.match(s))
+
+
+#: 小节标题的形态清单（顺序无关；_is_section_heading 里统一加长度/页码护栏）
+_SECTION_HEADING_RES = (
+    re.compile(r"^#{1,6}\s+\S"),                              # Markdown 标题
+    re.compile(r"^\d+(?:\.\d+)*[.)]?\s+\S"),                  # 1. / 2.1 编号
+    re.compile(r"^(?:I{1,3}|IV|V|VI{0,3}|IX|X|XI|XII)\.\s+\S"),  # 罗马数字 II.
+    re.compile(r"^[A-Z][A-Z0-9 ,\-]{4,60}$"),                 # 全大写行
+)
+#: 常见节名整行（可带编号前缀与冒号）
+_SECTION_NAME_RE = re.compile(
+    r"^(?:\d+(?:\.\d+)*[.)]?\s+)?"
+    r"(?:abstract|introduction|background|motivation|methods?|materials\s+and\s+methods|"
+    r"experimental(?:\s+section)?|results?(?:\s+and\s+discussion)?|discussion|"
+    r"conclusions?|summary|references|acknowledg?ments?|appendix[ a-z]*)[.:]?\s*$",
+    re.IGNORECASE)
+
+
+def _merge_paragraphs(paragraphs: list[str], chunk_size: int, overlap: int) -> list[str]:
+    """把段落贪心合并到 ≤ chunk_size；超长段落硬切（相邻片段保留 overlap）。
+
+    即旧版 chunk_text 的主体行为，现作为"无小节结构"的回退与"超长小节"的
+    二级切分器复用。
+    """
     overlap = max(0, min(int(overlap), int(chunk_size) - 1))
     step = chunk_size - overlap  # 硬切步长：相邻硬切片段之间保留 overlap
-    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
     chunks, current = [], ""
     for para in paragraphs:
         if len(para) > chunk_size:
@@ -247,6 +285,62 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]
             current = (current + "\n" + para) if current else para
     if current:
         chunks.append(current)
+    return chunks
+
+
+def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]:
+    """按文献小节/段落语义分块（取代旧的固定大小分块）。
+
+    切分策略（自顶向下）：
+    1. 先按小节标题切（Markdown / 数字编号 / 罗马数字 / 全大写行 / 常见节名），
+       一个小节一个语义块——检索命中的片段天然自带"它属于论文哪一节"的语境；
+    2. 小节超过 chunk_size 时，在**小节内部**按空行分段贪心合并，仍保持单块
+       ≤ chunk_size，且每个子块都带上小节标题前缀（子块自带上下文）；
+    3. 超长段落（无空行）硬切，相邻片段保留 overlap；
+    4. 全文检测不到任何小节标题时，退回旧的"空行分段 + 合并"行为。
+
+    注意：换分块策略后必须重建知识库（``rag_build --ingest --rebuild``），
+    否则旧 chunk 与新 chunk 混存、``ingest_dir`` 按文件判重会跳过重切。
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+    chunk_size = max(1, int(chunk_size))
+    overlap = max(0, min(int(overlap), chunk_size - 1))
+
+    lines = text.split("\n")
+    sections: list[list[str]] = [[]]      # 每个小节是行列表（首行可能是标题行）
+    for line in lines:
+        if _is_section_heading(line):
+            sections.append([line])
+        else:
+            sections[-1].append(line)
+
+    if len(sections) == 1:
+        # 无小节结构：退回旧行为（空行分段 + 合并 + 超长硬切）
+        return _merge_paragraphs(
+            [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()],
+            chunk_size, overlap)
+
+    chunks: list[str] = []
+    for sec_lines in sections:
+        sec = "\n".join(sec_lines).strip()
+        if not sec:
+            continue
+        first = sec_lines[0].strip()
+        heading = first if _is_section_heading(first) else ""
+        if heading:
+            body = "\n".join(sec_lines[1:]).strip()
+            if not body:
+                chunks.append(heading)     # 只有标题的空节：标题本身也值得可检索
+                continue
+        else:
+            body = sec
+        # 子块预算扣除标题前缀长度，保证"标题 + 正文"整体仍 ≤ chunk_size
+        budget = max(1, chunk_size - len(heading) - 1) if heading else chunk_size
+        paras = [p.strip() for p in re.split(r"\n\s*\n", body) if p.strip()]
+        for piece in _merge_paragraphs(paras, budget, overlap):
+            chunks.append(f"{heading}\n{piece}" if heading else piece)
     return chunks
 
 

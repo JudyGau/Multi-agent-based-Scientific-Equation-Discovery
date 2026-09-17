@@ -27,13 +27,14 @@ from drsr_420.knowledge import tool_runner as tr
 
 class ChunkTextTest(unittest.TestCase):
     def test_long_para_does_not_duplicate_pending_chunk(self):
-        text = "SHORT PARA AAA\n\n" + "X" * 1200 + "\n\nTAIL PARA BBB"
+        # 正文用小写：全大写短行会被小节标题启发式识别为标题（那是新语义，见下）
+        text = "short para aaa\n\n" + "X" * 1200 + "\n\ntail para bbb"
         chunks = chunk_text(text, chunk_size=500, overlap=50)
         # 回归：旧实现在硬切循环里把 pending 的 current 反复 append 又不清空
-        self.assertEqual(sum(c == "SHORT PARA AAA" for c in chunks), 1)
+        self.assertEqual(sum(c == "short para aaa" for c in chunks), 1)
         for c in chunks:
             self.assertLessEqual(len(c), 500)
-        self.assertTrue(any("TAIL PARA BBB" in c for c in chunks))
+        self.assertTrue(any("tail para bbb" in c for c in chunks))
 
     def test_hard_split_fragments_overlap(self):
         text = "".join(str(i % 10) for i in range(1300))
@@ -49,6 +50,67 @@ class ChunkTextTest(unittest.TestCase):
         text = "A B\n\nC D"
         chunks = chunk_text(text, chunk_size=500, overlap=50)
         self.assertEqual(chunks, ["A B\nC D"])
+
+
+class SectionChunkingTest(unittest.TestCase):
+    """小节优先的语义分块：检索命中的片段自带"论文哪一节"的语境。"""
+
+    def test_numbered_sections_become_separate_chunks(self):
+        text = ("1. Introduction\n\nWe study magnetorheological fluids.\n\n"
+                "2. Methods\n\nThe particles were measured.\n\n"
+                "3. Conclusions\n\nShape ratios matter.")
+        chunks = chunk_text(text, chunk_size=500, overlap=50)
+        self.assertEqual(len(chunks), 3)
+        self.assertTrue(chunks[0].startswith("1. Introduction"))
+        self.assertIn("magnetorheological fluids", chunks[0])
+        self.assertNotIn("Shape ratios", chunks[0])          # 小节之间不串块
+        self.assertTrue(chunks[2].startswith("3. Conclusions"))
+
+    def test_markdown_headings_respected(self):
+        text = "## Methods\n\nBody A.\n\n## Results\n\nBody B."
+        chunks = chunk_text(text, chunk_size=500, overlap=50)
+        self.assertEqual([c.split("\n", 1)[0] for c in chunks], ["## Methods", "## Results"])
+
+    def test_overlong_section_splits_with_heading_prefix(self):
+        heading = "2. Methods"
+        paras = [f"Paragraph {i} " + "x" * 120 for i in range(8)]   # ~970 chars
+        text = heading + "\n\n" + "\n\n".join(paras)
+        chunks = chunk_text(text, chunk_size=500, overlap=50)
+        self.assertGreater(len(chunks), 1)
+        for c in chunks:
+            self.assertLessEqual(len(c), 500)                     # 标题计入预算
+            self.assertTrue(c.startswith(heading), "每个子块都必须带小节标题前缀")
+        joined = "\n".join(chunks)
+        for i in (0, 7):
+            self.assertIn(f"Paragraph {i}", joined)               # 内容无丢失
+
+    def test_page_marker_is_not_a_heading(self):
+        text = "1. Introduction\n\nBody text here.\n--- Page 2 ---\nMore body text."
+        chunks = chunk_text(text, chunk_size=500, overlap=50)
+        self.assertEqual(len(chunks), 1)
+        self.assertIn("--- Page 2 ---", chunks[0])                # 页码标记留在正文里
+
+    def test_long_list_item_is_not_a_heading(self):
+        long_item = ("1. The magnetorheological effect describes the field-induced "
+                     "yield stress increase of magnetorheological fluids under shear.")
+        text = long_item + "\n\nFollow-up paragraph."
+        chunks = chunk_text(text, chunk_size=500, overlap=50)
+        self.assertEqual(len(chunks), 1)                          # >80 字符的编号行是正文
+
+    def test_no_headings_falls_back_to_paragraph_merge(self):
+        text = "A B\n\nC D\n\nE F"
+        chunks = chunk_text(text, chunk_size=500, overlap=50)
+        self.assertEqual(chunks, ["A B\nC D\nE F"])               # 旧回退行为不变
+
+    def test_heading_only_section_keeps_the_heading(self):
+        text = "1. Introduction\n\nBody.\n\n2. Appendix\n"
+        chunks = chunk_text(text, chunk_size=500, overlap=50)
+        self.assertIn("2. Appendix", chunks)
+
+    def test_hard_split_fragments_overlap(self):
+        text = "".join(str(i % 10) for i in range(1300))
+        chunks = chunk_text(text, chunk_size=500, overlap=50)
+        self.assertEqual(chunks[0][-50:], chunks[1][:50])
 
 
 class ResolveDirTest(unittest.TestCase):
