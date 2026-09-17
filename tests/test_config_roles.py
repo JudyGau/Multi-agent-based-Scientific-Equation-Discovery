@@ -676,7 +676,7 @@ class ExplainRoleWiringTest(unittest.TestCase):
             })
             with mock.patch.object(explain_mod, "explain_re_act", fake_re_act), \
                  mock.patch.object(explain_mod, "build_explain_content",
-                                   lambda func, exp: "PROMPT"), \
+                                   lambda func, exp, background=None: "PROMPT"), \
                  mock.patch("builtins.print"):
                 explain_mod.explain_best_sample(
                     str(results_root), "func", "7", role_clients=role_clients)
@@ -716,7 +716,7 @@ class ExplainRoleWiringTest(unittest.TestCase):
                 "Good": [{"sample_order": "7", "function": "def f():\n    return 1"}],
             })
             with mock.patch.object(explain_mod, "build_explain_content",
-                                   lambda func, exp: "PROMPT"), \
+                                   lambda func, exp, background=None: "PROMPT"), \
                  mock.patch.object(explain_mod.llm, "build_role_client",
                                    side_effect=RuntimeError("档案不存在")), \
                  mock.patch("builtins.print") as printer:
@@ -724,6 +724,85 @@ class ExplainRoleWiringTest(unittest.TestCase):
         printed = "\n".join(str(call.args[0]) for call in printer.call_args_list if call.args)
         self.assertIn("Failed to init LLM client", printed)
         self.assertIn("drsr_420.llm.roles --check", printed)
+
+
+class ExplainBackgroundInjectionTest(unittest.TestCase):
+    """回归：解释提示词必须包含 config_snapshot.json 的问题背景。
+
+    旧实现只喂公式 + 经验推导 + RAG 文献摘要：解释 LLM 不知道材料体系与自变量
+    定义，凭先验把磁流变液（MRF）解释成磁流变弹性体（MRE）、把颗粒轴长比
+    lambda12/lambda23 脑补成变形拉伸量（实测 experiments/
+    MRFCompress-Cuboid_20260917-134427/explain.md）。背景必须显式进入提示词，
+    且声明优先级高于文献摘要。
+    """
+
+    _FUNC = "Dependent: sigma\nIndependents: lambda12, lambda23"
+    _EXP = {
+        "sample_order": "87",
+        "equation": "def equation(...):\n    return p0 + p1*lambda12",
+        "thinking_content": "推导过程……\n最后一行会被截掉",
+    }
+
+    def test_prompt_contains_background_with_priority(self):
+        from drsr_420.analysis import explain as explain_mod
+
+        prompt = explain_mod.build_explain_content(
+            self._FUNC, self._EXP, background="材料是磁流变液（MRF）；lambda12 = L1/L2 是颗粒轴长比。")
+        self.assertIn("材料是磁流变液（MRF）", prompt)
+        self.assertIn("以背景为准", prompt, "背景块必须声明其优先级高于文献摘要与先验")
+
+    def test_prompt_without_background_has_no_background_block(self):
+        from drsr_420.analysis import explain as explain_mod
+
+        prompt = explain_mod.build_explain_content(self._FUNC, self._EXP, background=None)
+        self.assertNotIn("材料体系与自变量定义的准绳", prompt)
+
+    def test_explain_best_sample_passes_snapshot_background(self):
+        from drsr_420.analysis import explain as explain_mod
+
+        captured = {}
+
+        def fake_re_act(client, content):
+            captured["content"] = content
+            return "EXPLAINED"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            results_root = pathlib.Path(tmp)
+            _write_json(results_root / "experiences.json", {"Good": [self._EXP]})
+            _write_json(results_root / "config_snapshot.json", {
+                "background": "磁流变液（MRF）背景词：lambda12/lambda23 是颗粒轴长比。",
+            })
+            with mock.patch.object(explain_mod, "explain_re_act", fake_re_act), \
+                 mock.patch("builtins.print"):
+                explain_mod.explain_best_sample(
+                    str(results_root), self._FUNC, "87",
+                    role_clients=RoleClients.single(_FakeClient()))
+
+        self.assertIn("磁流变液（MRF）背景词", captured.get("content", ""),
+                      "config_snapshot.json 的 background 必须进入解释提示词")
+
+    def test_explain_best_sample_without_snapshot_still_works(self):
+        """旧实验目录没有 config_snapshot.json：不炸，只是退回无背景块的老行为。"""
+        from drsr_420.analysis import explain as explain_mod
+
+        captured = {}
+
+        def fake_re_act(client, content):
+            captured["content"] = content
+            return "EXPLAINED"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            results_root = pathlib.Path(tmp)
+            _write_json(results_root / "experiences.json", {"Good": [self._EXP]})
+            with mock.patch.object(explain_mod, "explain_re_act", fake_re_act), \
+                 mock.patch("builtins.print"):
+                explain_mod.explain_best_sample(
+                    str(results_root), self._FUNC, "87",
+                    role_clients=RoleClients.single(_FakeClient()))
+
+        # 旧目录（无 config_snapshot.json）：推导内容照常进入，但不出现背景块
+        self.assertIn("推导过程", captured.get("content", ""))
+        self.assertNotIn("材料体系与自变量定义的准绳", captured.get("content", ""))
 
 
 class SubprocessRolePropagationTest(unittest.TestCase):

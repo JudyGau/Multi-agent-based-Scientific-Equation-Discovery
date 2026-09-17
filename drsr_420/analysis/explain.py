@@ -6,7 +6,8 @@
 
 协作
 ----
-* 输入：``experiences.json`` 里该样本的 Good 条目（含模型的思考过程与含参公式）；
+* 输入：``experiences.json`` 里该样本的 Good 条目（含模型的思考过程与含参公式），
+  以及 ``config_snapshot.json`` 的问题背景（材料体系与自变量定义的准绳）；
 * LLM：通过 ReAct 循环（``explain_re_act``）调用，模型可自行发起 MCP 检索工具；
 * 增强：RAG 知识库注入相关文献摘要（库为空或检索失败则静默跳过）；
 * 产物：``<results_root>/explain.md``。
@@ -91,8 +92,16 @@ def explain_re_act(client: llm.LLMClient, content: str) -> str | None:
         return None
 
 
-def build_explain_content(func: str, exp: dict) -> str | None:
-    """从样本函数与匹配的经验条目构造物理解释提示词；解析失败返回 None。"""
+def build_explain_content(func: str, exp: dict, background: str | None = None) -> str | None:
+    """从样本函数与匹配的经验条目构造物理解释提示词；解析失败返回 None。
+
+    ``background`` 是问题的领域背景（来自 config_snapshot.json 的 ``background``
+    字段，即 --background / --background_file 的最终文本）。解释 LLM 只看公式与
+    经验推导时，会凭先验把自变量脑补成变形/拉伸量、把材料脑补成磁流变弹性体
+    （MRE）——实测 experiments/MRFCompress-Cuboid_20260917-134427/explain.md 即
+    如此，而该问题的材料是磁流变液（MRF）、自变量是颗粒轴长比。背景必须显式
+    进入提示词，并声明其优先级高于文献摘要与先验直觉。
+    """
     thinking = exp.get("thinking_content", "")
     if not thinking:
         return None
@@ -115,6 +124,16 @@ def build_explain_content(func: str, exp: dict) -> str | None:
     head = (f"你是一名力学工程师/应用力学家，对给定公式做逐项物理机理解释，以下是一个含参本构公式和这个公式的推导逻辑，"
             f"因变量是 {dependent}，自变量是 {independent}，请你据此对这个公式从力学角度进行详细的解释。"
             "具体的领域背景请参考下方提供的文献摘要。")
+
+    # 问题背景块：材料体系与自变量语义的准绳，优先级高于 RAG 文献与先验直觉
+    bg_block = ""
+    if background and background.strip():
+        bg_block = ("\n\n### 以下是问题的领域背景（材料体系与自变量定义的准绳） ###\n\n"
+                    + background.strip()
+                    + "\n\n解释必须与上述背景保持一致：材料体系是什么（例如磁流变液还是"
+                      "磁流变弹性体）、自变量的物理含义（例如颗粒轴长比还是变形拉伸量），"
+                      "一律以上述背景为准；若与下方文献摘要或你的先验知识冲突，以背景为准。")
+
     tail = "请你根据以上内容对这个公式从力学角度进行详细的解释"
 
     # RAG 检索增强：注入相关文献背景（失败/库为空时静默跳过）
@@ -126,7 +145,7 @@ def build_explain_content(func: str, exp: dict) -> str | None:
     except Exception as _e:
         print(f"[RAG] 解释阶段文献检索失败（跳过）: {_e}")
 
-    content = head + "\n" + eq + "\n" + thinking \
+    content = head + bg_block + "\n" + eq + "\n" + thinking \
         + ("\n\n### 以下是相关文献背景，供力学解释参考 ###\n\n" + rag_block if rag_block else "") \
         + "\n" + tail
     return content
@@ -154,6 +173,17 @@ def explain_best_sample(results_root: str, func: str, sample_order: str,
         print(f"[WARN] 读取经验文件失败，跳过物理解释: {e}")
         return
 
+    # 问题背景来自 config_snapshot.json（--background / --background_file 的最终
+    # 文本）：解释 LLM 必须知道材料体系与自变量定义，否则会把 MRF 解释成 MRE
+    background = None
+    try:
+        snap_path = os.path.join(results_root, "config_snapshot.json")
+        if os.path.exists(snap_path):
+            with open(snap_path, "r", encoding="utf-8") as f:
+                background = json.load(f).get("background")
+    except Exception as e:
+        print(f"[WARN] 读取 config_snapshot.json 的问题背景失败（解释将不含背景块）: {e}")
+
     matched = None
     for exp in exp_data.get("Good", []):
         if str(exp.get("sample_order")) == sample_order:
@@ -163,7 +193,7 @@ def explain_best_sample(results_root: str, func: str, sample_order: str,
         print(f"[WARN] 未找到 sample_order={sample_order} 的 Good 经验，跳过物理解释。")
         return
 
-    content = build_explain_content(func, matched)
+    content = build_explain_content(func, matched, background=background)
     if content is None:
         print("[WARN] 构造物理解释提示词失败，跳过。")
         return
