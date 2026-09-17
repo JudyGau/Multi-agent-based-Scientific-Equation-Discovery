@@ -11,5 +11,5 @@
   "embed_backoff_base": 2.0,
   "embed_batch_interval": 0.5,
   "embed_file_interval": 1.0,
-  "default_query": "磁流变 颗粒 本构 屈服应力 压缩"
+  "default_query": "磁流变 颗粒 本构"
 }
