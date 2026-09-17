@@ -51,6 +51,8 @@ echo ================================================================
   --llm_config "%LLM_CONFIG%" ^
   --niterations 6 ^
   --samples_per_iteration 4 ^
+  --target_nmse 1e-6 ^
+  --max_failed_batches 3 ^
   --background_file backgrounds/MRFShear-Ellipsoid.txt
 set "RC=%errorlevel%"
 if not "%RC%"=="0" echo [FAIL] MRFShear-Ellipsoid（退出码 %RC%）

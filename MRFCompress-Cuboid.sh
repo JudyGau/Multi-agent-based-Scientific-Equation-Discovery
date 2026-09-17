@@ -1,1 +1,1 @@
-python3 -m drsr_420.cli.main --problem_name MRFCompress-Cuboid --data_csv ./data/MRFCompress-Cuboid/train.csv --num_samplers 4 --llm_config config/glm_glm-5.3-flash.config --niterations 6 --samples_per_iteration 4 --background_file backgrounds/MRFCompress-Cuboid.txt
+python3 -m drsr_420.cli.main --problem_name MRFCompress-Cuboid --data_csv ./data/MRFCompress-Cuboid/train.csv --num_samplers 4 --llm_config config/glm_glm-5.3-flash.config --niterations 6 --samples_per_iteration 4 --target_nmse 1e-6 --max_failed_batches 3 --background_file backgrounds/MRFCompress-Cuboid.txt
