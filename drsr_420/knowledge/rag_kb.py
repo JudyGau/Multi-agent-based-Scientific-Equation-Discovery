@@ -245,8 +245,11 @@ def _is_section_heading(line: str) -> bool:
 #: 小节标题的形态清单（顺序无关；_is_section_heading 里统一加长度/页码护栏）
 _SECTION_HEADING_RES = (
     re.compile(r"^#{1,6}\s+\S"),                              # Markdown 标题
-    re.compile(r"^\d+(?:\.\d+)*[.)]?\s+\S"),                  # 1. / 2.1 编号
-    re.compile(r"^(?:I{1,3}|IV|V|VI{0,3}|IX|X|XI|XII)\.\s+\S"),  # 罗马数字 II.
+    # 数字编号：编号后必须是字母开头的真实文字——否则 PDF 提取的公式/页码碎片
+    # （如 "1 2"、"0. 8"）会被当成标题，切出一堆 3 字符的垃圾块（实测 15% 的块 <120 字符）
+    re.compile(r"^\d+(?:\.\d+)*[.)]?\s+[A-Za-z][A-Za-z\s\-']{2,}"),
+    # 罗马数字：同样要求后跟字母文字（"II. EXPERIMENTAL"）
+    re.compile(r"^(?:I{1,3}|IV|V|VI{0,3}|IX|X|XI|XII)\.\s+[A-Za-z]"),
     re.compile(r"^[A-Z][A-Z0-9 ,\-]{4,60}$"),                 # 全大写行
 )
 #: 常见节名整行（可带编号前缀与冒号）

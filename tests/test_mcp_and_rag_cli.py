@@ -102,6 +102,14 @@ class SectionChunkingTest(unittest.TestCase):
         chunks = chunk_text(text, chunk_size=500, overlap=50)
         self.assertEqual(chunks, ["A B\nC D\nE F"])               # 旧回退行为不变
 
+    def test_numeric_junk_lines_are_not_headings(self):
+        """回归：PDF 提取的公式/页码碎片（"1 2"、"0. 8"、"0\\tH"）不得当标题，
+        否则重建后出现一堆 3 字符的垃圾块（实测占 15%）。"""
+        text = "1. Introduction\n\nReal body text.\n1 2\n0. 8\n0\tH\n47 4"
+        chunks = chunk_text(text, chunk_size=500, overlap=50)
+        self.assertEqual(len(chunks), 1)              # 碎片只是正文，不另立小节
+        self.assertTrue(chunks[0].startswith("1. Introduction"))
+
     def test_heading_only_section_keeps_the_heading(self):
         text = "1. Introduction\n\nBody.\n\n2. Appendix\n"
         chunks = chunk_text(text, chunk_size=500, overlap=50)
