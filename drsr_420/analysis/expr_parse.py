@@ -333,6 +333,9 @@ def expr_substitution(func: str, params: list) -> sp.Expr | None:
         if prev is not None:
             expr = expr.subs(symbol, prev)
 
-    expr = expr.n(2)
+    # 不做 expr.n(2) 之类的有效数字舍入：那会把 357.8 压成 3.6e2，系数 ±0.5% 的
+    # 失真在 ~2000 量级的项上放大成 ±30 的函数值偏差——精确拟合（NMSE 1e-29）
+    # 的曲线会"神秘地"不穿过数据点（实测 MRFCompress-Cuboid_20260917-134427）。
+    # 参数已在函数入口按 2 位小数舍入（±0.005，无损量级），此处保持全精度。
     print(f"代入中间变量后的表达式: {expr}")
     return expr
