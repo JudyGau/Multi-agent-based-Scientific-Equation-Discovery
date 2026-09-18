@@ -1,4 +1,4 @@
-# DrSR：基于多智能体的科学方程发现
+# MaSED：基于多智能体的科学方程发现
 
 Multi-agent based Scientific Equation Discovery（符号回归）。
 
