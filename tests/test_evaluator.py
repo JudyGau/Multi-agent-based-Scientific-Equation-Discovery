@@ -184,6 +184,27 @@ class WorkerStderrCaptureTest(unittest.TestCase):
             with open(os.path.join(tmp, 'run.err'), encoding='utf-8') as fp:
                 self.assertIn('captured-line', fp.read())
 
+    def test_cli_tee_exports_results_root_for_workers(self):
+        """CLI 侧的最后一环：setup_output_tee 必须把实验目录交给 worker（环境变量）。"""
+        from drsr_420.cli import main as cli_main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop(sandbox_module.WORKER_LOG_ENV, None)
+                stdout, stderr = sys.stdout, sys.stderr
+                try:
+                    out_fp, err_fp = cli_main.setup_output_tee(tmp)
+                finally:
+                    # setup_output_tee 会替换进程级 sys.stdout/stderr，这里只验证环境
+                    # 变量传递，立刻还原并把文件句柄交回。
+                    sys.stdout, sys.stderr = stdout, stderr
+                try:
+                    self.assertEqual(os.environ.get(sandbox_module.WORKER_LOG_ENV),
+                                     os.path.abspath(tmp))
+                finally:
+                    out_fp.close()
+                    err_fp.close()
+
     def test_worker_process_writes_into_run_err(self):
         """端到端：worker 里方程向 stderr 写的内容出现在实验 run.err。"""
         with tempfile.TemporaryDirectory() as tmp:
