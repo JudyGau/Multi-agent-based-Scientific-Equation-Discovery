@@ -219,6 +219,13 @@ def setup_output_tee(results_root: str):
     err_fp = open(os.path.join(results_root, "run.err"), "a", encoding="utf-8")
     sys.stdout = _Tee(sys.stdout, out_fp)
     sys.stderr = _Tee(sys.stderr, err_fp)
+    # 评估 worker 是 multiprocessing 子进程：它继承环境变量，但看不到这里的
+    # sys.stderr 替换（只继承到控制台 fd）。把实验目录从环境变量传下去，worker
+    # 侧才能用 sandbox.attach_worker_stderr 把自己的 stderr 也旁路进 run.err
+    # ——否则评估里的数值告警只闪在 IDE 控制台，实验产物里查无此物。
+    from drsr_420.evaluation import sandbox as _sandbox
+
+    os.environ[_sandbox.WORKER_LOG_ENV] = os.path.abspath(results_root)
     return out_fp, err_fp
 
 

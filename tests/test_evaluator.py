@@ -1,5 +1,10 @@
 """evaluation/sandbox.py（LocalSandbox 沙箱）单元测试：常驻 worker、超时重建、统一结果契约。"""
+import io
+import os
+import sys
+import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -7,6 +12,7 @@ from drsr_420.core import code_manipulation
 from drsr_420.core import config
 from drsr_420.core import buffer
 from drsr_420.agents import evaluator_agent
+from drsr_420.evaluation import sandbox as sandbox_module
 from drsr_420.evaluation.sandbox import LocalSandbox, _run_evaluation_task, _sample_residuals
 from drsr_420.agents.messages import EvaluationRequest
 
@@ -128,6 +134,69 @@ class LocalSandboxTest(unittest.TestCase):
             self.assertIsNone(res)
         finally:
             sb.close()
+
+
+class WorkerStderrCaptureTest(unittest.TestCase):
+    """第 9 轮：评估 worker 的 stderr 必须能落进实验 run.err。
+
+    背景：worker 是 multiprocessing 子进程，只继承到控制台 fd，看不到主进程
+    sys.stderr 的 run.err tee——20260918-195057 那场实验里成片的
+    scipy RuntimeWarning 因此"只闪在 IDE 控制台，run.err 里查无此物"。
+    """
+
+    NOISY = (
+        "import sys\n"
+        "import numpy as np\n"
+        "_warned = []\n"
+        "def equation(x1, x2, params):\n"
+        "    if not _warned:\n"
+        "        _warned.append(1)\n"
+        "        sys.stderr.write('worker-noise\\n')\n"
+        "    return params[0] * x1 + params[1] * x2 + params[2]\n"
+    )
+
+    def test_noop_without_env(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(sandbox_module.WORKER_LOG_ENV, None)
+            before = sys.stderr
+            sandbox_module.attach_worker_stderr()
+            self.assertIs(sys.stderr, before)
+
+    def test_noop_with_unwritable_root(self):
+        with mock.patch.dict(os.environ, {sandbox_module.WORKER_LOG_ENV: '\x00:/nowhere'}):
+            before = sys.stderr
+            sandbox_module.attach_worker_stderr()   # 打开失败必须静默降级
+            self.assertIs(sys.stderr, before)
+
+    def test_attaches_run_err_when_env_set(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {sandbox_module.WORKER_LOG_ENV: tmp}):
+                before = sys.stderr
+                sys.stderr = io.StringIO()   # 控制台侧换成内存缓冲，测试输出保持干净
+                try:
+                    sandbox_module.attach_worker_stderr()
+                    sys.stderr.write('captured-line\n')
+                    sys.stderr.flush()
+                    tee = sys.stderr
+                finally:
+                    sys.stderr = before
+                tee.close()
+            with open(os.path.join(tmp, 'run.err'), encoding='utf-8') as fp:
+                self.assertIn('captured-line', fp.read())
+
+    def test_worker_process_writes_into_run_err(self):
+        """端到端：worker 里方程向 stderr 写的内容出现在实验 run.err。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {sandbox_module.WORKER_LOG_ENV: tmp}):
+                sb = LocalSandbox(numba_accelerate=False)
+                try:
+                    results, _ = sb.run(self.NOISY, 'run', 'equation',
+                                        make_inputs(), 'data', 30)
+                    self.assertTrue(results[1])
+                finally:
+                    sb.close()
+            with open(os.path.join(tmp, 'run.err'), encoding='utf-8') as fp:
+                self.assertIn('worker-noise', fp.read())
 
 
 TEMPLATE_TEXT = """\

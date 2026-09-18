@@ -1,5 +1,6 @@
 """evaluation/problems.py 单元测试：least_squares 优化、统一返回契约、配置项。"""
 import unittest
+import warnings
 from unittest import mock
 
 import numpy as np
@@ -97,6 +98,100 @@ class HelperTest(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             eop._multi_start_least_squares(always_raise, 3, n_starts=2)
         self.assertIn('boom', str(ctx.exception))
+
+
+def mrf_like_dataset(n=8, seed=7):
+    """量级与 data/MRFCompress-Cuboid 一致的数据集（输出 ~1e2，输入 1~14）。"""
+    rng = np.random.default_rng(seed)
+    X = np.column_stack([rng.uniform(1.0, 5.0, n), rng.uniform(1.0, 14.0, n)])
+    return {'inputs': X, 'outputs': rng.uniform(190.0, 350.0, n)}
+
+
+def free_exponent_equation(l12, l23, params):
+    """LLM 最常写的形态：参数当指数用 → 优化器探到边界附近必然溢出。"""
+    with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
+        return (params[0] + params[1] * l12 ** params[2] + params[3] * l23 ** params[4]
+                + params[5] * (l12 * l23) ** params[6])
+
+
+class ResidualSanitizeTest(unittest.TestCase):
+    """第 9 轮：残差必须先清洗/截断再交给 scipy（RuntimeWarning 治理）。
+
+    实测（修复前）：scale≥1e50 的残差让 trf/common 内部刷出 876 条
+    "overflow encountered in power/square"、"invalid value encountered in cast"，
+    scale=1e200 一档直接 ValueError；修复后同规模扫描 0 条。
+    """
+
+    def test_sanitize_replaces_nonfinite_with_signed_cap(self):
+        out = eop._sanitize_residual(
+            np.array([1.0, np.nan, np.inf, -np.inf, 1e300]), cap=1e12)
+        np.testing.assert_array_equal(out, [1.0, 1e12, 1e12, -1e12, 1e12])
+
+    def test_sanitize_caps_huge_finite_values(self):
+        """有限但巨大的残差同样会击穿 scipy 内部——必须一起截断。"""
+        out = eop._sanitize_residual(np.array([-1e60, 1e150]), cap=1e12)
+        np.testing.assert_array_equal(out, [-1e12, 1e12])
+
+    def test_sanitize_returns_same_object_when_in_range(self):
+        res = np.array([0.1, -3.0, 0.0])
+        self.assertIs(eop._sanitize_residual(res, cap=1e12), res)  # 常规路径零拷贝
+
+    def test_residual_cap_follows_output_scale(self):
+        self.assertEqual(eop.residual_cap(np.array([1.0, 350.0])), eop.RESIDUAL_CAP)
+        self.assertEqual(eop.residual_cap(np.array([1e14])), eop.RESIDUAL_CAP_RATIO * 1e14)
+        self.assertEqual(eop.residual_cap(np.array([np.nan])), eop.RESIDUAL_CAP)
+
+    def test_residual_handed_to_scipy_is_bounded(self):
+        """契约测试：无论方程在极端参数下返回什么，交给 scipy 的残差都有界。"""
+        dataset = mrf_like_dataset()
+        captured = {}
+
+        def fake_least_squares(fun, x0, **kwargs):
+            captured['fun'] = fun
+            return mock.Mock(fun=np.asarray(fun(x0), dtype=float),
+                             x=np.asarray(x0, dtype=float))
+
+        with mock.patch('scipy.optimize.least_squares', side_effect=fake_least_squares):
+            eop.evaluate(dataset, free_exponent_equation, seed=0)
+
+        cap = eop.residual_cap(dataset['outputs'])
+        residual = captured['fun'](np.full(eop.MAX_NPARAMS, 1000.0))  # 参数顶到上界
+        self.assertTrue(np.isfinite(residual).all())
+        self.assertLessEqual(float(np.abs(residual).max()), cap)
+
+    def test_overflow_prone_equation_emits_no_runtime_warning(self):
+        """把告警升级成异常：溢出的 free-exponent 方程不得再刷 RuntimeWarning。
+
+        修复前用同一数据集实测：seed=4/5/9 均触发
+        "overflow encountered in power"（数据来自 20260918-195057 实验）。
+        """
+        dataset = mrf_like_dataset()
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            for seed in range(10):
+                try:
+                    eop.evaluate(dataset, free_exponent_equation, seed=seed)
+                except RuntimeWarning as exc:  # pragma: no cover - 修复后不再触发
+                    self.fail(f'seed={seed} 触发 RuntimeWarning: {exc}')
+                except Exception:
+                    pass  # 起点全非有限等真实原因由其它用例覆盖
+
+    def test_huge_residual_multi_start_stays_quiet_and_finite(self):
+        """1e150 量级的残差（exp 型方程半溢出区间）曾经刷 876 条告警。"""
+        X = np.linspace(1.0, 5.0, 8)
+        y = np.linspace(190.0, 350.0, 8)
+        cap = eop.residual_cap(y)
+
+        def capped_residual(params):
+            huge = 1e150 * (params[0] + 0.5 * params[1]) + X * params[2] - y
+            return eop._sanitize_residual(huge, cap)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter('error')
+            best_x, best_loss = eop._multi_start_least_squares(
+                capped_residual, eop.MAX_NPARAMS, n_starts=2, seed=0)
+        self.assertIsNotNone(best_x)
+        self.assertTrue(np.isfinite(best_loss))
 
 
 if __name__ == '__main__':

@@ -7,6 +7,8 @@
 
 * ``Sandbox`` / ``LocalSandbox``：常驻 worker 进程池 + 超时/崩溃重建 + numba 可选加速
 * ``_eval_worker`` / ``_run_evaluation_task``：worker 侧任务函数
+* ``attach_worker_stderr`` / ``_WorkerStderrTee``：把 worker 的 stderr 旁路进
+  实验的 ``run.err``（子进程只继承到控制台 fd，见注释）
 * ``_sample_to_program`` / ``_trim_function_body`` / ``_FunctionLineVisitor`` /
   ``_calls_ancestor``：骨架 → 可运行程序的编译与校验
 * ``_sample_residuals``：残差矩阵采样
@@ -18,6 +20,8 @@ from __future__ import annotations
 import ast
 import copy
 import multiprocessing
+import os
+import sys
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -28,6 +32,77 @@ import numpy as np
 from drsr_420.core import code_manipulation
 from drsr_420.evaluation import accelerate as evaluator_accelerate
 from drsr_420.evaluation import problems as evaluate_on_problems
+
+#: 主进程通过该环境变量把实验目录告诉 worker 子进程（``cli.main.setup_output_tee``
+#: 设置）。multiprocessing 的 spawn 子进程继承环境变量，但 **stderr 只继承到
+#: 控制台 fd**——主进程的 run.out/run.err 是通过替换 ``sys.stderr`` 实现的，子进程
+#: 里根本看不到这个替换。结果就是：评估过程中的数值告警（scipy/numpy 的
+#: RuntimeWarning）只在 IDE 控制台一闪而过，实验产物里查不到（第 9 轮实测教训）。
+WORKER_LOG_ENV = 'DSR_RESULTS_ROOT'
+
+
+class _WorkerStderrTee:
+    """worker 侧 stderr 分流：控制台 + 实验 run.err。
+
+    每次 write 都 flush：worker 是常驻 daemon 进程，超时/崩溃时会被
+    ``terminate()``，留在缓冲区里的告警会直接丢掉——而告警恰恰是我们最想留下的。
+    """
+
+    def __init__(self, console, fp):
+        self._console = console
+        self._fp = fp
+
+    def write(self, data):
+        for stream in (self._console, self._fp):
+            try:
+                stream.write(data)
+            except Exception:
+                pass
+        try:
+            self._fp.flush()
+        except Exception:
+            pass
+
+    def flush(self):
+        for stream in (self._console, self._fp):
+            try:
+                stream.flush()
+            except Exception:
+                pass
+
+    def fileno(self):
+        # 与 cli.main._Tee 同样的考虑：第三方库会拿 sys.stderr.fileno() 探测终端，
+        # 透传控制台 fd（run.err 的旁路写入不受影响）。
+        return self._console.fileno()
+
+    def isatty(self):
+        try:
+            return bool(self._console.isatty())
+        except Exception:
+            return False
+
+    def close(self):
+        """关闭旁路文件句柄（worker 进程退出时由解释器兜底，主要供测试收尾）。"""
+        try:
+            self._fp.close()
+        except Exception:
+            pass
+
+
+def attach_worker_stderr() -> None:
+    """把当前（worker）进程的 stderr 也写进实验目录的 run.err。
+
+    失败一律静默降级：这只是诊断通道，任何环境问题都不该影响评估本身。
+    """
+    root = os.environ.get(WORKER_LOG_ENV)
+    if not root or isinstance(sys.stderr, _WorkerStderrTee):
+        return
+    try:
+        fp = open(os.path.join(root, 'run.err'), 'a', encoding='utf-8')
+    except (OSError, ValueError):   # 路径非法时 open 抛 ValueError 而不是 OSError
+        return
+    sys.stderr = _WorkerStderrTee(sys.stderr, fp)
+
 
 class _FunctionLineVisitor(ast.NodeVisitor):
     """ Visitor that finds the last line number of a function with a given name."""
@@ -120,6 +195,7 @@ class Sandbox(ABC):
 
 def _eval_worker(task_queue: multiprocessing.Queue, worker_id: int) -> None:
     """常驻评估 worker：循环从任务队列取任务，结果经任务自带的管道送回主进程。"""
+    attach_worker_stderr()  # 评估过程中的数值告警要能落到 run.err，而不是只在控制台一闪
     while True:
         task = task_queue.get()
         if task is None:
