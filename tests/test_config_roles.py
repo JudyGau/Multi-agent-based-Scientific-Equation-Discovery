@@ -665,7 +665,7 @@ class ExplainRoleWiringTest(unittest.TestCase):
 
         captured = {}
 
-        def fake_re_act(client, content):
+        def fake_re_act(client, content, tool_refs=None):
             captured["client"] = client
             return "EXPLAINED"
 
@@ -675,8 +675,9 @@ class ExplainRoleWiringTest(unittest.TestCase):
                 "Good": [{"sample_order": "7", "function": "def f():\n    return 1"}],
             })
             with mock.patch.object(explain_mod, "explain_re_act", fake_re_act), \
+                 mock.patch.object(explain_mod, "retrieve_rag", return_value=[]), \
                  mock.patch.object(explain_mod, "build_explain_content",
-                                   lambda func, exp, background=None: "PROMPT"), \
+                                   lambda func, exp, **kwargs: "PROMPT"), \
                  mock.patch("builtins.print"):
                 explain_mod.explain_best_sample(
                     str(results_root), "func", "7", role_clients=role_clients)
@@ -690,7 +691,9 @@ class ExplainRoleWiringTest(unittest.TestCase):
         self.assertIsNotNone(captured.get("client"),
                              "explain 应当从 role_clients 取到 explain 角色的客户端")
         self.assertEqual(captured["client"].model, sentinel.model)
-        self.assertEqual(written, "EXPLAINED")
+        # 正文之后必须附加参考文献小节（无检索结果时也要显式说明）
+        self.assertTrue(written.startswith("EXPLAINED"))
+        self.assertIn("## 参考文献", written)
 
     def test_without_role_clients_it_resolves_the_explain_role_itself(self):
         """直接调用（不经 CLI）时也要按注册表解析 ``explain`` 角色取客户端。
@@ -716,7 +719,8 @@ class ExplainRoleWiringTest(unittest.TestCase):
                 "Good": [{"sample_order": "7", "function": "def f():\n    return 1"}],
             })
             with mock.patch.object(explain_mod, "build_explain_content",
-                                   lambda func, exp, background=None: "PROMPT"), \
+                                   lambda func, exp, **kwargs: "PROMPT"), \
+                 mock.patch.object(explain_mod, "retrieve_rag", return_value=[]), \
                  mock.patch.object(explain_mod.llm, "build_role_client",
                                    side_effect=RuntimeError("档案不存在")), \
                  mock.patch("builtins.print") as printer:
@@ -746,15 +750,17 @@ class ExplainBackgroundInjectionTest(unittest.TestCase):
     def test_prompt_contains_background_with_priority(self):
         from drsr_420.analysis import explain as explain_mod
 
-        prompt = explain_mod.build_explain_content(
-            self._FUNC, self._EXP, background="材料是磁流变液（MRF）；lambda12 = L1/L2 是颗粒轴长比。")
+        with mock.patch.object(explain_mod, "retrieve_rag", return_value=[]):
+            prompt = explain_mod.build_explain_content(
+                self._FUNC, self._EXP, background="材料是磁流变液（MRF）；lambda12 = L1/L2 是颗粒轴长比。")
         self.assertIn("材料是磁流变液（MRF）", prompt)
         self.assertIn("以背景为准", prompt, "背景块必须声明其优先级高于文献摘要与先验")
 
     def test_prompt_without_background_has_no_background_block(self):
         from drsr_420.analysis import explain as explain_mod
 
-        prompt = explain_mod.build_explain_content(self._FUNC, self._EXP, background=None)
+        with mock.patch.object(explain_mod, "retrieve_rag", return_value=[]):
+            prompt = explain_mod.build_explain_content(self._FUNC, self._EXP, background=None)
         self.assertNotIn("材料体系与自变量定义的准绳", prompt)
 
     def test_explain_best_sample_passes_snapshot_background(self):
@@ -762,7 +768,7 @@ class ExplainBackgroundInjectionTest(unittest.TestCase):
 
         captured = {}
 
-        def fake_re_act(client, content):
+        def fake_re_act(client, content, tool_refs=None):
             captured["content"] = content
             return "EXPLAINED"
 
@@ -773,6 +779,7 @@ class ExplainBackgroundInjectionTest(unittest.TestCase):
                 "background": "磁流变液（MRF）背景词：lambda12/lambda23 是颗粒轴长比。",
             })
             with mock.patch.object(explain_mod, "explain_re_act", fake_re_act), \
+                 mock.patch.object(explain_mod, "retrieve_rag", return_value=[]), \
                  mock.patch("builtins.print"):
                 explain_mod.explain_best_sample(
                     str(results_root), self._FUNC, "87",
@@ -787,7 +794,7 @@ class ExplainBackgroundInjectionTest(unittest.TestCase):
 
         captured = {}
 
-        def fake_re_act(client, content):
+        def fake_re_act(client, content, tool_refs=None):
             captured["content"] = content
             return "EXPLAINED"
 
@@ -795,6 +802,7 @@ class ExplainBackgroundInjectionTest(unittest.TestCase):
             results_root = pathlib.Path(tmp)
             _write_json(results_root / "experiences.json", {"Good": [self._EXP]})
             with mock.patch.object(explain_mod, "explain_re_act", fake_re_act), \
+                 mock.patch.object(explain_mod, "retrieve_rag", return_value=[]), \
                  mock.patch("builtins.print"):
                 explain_mod.explain_best_sample(
                     str(results_root), self._FUNC, "87",

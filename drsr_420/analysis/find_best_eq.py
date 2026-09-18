@@ -1,4 +1,4 @@
-"""收尾分析编排：最佳样本 → 物理解释 → 敏感度剪枝与可视化。
+"""收尾分析编排：最佳样本 → 敏感度剪枝与可视化 → 物理解释。
 
 位置
 ----
@@ -11,12 +11,19 @@
 
     find_best_eq(results_root)
       ├── find_best_sample()      扫描 samples/*.json 取最高分样本
-      ├── explain.explain_best_sample()      物理解释 → explain.md（可失败，仅告警）
-      └── prune_and_visualize()
-            ├── expr_parse.expr_substitution()   骨架字符串 → SymPy 表达式
-            ├── sensitivity_prune.SensitivityPruner.prune()  敏感度剪枝
-            ├── expr_viz.safe_preview() / render_expr_trees()  预览图与树图
-            └── expr_curves.plot_data_curves()  剪枝前后曲线 + 数据点（可失败，仅告警）
+      ├── prune_and_visualize()   **先剪枝**（解释要覆盖剪枝结果与剪枝过程）
+      │     ├── expr_parse.expr_substitution()   骨架字符串 → SymPy 表达式
+      │     ├── sensitivity_prune.SensitivityPruner.prune()  敏感度剪枝
+      │     ├── prune_report.compare_fits()      剪枝前后在训练数据上的拟合对比
+      │     ├── expr_viz.safe_preview() / render_expr_trees()  预览图与树图
+      │     └── expr_curves.plot_data_curves()  剪枝前后曲线 + 数据点（可失败，仅告警）
+      │     └── 返回剪枝摘要 dict（剪掉了哪些项 + 敏感度 + 拟合变化）
+      └── explain.explain_best_sample(pruning=摘要)
+            把剪枝前/后表达式、被移除项与拟合数值一起交给解释 LLM → explain.md
+            （含参考文献清单：知识库检索结果 + 解释过程中的工具检索结果）
+
+**顺序不能反过来**：explain.md 必须解释"剪枝后的表达式"并讲清"剪掉了哪些项、为什么
+合理"，这两件事都要求剪枝结果先算出来。
 
 本模块只做"取样本 + 步骤编排 + 兜底告警"，具体逻辑见上表各自的模块。
 """
@@ -30,6 +37,7 @@ import sympy as sp
 from drsr_420.analysis.expr_parse import expr_substitution
 from drsr_420.analysis.expr_viz import render_expr_trees, safe_preview
 from drsr_420.analysis.explain import explain_best_sample
+from drsr_420.analysis.prune_report import compare_fits, format_fit_summary, load_training_data
 from drsr_420.analysis.sensitivity_prune import SensitivityPruner
 
 
@@ -66,12 +74,17 @@ def _parse_symbols(func: str) -> tuple[str, list[str]] | None:
 
 
 def prune_and_visualize(results_root: str, func: str, params,
-                        threshold: float, sample_range: tuple) -> None:
-    """基于敏感度分析剪枝最优公式，并保存表达式预览图与表达式树图。"""
+                        threshold: float, sample_range: tuple) -> dict | None:
+    """基于敏感度分析剪枝最优公式，保存表达式预览图与表达式树图，返回剪枝摘要。
+
+    返回值是给 ``explain`` 用的剪枝摘要（含剪枝前/后表达式、被移除项及其敏感度、
+    剪枝统计、剪枝前后在训练数据上的拟合对比）；解析/剪枝失败时返回 ``None``，
+    调用方据此让解释 LLM 知道"本次没有剪枝结果"。
+    """
     parsed = _parse_symbols(func)
     if parsed is None:
         print("[WARN] 无法从样本中解析 Dependent/Independents，跳过剪枝。")
-        return
+        return None
     dependent, sym_names = parsed
     symbols = sp.symbols(sym_names)
 
@@ -79,7 +92,7 @@ def prune_and_visualize(results_root: str, func: str, params,
     expr = expr_substitution(func, params)
     if expr is None:
         print("[WARN] 表达式解析失败，跳过剪枝。")
-        return
+        return None
 
     print(f"剪枝前的表达式为 {dependent} =")
     sp.pprint(expr)
@@ -92,7 +105,7 @@ def prune_and_visualize(results_root: str, func: str, params,
         pruned_expr = None
 
     if pruned_expr is not None:
-        # n(2) 仅用于控制台打印/预览图的观感；曲线绘制必须用全精度表达式
+        # n(2) 仅用于控制台打印/预览图的观感；曲线绘制与解释必须用全精度表达式
         # （2 位有效数字会在 ~2000 量级的项上引入 ±30 的偏差，见 expr_parse 的教训）
         display_expr = pruned_expr.n(2)
         print(f"剪枝后的表达式为 {dependent} =")
@@ -100,6 +113,11 @@ def prune_and_visualize(results_root: str, func: str, params,
         safe_preview(display_expr, f'{results_root}/prunedExpr.png')
 
     render_expr_trees(results_root, expr, pruned_expr)
+
+    # 剪枝前后在训练数据上的拟合对比：解释 LLM 要靠它论证"剪掉这些项是否合理"
+    data = load_training_data(results_root)
+    fit = compare_fits(dependent, sym_names, data, expr, pruned_expr)
+    print(f"[PRUNE] {format_fit_summary(fit)}")
 
     # 剪枝完成 → 剪枝前后表达式曲线 + 数据点（每个自变量一幅，人工检查贴合度）。
     # 与 expr.png 同级别的"给人看"产物：失败只告警，不拖垮收尾流程。
@@ -109,13 +127,35 @@ def prune_and_visualize(results_root: str, func: str, params,
     except Exception as e:
         print(f"[WARN] 剪枝前后曲线图生成失败（跳过）: {e}")
 
+    return {
+        "dependent": dependent,
+        "sym_names": list(sym_names),
+        "threshold": threshold,
+        "sample_range": tuple(sample_range),
+        "substituted_expr": sp.sstr(expr),
+        "pruned_expr": sp.sstr(pruned_expr) if pruned_expr is not None else None,
+        "nodes_visited": pruner.stats.nodes_visited,
+        "nodes_pruned": pruner.stats.nodes_pruned,
+        "prune_rate": pruner.stats.prune_rate,
+        "removed": [
+            {
+                "kind": r.node_type,
+                "term": sp.sstr(r.removed),
+                "sensitivity": r.sensitivity,
+                "depth": r.depth,
+            }
+            for r in pruner.stats.records
+        ],
+        "fit": fit,
+    }
+
 
 def find_best_eq(results_root: str, threshold: float = 0.1,
                  sample_range: tuple = (1, 14), role_clients=None):
-    """收尾：寻找最优样本 → 生成物理解释 → 敏感度剪枝与可视化。
+    """收尾：寻找最优样本 → 敏感度剪枝与可视化 → 生成物理解释（含剪枝分析）。
 
-    主函数仅做扁平编排，具体逻辑拆分到 find_best_sample / explain_best_sample /
-    prune_and_visualize，避免原先 try-with-for-if-try 的深嵌套。
+    主函数仅做扁平编排，具体逻辑拆分到 find_best_sample / prune_and_visualize /
+    explain_best_sample，避免原先 try-with-for-if-try 的深嵌套。
 
     Args:
         role_clients: ``llm.roles.RoleClients``；物理解释按其中的 ``explain`` 角色
@@ -130,16 +170,17 @@ def find_best_eq(results_root: str, threshold: float = 0.1,
     score, path, func, params = best
     print(f"[BEST] score={score} file={path}")
 
-    # 物理解释（按 sample_order 匹配 Good 经验，含 RAG 文献注入）
+    # 先剪枝：explain.md 要解释"剪枝后的表达式"与"剪掉了哪些项、为什么合理"，
+    # 剪枝摘要（含剪枝前后在训练数据上的拟合对比）必须先算出来。
+    pruning = prune_and_visualize(results_root, func, params, threshold, sample_range)
+
+    # 物理解释（按 sample_order 匹配 Good 经验，含 RAG 文献注入与剪枝分析）
     order_match = re.search(r"samples_(\d+)", path)
     if not order_match:
         print("[WARN] 无法从样本文件名解析 sample_order，跳过物理解释。")
     else:
         explain_best_sample(results_root, func, order_match.group(1),
-                            role_clients=role_clients)
-
-    # 敏感度剪枝 + 表达式预览/树图
-    prune_and_visualize(results_root, func, params, threshold, sample_range)
+                            role_clients=role_clients, pruning=pruning)
 
 
 if __name__ == "__main__":

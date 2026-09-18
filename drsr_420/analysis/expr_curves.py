@@ -24,7 +24,6 @@
 """
 from __future__ import annotations
 
-import json
 import os
 
 import numpy as np
@@ -32,24 +31,10 @@ import sympy as sp
 
 from drsr_420.analysis.expr_parse import expr_substitution
 from drsr_420.analysis.find_best_eq import _parse_symbols, find_best_sample
+from drsr_420.analysis.prune_report import load_training_data, resolve_csv as _resolve_csv
 from drsr_420.analysis.sensitivity_prune import SensitivityPruner
 
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-
-def _resolve_csv(data_csv: str, results_root: str = "") -> str | None:
-    """data_csv 依次按 results_root、项目根、cwd 解析；兼容绝对路径。
-
-    config_snapshot 里通常存项目根相对路径（./data/...），自包含实验目录
-    （如测试夹具）则是 results_root 相对路径——两处都要试。
-    """
-    if os.path.isabs(data_csv):
-        return data_csv if os.path.isfile(data_csv) else None
-    for base in (results_root, _REPO_ROOT, os.getcwd()):
-        p = os.path.join(base, data_csv)
-        if os.path.isfile(p):
-            return p
-    return None
+__all__ = ["plot_data_curves", "plot_expr_curves", "_resolve_csv"]
 
 
 def plot_data_curves(results_root: str, dependent: str, sym_names: list[str],
@@ -64,19 +49,10 @@ def plot_data_curves(results_root: str, dependent: str, sym_names: list[str],
     matplotlib.use("Agg")            # 无头环境；必须在 pyplot 之前
     import matplotlib.pyplot as plt
 
-    # 训练数据（CSV 列名 = 自变量名 + 因变量名）
-    snap_path = os.path.join(results_root, "config_snapshot.json")
-    try:
-        with open(snap_path, "r", encoding="utf-8") as f:
-            data_csv = json.load(f)["data_csv"]
-    except Exception as e:
-        print(f"[WARN] 读取 config_snapshot.json 失败，跳过曲线绘制: {e}")
+    # 训练数据（CSV 列名 = 自变量名 + 因变量名）；定位与读取复用 prune_report
+    data = load_training_data(results_root)
+    if data is None:
         return []
-    csv_path = _resolve_csv(data_csv, results_root)
-    if csv_path is None:
-        print(f"[WARN] 数据文件不存在: {data_csv}，跳过曲线绘制。")
-        return []
-    data = np.genfromtxt(csv_path, delimiter=",", names=True)
     if dependent not in data.dtype.names:
         print(f"[WARN] 数据里没有因变量列 {dependent}，跳过曲线绘制。")
         return []
