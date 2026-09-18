@@ -28,9 +28,37 @@ LLM 写出来的"类 Python"骨架与 SymPy 的语义有三处系统性偏差，
 """
 from __future__ import annotations
 
+import math
 import re
 
 import sympy as sp
+
+#: 参数代入表达式时保留的**有效数字**位数（不是小数点后位数）。
+#:
+#: 旧实现是 ``round(x, 2)``（小数点后 2 位），对"小系数 × 巨量项"的骨架是灾难：
+#: 实测 experiments/MRFCompress-Cuboid_20260918-195057 的最优样本，params[3]=0.0074
+#: 被舍成 0.01，而它乘的 (lambda23**3.59 - 1) 量级到 1e4 —— MSE 从 2.9e-4 飙到 186
+#: （六个数数量级）。于是收尾产物解释的根本不是实验选出的那个模型：剪枝在错的
+#: 表达式上做、曲线偏离数据、explain.md 拿 186 去论证"剪枝合理"。
+#: 换成 6 位有效数字后，同一组参数 MSE = 2.917e-4（+0.4%），既保住拟合，写进
+#: 表达式里也不比 "0.01" 长多少（0.0074、193.054、8.3557）。
+PARAM_SIG_DIGITS = 6
+
+
+def _round_params(params, sig: int = PARAM_SIG_DIGITS) -> list:
+    """按有效数字舍入参数；非数值/NaN/inf 原样保留（由后续解析决定成败）。"""
+    out = []
+    for x in params:
+        try:
+            value = float(x)
+        except (TypeError, ValueError):
+            out.append(x)
+            continue
+        if value == 0.0 or not math.isfinite(value):
+            out.append(value)
+        else:
+            out.append(float(f"%.{sig}g" % value))
+    return out
 
 
 def find_matching_paren(text: str, open_idx: int) -> int:
@@ -300,7 +328,7 @@ def expr_substitution(func: str, params: list) -> sp.Expr | None:
     Python 的 False 而丢掉该分支——该写法在本项目的提示词里并未出现，
     故未纳入改写范围。
     """
-    params = [round(x, 2) for x in (params or [])]
+    params = _round_params(params or [])
 
     # 解析自变量列表：兼容逗号、中文逗号、空白分隔
     independent_match = re.search(r'Independents:\s*(.*)', func)

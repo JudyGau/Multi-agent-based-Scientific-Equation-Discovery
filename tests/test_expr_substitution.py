@@ -53,10 +53,26 @@ class ExprSubstitutionTest(_ExprTestCase):
         expr = expr_substitution(func, [2.0, 3.0, 1.0])
         self.assertEqual(sp.simplify(expr - (2 * X1 + 3 * X2 + 1)), 0)
 
-    def test_rounds_params_to_two_decimals(self):
+    def test_params_keep_significant_digits_not_two_decimals(self):
+        """回归：参数按**有效数字**舍入，而不是小数点后 2 位。
+
+        实测 20260918-195057：params[3]=0.0074 被舍成 0.01，乘上量级 1e4 的项后
+        MSE 从 2.9e-4 变成 186——收尾产物（剪枝/曲线/explain.md）解释的将是另一个
+        模型。定点 2 位小数对"小系数 × 巨量项"的骨架必须废弃。
+        """
         func = _spec(["return params[0]*x1"])
         expr = expr_substitution(func, [2.3456])
-        self.assertEqual(sp.simplify(expr - sp.Rational(235, 100) * X1), 0)
+        self.assertEqual(sp.simplify(expr - sp.Rational(23456, 10000) * X1), 0)
+
+        func = _spec(["return params[0]*x1"])
+        small = expr_substitution(func, [0.0074])
+        self.assertEqual(sp.simplify(small - sp.Rational(74, 10000) * X1), 0,
+                         "小系数必须保住自身量级（0.0074 不能变成 0.01）")
+
+    def test_big_params_are_rounded_to_six_significant_digits(self):
+        func = _spec(["return params[0]*x1"])
+        expr = expr_substitution(func, [193.054296])
+        self.assertAlmostEqual(float(expr.coeff(X1)), 193.054, places=6)
 
     def test_tuple_unpacking_of_params(self):
         """回归：p0, p1, ... = params[:n] 解包写法必须按位置代参
