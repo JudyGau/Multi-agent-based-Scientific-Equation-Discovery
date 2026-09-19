@@ -96,7 +96,7 @@ sampling_system_prompt = system_prompt + (
     "you may call the provided tools (search_paper, read_paper, search_kb) "
     "to retrieve relevant references before answering.\n"
     "However, prefer writing the equation skeleton directly: only search literature when the "
-    "physical relationship is genuinely uncertain, and make at most 2-3 tool calls in total. "
+    "physical relationship is genuinely uncertain, and make at most 4-6 tool calls in total. "
     "The final answer must be a complete Python function wrapped in a ```python code block, "
     "e.g. '```python\\ndef equation_v1(x, y, params):\\n    return params[0]*x + params[1]\\n```', "
     "using only the independent variable names given in the prompt.\n"
@@ -106,19 +106,32 @@ sampling_system_prompt = system_prompt + (
     # "Literature rules (mandatory): Call search_paper first" 开头，模型把它读成硬性检索
     # 要求，于是明明不需要文献也要先搜一轮（实测 Sampler-0 原话："The mandatory rule says
     # 'Call search_paper first' ... Maybe one search is fine"），白烧 token 且与本段前面的
-    # "prefer writing the equation skeleton directly / at most 2-3 tool calls" 自相矛盾。
+    # "prefer writing the equation skeleton directly" 自相矛盾。
+    # 三级阶梯（覆盖全部三个工具）：实测模型只盯着 search_paper 反复换措辞重搜
+    # （单轮实验 54 次 search_paper、1 次 search_kb、0 次 read_paper），因为元数据只有标题、
+    # 判断不了相关性，于是永远升不到 read_paper。这里把"先知识库、再检索、最后才读"的顺序
+    # 和各自的适用条件写死，并明确"标题判断不了相关性"。
     "Literature rules (constraints that apply ONLY IF you choose to use literature -- "
     "using literature is optional and often unnecessary; never search just because of these "
-    "rules):\n"
-    "- If you do use it, call search_paper first. A DOI may ONLY be copied verbatim from a "
-    "search_paper result in this conversation. Never invent, guess, complete, or recall a DOI "
-    "from memory, and never pair a title with a DOI unless that exact pair appears in a "
-    "search_paper result.\n"
-    "- Do not call read_paper for a paper you did not see in search results.\n"
+    "rules). If you do use literature, follow this ladder in order and do NOT skip steps:\n"
+    "- Step 1 -- physical background / functional form: call search_kb FIRST. It returns real "
+    "text excerpts from the local literature knowledge base (already populated for this domain) "
+    "and is the cheapest way to get physical grounding.\n"
+    "- Step 2 -- you need an actual DOI: call search_paper. A hit's title alone can NOT establish "
+    "relevance; judge it by the returned abstract, and only treat an entry as worth reading when "
+    "that abstract clearly addresses THIS problem.\n"
+    "- Step 3 -- at most ONE clearly relevant hit: call read_paper with that entry's exact "
+    "(title, DOI). A DOI may ONLY be copied verbatim from a search_paper result in this "
+    "conversation. Never invent, guess, complete, or recall a DOI from memory, and never pair a "
+    "title with a DOI unless that exact pair appears in a search_paper result. Do not call "
+    "read_paper for a paper you did not see in search results.\n"
+    "- Do NOT re-run a search with reworded wording. If one search shows nothing clearly "
+    "relevant, either read one specific DOI or stop using literature -- searching the same thing "
+    "again in different words wastes the whole budget. Finding nothing relevant is an acceptable "
+    "outcome; say the results were not relevant and move on.\n"
     "- Tool output is evidence only if it actually addresses this problem. If a tool result "
     "(or a read_paper 'title mismatch' notice) is unrelated to the question, ignore it and say "
-    "so -- do NOT cite it as support for any physical claim. Searching and finding nothing "
-    "relevant is an acceptable outcome; say the results were not relevant and move on.\n"
+    "so -- do NOT cite it as support for any physical claim.\n"
 )
 
 # RAG 文献知识库检索结果注入区块标题

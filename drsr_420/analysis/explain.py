@@ -67,12 +67,16 @@ def _clip(text, limit: int = _EXPR_CHAR_LIMIT) -> str:
     return text[:limit] + f" …（已截断，共 {len(text)} 字符）"
 
 
-def explain_re_act(client: llm.LLMClient, content: str, tool_refs: list | None = None) -> str | None:
+def explain_re_act(client: llm.LLMClient, content: str, tool_refs: list | None = None,
+                   max_tool_rounds: int = 6) -> str | None:
     """ReAct 循环：流式对话，模型调工具就执行并回传，直到它给出最终答复。
 
     Args:
         tool_refs: 可选的列表；模型在本轮里通过 ``search_paper`` / ``search_kb`` /
             ``read_paper`` 检索到的文献会被追加进去，供调用方生成参考文献清单。
+        max_tool_rounds: 工具轮次上限。此前是 ``while True`` 且**没有任何上限**——模型
+            只要一直发起工具调用，收尾解释就永远不返回（采样侧的 ToolCallerAgent 一直有
+            4 轮兜底，这里漏了）。达到上限时返回当前响应，策略与 ToolCallerAgent 一致。
     """
     if client is None:
         return None
@@ -82,6 +86,7 @@ def explain_re_act(client: llm.LLMClient, content: str, tool_refs: list | None =
             {"role": "user", "content": content},
         ]
 
+        tool_rounds = 0
         while True:
             # 流式迭代：reasoning 与 content 按到达顺序实时打印增量（网络层已是 SSE 流式）
             resp = None
@@ -117,7 +122,8 @@ def explain_re_act(client: llm.LLMClient, content: str, tool_refs: list | None =
 
             # 如果调了 tool，执行后回传
             if tool_calls:
-                print("调用了工具：", tool_calls)
+                tool_rounds += 1
+                print(f"调用了工具（第 {tool_rounds}/{max_tool_rounds} 轮）：", tool_calls)
 
                 for tc in tool_calls:
                     fn_name = tc.get('function', {}).get('name', '')
@@ -130,6 +136,11 @@ def explain_re_act(client: llm.LLMClient, content: str, tool_refs: list | None =
                         "tool_call_id": tc.get('id', ''),
                         "content": result
                     })
+
+                # 达到上限强制收尾：与 ToolCallerAgent 同策略，避免无限检索不返回
+                if tool_rounds >= max_tool_rounds:
+                    print(f"[explain] 达到工具轮次上限（{max_tool_rounds}），强制返回当前响应")
+                    return resp.get('content', '') or resp.get('reasoning_content', '')
             # 如果未调用，则跳出循环
             else:
                 return resp.get('content', '')

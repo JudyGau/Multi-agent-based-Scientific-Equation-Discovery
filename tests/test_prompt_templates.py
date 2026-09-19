@@ -105,6 +105,23 @@ class SamplingSystemPromptTest(unittest.TestCase):
     def test_irrelevant_tool_output_must_not_be_cited(self):
         self.assertIn("unrelated to the question, ignore it", pc.sampling_system_prompt)
 
+    def test_literature_ladder_covers_all_three_tools_in_order(self):
+        """三级阶梯必须写清顺序与各自适用条件（覆盖 search_kb/search_paper/read_paper）。
+
+        实测缺陷：模型只盯着 search_paper 反复换措辞重搜（54 次 search_paper、
+        1 次 search_kb、0 次 read_paper），因为元数据只有标题、判断不了相关性，
+        于是永远升不到 read_paper。
+        """
+        text = pc.sampling_system_prompt
+        self.assertIn("search_kb FIRST", text)
+        self.assertIn("title alone can NOT establish relevance", text)
+        self.assertIn("at most ONE clearly relevant hit", text)
+        self.assertIn("Do NOT re-run a search with reworded wording", text)
+
+    def test_tool_call_budget_was_raised(self):
+        # 一条完整阶梯（search_kb -> search_paper -> read_paper）本身就要 3 轮
+        self.assertIn("at most 4-6 tool calls", pc.sampling_system_prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

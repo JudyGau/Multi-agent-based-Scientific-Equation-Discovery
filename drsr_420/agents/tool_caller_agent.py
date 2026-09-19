@@ -25,6 +25,11 @@ class ToolCallerAgent(BaseAgent):
                     返回字段含 content / reasoning_content / tool_calls。
         tool_executor: 可调用对象 (name, args) -> str，默认使用 tool_runner.mcp_call_tool。
         max_tool_rounds: 单个样本内工具调用轮次上限，防止模型无限检索文献。
+
+    上限取 6 而不是 4：现在提示词要求"先 search_kb 拿物理背景 → 再 search_paper 拿 DOI
+    → 最后 read_paper 读一篇"，一条完整阶梯本身就要 3 轮；旧的 4 轮在模型顺手多搜一次时
+    就会被截断，read_paper 还没轮到就被强制收尾（实测出现过 54 次 search_paper / 0 次
+    read_paper）。运行时的真实预算是提示词里写的 4-6 次工具调用，这里只是兜底上限。
     """
 
     SPEC = AgentSpec(
@@ -42,7 +47,7 @@ class ToolCallerAgent(BaseAgent):
         notes="complete() 恒返回 list（repeat==1 也返回长度为 1 的 list）。",
     )
 
-    def __init__(self, llm_client, tool_executor=None, max_tool_rounds: int = 4):
+    def __init__(self, llm_client, tool_executor=None, max_tool_rounds: int = 6):
         self._llm_client = llm_client
         if tool_executor is None:
             from drsr_420.knowledge.tool_runner import mcp_call_tool

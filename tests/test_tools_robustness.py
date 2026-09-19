@@ -140,5 +140,57 @@ class SearchPaperYearTest(unittest.TestCase):
         self.assertEqual(out[0]["authors"], [])
 
 
+class SearchPaperAbstractTest(unittest.TestCase):
+    """摘要字段：它能决定模型是否升级去 read_paper，不能是摆设。
+
+    实测背景：只有标题时模型判断不了相关性，于是反复换措辞重搜（单轮 54 次
+    search_paper、0 次 read_paper）。修复要点有两个：把 abstract 真正取回来，
+    并让返回结构固定带这个键。
+    """
+
+    def _capture_query(self, items):
+        """跑一次 search_paper，返回 (解析后的结果, 实际发出的 query 参数)。"""
+        captured = {}
+
+        def fake_get(url, params=None, timeout=None):
+            captured.update(params or {})
+            resp = mock.Mock()
+            resp.raise_for_status = mock.Mock()
+            resp.json.return_value = {"message": {"items": items}}
+            return resp
+
+        with mock.patch.object(sp.requests, "get", side_effect=fake_get):
+            out = json.loads(sp.search_paper("q"))
+        return out, captured
+
+    def test_select_is_not_sent_because_crossref_drops_abstract(self):
+        """回归：写 select 时 Crossref 会静默忽略 abstract（实测返回的键里没有它）。
+
+        所以请求里不得带 select，否则摘要恒为 None，"判断相关性"这一步永远走不通。
+        """
+        _out, captured = self._capture_query([])
+        self.assertNotIn("select", captured)
+        self.assertEqual(captured["rows"], 3)      # 默认条数收紧到 3
+
+    def test_jats_abstract_is_detagged_and_truncated(self):
+        raw = "<jats:p>Hello <jats:italic>world</jats:italic>.</jats:p>" + "x" * 1000
+        out, _ = self._capture_query([{"DOI": "10.1/a", "title": ["A"], "abstract": raw}])
+        abstract = out[0]["abstract"]
+        self.assertTrue(abstract.startswith("Hello world ."))
+        self.assertNotIn("<", abstract)
+        self.assertLessEqual(len(abstract), sp._ABSTRACT_CHAR_LIMIT + 3)
+        self.assertTrue(abstract.endswith("..."))
+
+    def test_missing_abstract_keeps_the_key(self):
+        out, _ = self._capture_query([{"DOI": "10.1/a"}])
+        self.assertIn("abstract", out[0])
+        self.assertIsNone(out[0]["abstract"])
+
+    def test_clean_abstract_basics(self):
+        self.assertEqual(sp._clean_abstract("<jats:p>short</jats:p>"), "short")
+        self.assertIsNone(sp._clean_abstract(None))
+        self.assertIsNone(sp._clean_abstract("   "))
+
+
 if __name__ == "__main__":
     unittest.main()

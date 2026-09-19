@@ -389,5 +389,34 @@ def _role_clients():
     return RoleClients.single(_Client())
 
 
+class ExplainReActToolCapTest(unittest.TestCase):
+    """``explain_re_act`` 必须有工具轮次上限。
+
+    此前是 ``while True`` 且没有任何上限：模型只要一直发起工具调用，收尾解释就永远
+    不返回（采样侧的 ToolCallerAgent 一直有兜底，这里漏了）。
+    """
+
+    class _LoopingClient:
+        """每一轮都发起工具调用，永不给出最终答复。"""
+
+        def chat_stream(self, messages):
+            yield {
+                "tool_calls": [{"id": "c1",
+                                "function": {"name": "search_kb", "arguments": "{}"}}],
+                "content": "PARTIAL",
+                "reasoning_content": "",
+                "final": True,
+            }
+
+    def test_cap_breaks_the_tool_loop(self):
+        from drsr_420.analysis import explain as explain_mod
+
+        with mock.patch.object(explain_mod, "mcp_call_tool", return_value="R") as call:
+            out = explain_mod.explain_re_act(self._LoopingClient(), "CONTENT",
+                                             max_tool_rounds=2)
+        self.assertEqual(call.call_count, 2)
+        self.assertEqual(out, "PARTIAL")
+
+
 if __name__ == "__main__":
     unittest.main()

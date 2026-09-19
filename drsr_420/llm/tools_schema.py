@@ -4,7 +4,13 @@ tools = [
         "type": "function",
         "function": {
             "name": "search_paper",
-            "description": "Search academic papers by keywords (Chinese/English). Returns paper metadata (DOI, title, journal/conference, authors, year, citation count, etc.), but not the paper content.",
+            "description": (
+                "Search academic papers by keywords (Chinese/English). Returns paper metadata "
+                "(DOI, title, journal/conference, authors, year, citation count) plus a short "
+                "abstract when Crossref provides one -- use that abstract to judge relevance, "
+                "then call read_paper for at most one clearly relevant DOI. The full paper text "
+                "is not returned."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -14,8 +20,8 @@ tools = [
                     },
                     "num": {
                         "type": "integer",
-                        "description": "Number of results to return, default 10",
-                        "default": 10,
+                        "description": "Number of results to return, default 3",
+                        "default": 3,
                     },
                 },
                 "required": ["query"],

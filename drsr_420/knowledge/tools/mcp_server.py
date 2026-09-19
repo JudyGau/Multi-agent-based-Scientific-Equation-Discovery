@@ -125,10 +125,12 @@ def _error_json(context: str, exc: Exception) -> str:
 @mcp.tool(
     description=(
         "Search academic papers (Chinese/English) by keywords and return paper metadata "
-        "as a JSON string; the paper content itself is not returned."
+        "(DOI, title, journal, authors, year, citations) plus a short abstract when Crossref "
+        "provides one, as a JSON string; the paper content itself is not returned. Use the "
+        "abstract to judge relevance before calling read_paper."
     )
 )
-def search_paper(query: str, num: int = 10) -> str:
+def search_paper(query: str, num: int = 3) -> str:
     """搜索中/英文论文，返回文献元数据 JSON 字符串。"""
     try:
         return _search_paper_impl(query=query, num=num)
