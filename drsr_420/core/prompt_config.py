@@ -174,7 +174,10 @@ residual_analysis_prompt = (
     "1. Please analyze and summarize the influence of the changes in the values of different independent variables on the dependent variable,\n"
     "as well as the possible intrinsic relationships among different independent variables.\n\n"
     "Your response only needs to answer your analysis results in the form below, and you don't need to show your analysis process.\n\n"
-    "2.##Output Format##:\n"
+    "2. Use ONLY the variable meanings given in the task description. Never reinterpret a variable as a "
+    "different physical quantity (e.g. a geometric ratio is not a rate ratio, and a compressive stress is "
+    "not a shear stress), and do not import mechanisms from another mode, geometry, or material system.\n\n"
+    "3.##Output Format##:\n"
     "STRICTLY deliver results in the following structured format:\n\n"
     "  \"output_format\": {{\n"
     "    \"analysis\": {{\n"
@@ -445,7 +448,16 @@ class PromptContext:
             "it appears in those facts. If a physical prior or expectation conflicts with the measured "
             "facts, report the conflict explicitly instead of repeating the prior as established fact.\n\n"
             "Your response should follow the structure below; no need to show the reasoning process.\n\n"
-            '3.##Output Format##:\n'
+            # 实测缺陷：初始残差分析把 lambda12/lambda23 说成 "shear rate ratios"、把压缩模式的
+            # sigma 说成 "shear stress"，还引了 shear-thinning —— 把 shear 文献的语境套到了
+            # compress 任务上（与题面对轴长比/压缩应力的定义直接冲突）。变量含义必须以题面
+            # 与背景为准，不得替换为背景里没出现过的物理量。
+            '3. Use ONLY the variable meanings given in the task description and background above. '
+            "Never reinterpret a variable as a different physical quantity: for example, a geometric "
+            "axis-length ratio is NOT a shear-rate ratio, and a compressive (squeeze-mode) stress is "
+            "NOT a shear stress. Do not import mechanisms, regimes, or terminology from another mode, "
+            "geometry, or material system that the background does not mention.\n\n"
+            '4.##Output Format##:\n'
             'STRICTLY deliver results in the following structured format:\n\n'
         )
 

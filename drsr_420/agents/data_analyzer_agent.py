@@ -195,7 +195,12 @@ as well as the possible intrinsic relationships among different independent vari
 Your response only needs to answer your analysis results in the form below, and you don't need to show your analysis process.
 
 """+"""
-2.##Output Format##:
+2. Use ONLY the variable meanings given in the task description. Never reinterpret a variable as a
+different physical quantity (e.g. a geometric ratio is not a rate ratio, and a compressive stress is
+not a shear stress), and do not import mechanisms from another mode, geometry, or material system.
+
+"""+"""
+3.##Output Format##:
 STRICTLY deliver results in the following structured format:
 
   "output_format": {

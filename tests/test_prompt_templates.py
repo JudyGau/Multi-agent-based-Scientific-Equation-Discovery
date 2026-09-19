@@ -86,6 +86,36 @@ class PromptTemplateFormatTest(unittest.TestCase):
             _declared_fields(pc.residual_analysis_prompt + '\n  "extra": {\n')
 
 
+class AnalysisPromptConstraintsTest(unittest.TestCase):
+    """分析提示词的硬约束（初次分析与残差分析共用 ``PromptContext._task_section``）。
+
+    回归（物理量张冠李戴）：实测初始残差分析把 lambda12/lambda23 说成 "shear rate
+    ratios"、把压缩（compress）模式的 sigma 说成 "shear stress"，还引了 shear-thinning
+    ——把 shear 文献的语境套到了 compress 任务上，与题面对轴长比/压缩应力的定义冲突。
+    该断言会随上一次分析结果注入每条采样提示，必须在源头拦住。
+    """
+
+    def _ctx(self):
+        return pc.PromptContext(
+            n_features=2, feature_names=["lambda12", "lambda23"], dependent_name="sigma",
+            background=("compress-mode MRF: lambda12 = L1/L2, lambda23 = L2/L3, "
+                        "sigma = compressive stress."))
+
+    def test_initial_analysis_forbids_reinterpreting_variables(self):
+        text = self._ctx().render_initial_analysis_prompt()
+        self.assertIn("Use ONLY the variable meanings given in the task description", text)
+        self.assertIn("NOT a shear-rate ratio", text)
+        self.assertIn("NOT a shear stress", text)
+
+    def test_residual_analysis_forbids_reinterpreting_variables(self):
+        text = self._ctx().render_residual_analysis_prompt("prev", "residual", "sample")
+        self.assertIn("Use ONLY the variable meanings given in the task description", text)
+
+    def test_fallback_residual_template_keeps_the_same_constraint(self):
+        # 不走 pipeline 的调用方用这条 str.format 模板，约束必须一致
+        self.assertIn("Never reinterpret a variable", pc.residual_analysis_prompt)
+
+
 class SamplingSystemPromptTest(unittest.TestCase):
     """采样系统提示里的文献约束：必须是"选用文献时的约束"，不是"必须检索"。"""
 
