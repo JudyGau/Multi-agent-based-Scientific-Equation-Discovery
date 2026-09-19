@@ -116,7 +116,13 @@ class SamplingSystemPromptTest(unittest.TestCase):
         self.assertIn("search_kb FIRST", text)
         self.assertIn("title alone can NOT establish relevance", text)
         self.assertIn("at most ONE clearly relevant hit", text)
-        self.assertIn("Do NOT re-run a search with reworded wording", text)
+        self.assertIn("Do NOT re-run the SAME search with reworded wording", text)
+        # 禁重搜只禁同义改写：Crossref 对措辞敏感，全禁会连"换实质不同的关键词本可命中"
+        # 一起堵死（与"文献可选"叠加后模型可能直接不搜），故显式允许一次实质换词。
+        self.assertIn("may retry at most ONCE with genuinely different keywords", text)
+        # 旧写法 "either read one specific DOI or stop" 语义自相矛盾（没搜到时无 DOI 可读），
+        # 已改为"换词重搜失败即停用文献"。
+        self.assertNotIn("either read one specific DOI or stop", text)
 
     def test_tool_call_budget_was_raised(self):
         # 一条完整阶梯（search_kb -> search_paper -> read_paper）本身就要 3 轮

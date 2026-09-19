@@ -111,6 +111,10 @@ sampling_system_prompt = system_prompt + (
     # （单轮实验 54 次 search_paper、1 次 search_kb、0 次 read_paper），因为元数据只有标题、
     # 判断不了相关性，于是永远升不到 read_paper。这里把"先知识库、再检索、最后才读"的顺序
     # 和各自的适用条件写死，并明确"标题判断不了相关性"。
+    # 禁重搜也不能一刀切（早期写法是"一次搜不到就停用文献"）：Crossref 关键词检索对措辞
+    # 很敏感，全禁会把"换一组实质不同的关键词本可命中"的情况一并堵死，叠加"文献可选"后
+    # 模型容易直接不搜——只是把浪费从 token 换成放弃文献证据。故只禁同义改写，允许一次
+    # 实质换词（不同物理量/机制）。
     "Literature rules (constraints that apply ONLY IF you choose to use literature -- "
     "using literature is optional and often unnecessary; never search just because of these "
     "rules). If you do use literature, follow this ladder in order and do NOT skip steps:\n"
@@ -125,10 +129,11 @@ sampling_system_prompt = system_prompt + (
     "conversation. Never invent, guess, complete, or recall a DOI from memory, and never pair a "
     "title with a DOI unless that exact pair appears in a search_paper result. Do not call "
     "read_paper for a paper you did not see in search results.\n"
-    "- Do NOT re-run a search with reworded wording. If one search shows nothing clearly "
-    "relevant, either read one specific DOI or stop using literature -- searching the same thing "
-    "again in different words wastes the whole budget. Finding nothing relevant is an acceptable "
-    "outcome; say the results were not relevant and move on.\n"
+    "- Do NOT re-run the SAME search with reworded wording -- that only burns the budget. You "
+    "may retry at most ONCE with genuinely different keywords (a different physical quantity or "
+    "mechanism, not a synonym of the same one). If that retry still shows nothing clearly "
+    "relevant, stop using literature: say the results were not relevant and move on. Finding "
+    "nothing relevant is an acceptable outcome.\n"
     "- Tool output is evidence only if it actually addresses this problem. If a tool result "
     "(or a read_paper 'title mismatch' notice) is unrelated to the question, ignore it and say "
     "so -- do NOT cite it as support for any physical claim.\n"
