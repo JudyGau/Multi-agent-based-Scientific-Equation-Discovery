@@ -33,18 +33,26 @@ import sympy as sp
 
 from drsr_420.analysis.expr_parse import expr_substitution
 from drsr_420.analysis.find_best_eq import _parse_symbols, find_best_sample
-from drsr_420.analysis.prune_report import load_training_data, resolve_csv as _resolve_csv
+from drsr_420.analysis.holdout import load_test_data
+from drsr_420.analysis.prune_report import (_warn_once, load_training_data,
+                                            resolve_columns,
+                                            resolve_csv as _resolve_csv)
 from drsr_420.analysis.sensitivity_prune import SensitivityPruner
 
 __all__ = ["plot_data_curves", "plot_expr_curves", "_resolve_csv"]
 
 
 def plot_data_curves(results_root: str, dependent: str, sym_names: list[str],
-                     expr, pruned=None) -> list[str]:
-    """核心绘图：按训练数据路径画剪枝前/后表达式曲线 + 数据散点。
+                     expr, pruned=None, test_csv: str | None = None) -> list[str]:
+    """核心绘图：按训练数据路径画剪枝前/后表达式曲线 + 数据散点（含 held-out 点）。
 
     ``pruned=None`` 表示**本次没有剪枝后的表达式**（没真剪掉项，或剪枝失败/未执行）：
     此时只画一条曲线并在图注里注明"未剪枝"，不画一条与它完全重合的"剪枝后"曲线。
+
+    ``test_csv`` 给定（或自动探测到）时，把 held-out 点用**另一种标记**画上去——
+    它们没有参与参数拟合与样本选择，是肉眼判断"公式是不是只在训练点上插值"的唯一
+    可视化证据。曲线本身仍只沿**训练数据路径**求值（原因见模块开头），不向 held-out
+    点连线。
 
     供两处调用：``prune_and_visualize``（剪枝完成后自动触发）与本模块的
     ``plot_expr_curves``（对既有实验目录独立补跑）。返回成功写出的图片路径；
@@ -58,13 +66,26 @@ def plot_data_curves(results_root: str, dependent: str, sym_names: list[str],
     data = load_training_data(results_root)
     if data is None:
         return []
-    if dependent not in data.dtype.names:
-        print(f"[WARN] 数据里没有因变量列 {dependent}，跳过曲线绘制。")
+    # 列名对齐：函数头里的名字是 LLM 写的，可能和 CSV 表头不完全一样（如 um vs miu）
+    try:
+        dep_col, ind_cols, note = resolve_columns(data, dependent, sym_names)
+    except KeyError as e:
+        print(f"[WARN] {e}，跳过曲线绘制。")
         return []
-    missing = [v for v in sym_names if v not in data.dtype.names]
-    if missing:
-        print(f"[WARN] 数据里缺自变量列 {missing}，跳过曲线绘制。")
-        return []
+    if note:
+        _warn_once(f"变量名与数据列不完全一致：{note}")
+
+    # held-out 点（没参与拟合与选择）：只画散点，不参与曲线求值
+    test_data = load_test_data(results_root, test_csv)
+    test_cols = None
+    if test_data is not None:
+        try:
+            test_dep, test_ind, test_note = resolve_columns(test_data, dependent, sym_names)
+            test_cols = (test_dep, test_ind)
+            if test_note:
+                _warn_once(f"样本外数据的变量名与列不完全一致：{test_note}")
+        except KeyError as e:
+            print(f"[WARN] 样本外数据无法用于绘图，仅画训练点：{e}")
 
     syms = list(sp.symbols(sym_names))
     try:
@@ -83,8 +104,9 @@ def plot_data_curves(results_root: str, dependent: str, sym_names: list[str],
         x_all = np.asarray(data[var], dtype=float)
         order = np.argsort(x_all, kind="stable")
         xs = x_all[order]
-        args = [np.asarray(data[name], dtype=float)[order] for name in sym_names]
-        y_data = np.asarray(data[dependent], dtype=float)[order]
+        args = [np.asarray(data[col], dtype=float)[order]
+                for col in ind_cols]
+        y_data = np.asarray(data[dep_col], dtype=float)[order]
         try:
             y_orig = np.asarray(f_orig(*args), dtype=float)
             y_pruned = (np.asarray(f_pruned(*args), dtype=float)
@@ -93,24 +115,39 @@ def plot_data_curves(results_root: str, dependent: str, sym_names: list[str],
             print(f"[WARN] {var} 曲线求值失败，跳过该自变量: {e}")
             continue
 
+        n_train = int(np.size(x_all))
         fig, ax = plt.subplots(figsize=(7, 5))
-        ax.scatter(x_all, np.asarray(data[dependent], dtype=float),
+        ax.scatter(x_all, np.asarray(data[dep_col], dtype=float),
                    s=28, facecolors="none", edgecolors="tab:gray",
-                   label="data points")
+                   label=f"training points ({n_train})")
         ax.plot(xs, y_orig, color="tab:blue", lw=2,
                 label="before pruning" if y_pruned is not None
                 else "model (no pruning applied)")
         if y_pruned is not None:
             ax.plot(xs, y_pruned, color="tab:red", lw=2, ls="--",
                     label="after pruning")
+        # held-out 点：不同标记 + 不连线（它们不在训练路径上，连线会假装有插值关系）
+        n_test = 0
+        if test_cols is not None:
+            test_dep, test_ind = test_cols
+            idx = sym_names.index(var)
+            ax.scatter(np.asarray(test_data[test_ind[idx]], dtype=float),
+                       np.asarray(test_data[test_dep], dtype=float),
+                       s=70, marker="^", facecolors="none", edgecolors="tab:green",
+                       linewidths=1.8,
+                       label=f"held-out / test.csv ({np.size(test_data[test_dep])})"
+                             " — not used for fitting")
+            n_test = int(np.size(test_data[test_dep]))
         ax.set_xlabel(var)
         ax.set_ylabel(dependent)
         # 未剪枝时（pruned=None）在图注里写明，避免读者以为"少了一条曲线"是画漏了
-        note = ("" if y_pruned is not None
-                else "\n(no pruning applied: the pruning step removed nothing)")
+        note_axes = ("" if y_pruned is not None
+                     else "\n(no pruning applied: the pruning step removed nothing)")
+        test_note = (f"\ntriangles = held-out points ({n_test}), never used for fitting "
+                     f"or model selection" if n_test else "")
         ax.set_title(f"{dependent} vs {var}"
                      f"\n(model evaluated along the training data path, sorted by {var})"
-                     + note)
+                     + note_axes + test_note)
         ax.grid(True, alpha=0.3)
         ax.legend()
         fig.tight_layout()
@@ -127,11 +164,13 @@ def plot_data_curves(results_root: str, dependent: str, sym_names: list[str],
 
 
 def plot_expr_curves(results_root: str, threshold: float = 0.1,
-                     sample_range: tuple = (1, 14)) -> list[str]:
+                     sample_range: tuple = (1, 14),
+                     test_csv: str | None = None) -> list[str]:
     """对既有实验目录独立补跑：最优样本 → 剪枝 → 核心绘图。
 
     供 ``python -m drsr_420.analysis.expr_curves`` CLI 使用；实验管线内的自动
     绘图走 ``prune_and_visualize → plot_data_curves``，不经过这里（避免重复剪枝）。
+    ``test_csv`` 语义同 ``plot_data_curves``（``None`` = 自动探测）。
     """
     best = find_best_sample(results_root)
     if best is None:
@@ -163,7 +202,8 @@ def plot_expr_curves(results_root: str, threshold: float = 0.1,
         print("[INFO] 本次剪枝未移除任何项：曲线只画一条（未剪枝）。")
         pruned = None
 
-    return plot_data_curves(results_root, dependent, sym_names, expr, pruned)
+    return plot_data_curves(results_root, dependent, sym_names, expr, pruned,
+                            test_csv=test_csv)
 
 
 if __name__ == "__main__":
@@ -173,5 +213,8 @@ if __name__ == "__main__":
     parser.add_argument("results_root", help="实验目录")
     parser.add_argument("--threshold", type=float, default=0.1,
                         help="敏感度剪枝阈值（与 find_best_eq 默认一致）")
+    parser.add_argument("--test_csv", default=None,
+                        help="held-out 数据路径；缺省自动探测（同目录 test.csv）；none 关闭")
     args = parser.parse_args()
-    plot_expr_curves(args.results_root, threshold=args.threshold)
+    plot_expr_curves(args.results_root, threshold=args.threshold,
+                     test_csv=args.test_csv)

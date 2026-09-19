@@ -326,4 +326,5 @@ def main(
         database, template, function_to_evolve, function_to_run,
         inputs, config, max_sample_nums, class_config, kwargs, profiler)
 
-    find_best_eq(results_root, role_clients=kwargs.get('role_clients'))
+    find_best_eq(results_root, role_clients=kwargs.get('role_clients'),
+                 test_csv=kwargs.get('test_csv'))

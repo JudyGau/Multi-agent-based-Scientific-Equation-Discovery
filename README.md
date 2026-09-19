@@ -52,6 +52,17 @@ python -m drsr_420.cli.main --problem_name oscillator1 --data_csv ./data/oscilla
   --niterations 50 --samples_per_iteration 8
 ```
 
+**样本外验证（可选）**：`--test_csv <路径>` 指定 held-out 数据；缺省时自动探测训练数据
+同目录的 `test.csv`，`--test_csv none` 关闭。收尾阶段会在**没有参与参数拟合、打分与
+样本选择**的点上算 MSE/NMSE/最大误差，写进 `run.out` 与 `explain.md` 的「样本外验证」
+小节，并把 held-out 点用另一种标记画进曲线图。
+
+> 它是**报告**而非训练/选择信号：样本内 NMSE 由评估器在同一批训练点上拟合并打分得到，
+> 小样本问题（如 MRF 系列只有 7–19 行）里这个数可以很小而公式仍然不泛化——实测某次
+> 8 个训练点、10 个自由参数的运行，样本内 NMSE 1.4e-7，两个 held-out 点上相对误差 7.95%。
+> 另外 `data/MRFShear-3` 与 `data/MRFCompress-3` 的 `test.csv` 与 `train.csv` 逐行相同，
+> 工具会把这种"重合"直接标出来，不会当成独立的样本外验证。
+
 批量示例见根目录 `example.sh`（bash）与 `example.bat`（Windows，可直接双击）。4 个单问题
 运行配置（`MRFShear-Cuboid` / `MRFShear-Ellipsoid` / `MRFCompress-Cuboid` /
 `MRFCompress-Ellipsoid`）各有等价的 `.sh` 与 `.bat`，参数与 `.idea/runConfigurations/`
@@ -271,6 +282,7 @@ drsr_420/                     # 单一顶层包（8 层，依赖方向自底向�
     expr_evaluation.py        #     └ 采样网格 / 求值 / 敏感度度量
     prune_stats.py            #     └ 剪枝记录与统计（真剪枝 / 仅形式重排）
     prune_report.py           #   剪枝实质判定 + 剪枝前后拟合对比（训练数据上）
+    holdout.py                #   样本外验证（test.csv 上只报告，不参与选择）
     expr_viz.py               #   预览图与表达式树（可选依赖，失败仅告警）
     expr_curves.py            #   剪枝前后曲线 + 数据点（每个自变量一幅）
     prune_demo.py             #   剪枝行为演示（python -m …prune_demo）

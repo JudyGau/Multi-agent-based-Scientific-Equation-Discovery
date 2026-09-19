@@ -13,13 +13,17 @@
 
 | 文件名 | 含义 |
 |--------|------|
-| `train.csv` | 训练集（**必需**，主流程唯一读取的文件） |
-| `test.csv` | 同分布测试集 |
+| `train.csv` | 训练集（**必需**，采样/打分/样本选择唯一读取的文件） |
+| `test.csv` | 同分布测试集（`--test_csv`，缺省自动探测；**只用于收尾报告的样本外验证**） |
 | `test_id.csv` | 同分布（in-distribution）测试集 |
 | `test_ood.csv` / `ood_test.csv` | 分布外（out-of-distribution）测试集，两种拼写并存 |
 | `train_noise.csv` | 加噪训练集（仅 oscillator2） |
 
-> 当前主流程只使用 `train.csv`；测试集供外部评估脚本使用。
+> 采样、参数拟合、打分与最佳样本选择**只用 `train.csv`**；`test.csv` 由收尾分析读取
+> （`--test_csv` 显式指定，缺省自动探测训练数据同目录的同名文件，`none` 关闭），
+> 只把样本外指标写进 `run.out` 与 `explain.md`，不参与任何选择。
+> 注意 `MRFShear-3` 与 `MRFCompress-3` 的 `test.csv` 与 `train.csv` **逐行相同**，
+> 它们不是独立的 held-out 集——工具会标出这种重合，不要拿它论证泛化能力。
 
 ## 数据集清单
 

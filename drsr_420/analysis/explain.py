@@ -39,6 +39,8 @@ from drsr_420.core import prompt_config as pc
 import drsr_420.llm as llm
 from drsr_420.analysis.prune_report import format_fit_summary
 from drsr_420.knowledge.tool_runner import mcp_call_tool
+from drsr_420.analysis.holdout import (render_holdout_section,
+                                       strip_holdout_section)
 
 #: 单个表达式/被移除项在提示词里的最大字符数（剪枝后的表达式有时很长，
 #: 无节制地塞进提示词只会挤掉真正需要模型读的推导过程）。
@@ -423,7 +425,8 @@ def _parse_func_header(func: str) -> tuple[str, str] | None:
 
 def build_explain_content(func: str, exp: dict, background: str | None = None,
                           pruning: dict | None = None,
-                          references: list | None = None) -> str | None:
+                          references: list | None = None,
+                          holdout: dict | None = None) -> str | None:
     """从样本函数、匹配的经验条目、剪枝摘要与文献构造解释提示词；失败返回 None。
 
     ``background`` 是问题的领域背景（来自 config_snapshot.json 的 ``background``
@@ -472,6 +475,9 @@ def build_explain_content(func: str, exp: dict, background: str | None = None,
         "本次没有得到剪枝结果（剪枝未执行或失败），请只解释剪枝前的公式，"
         "并在结论里说明剪枝分析缺失。")
 
+    # 样本外验证块：泛化性数字（机器算的），并明确"样本内 NMSE 不是泛化误差"
+    holdout_block = _format_holdout_block(holdout, (pruning or {}).get("fit"))
+
     # RAG 检索增强：注入相关文献背景（失败/库为空时静默跳过）。
     # references=None 表示调用方没检索过（直接调用本函数的情形），这里代劳。
     if references is None:
@@ -480,22 +486,60 @@ def build_explain_content(func: str, exp: dict, background: str | None = None,
     rag_block = _numbered_rag_context(refs)
     ref_list_block = _format_reference_list(refs)
 
-    return (head + bg_block + prune_block + "\n" + eq + "\n" + thinking
+    return (head + bg_block + prune_block + holdout_block + "\n" + eq + "\n" + thinking
             + ("\n\n### 以下是相关文献背景，供力学解释参考 ###\n\n" + rag_block if rag_block else "")
             + ("\n\n" + ref_list_block if ref_list_block else "")
             + _REQUIRED_STRUCTURE + "\n"
             + "请你根据以上内容对这个公式从力学角度进行详细的解释")
 
 
-def _assemble_explain(answer: str | None, refs: list[dict]) -> str:
-    """正文 + 权威参考文献小节；正文自带的参考文献一节会被替换（避免两份清单）。"""
-    body = _strip_reference_section(answer or "").rstrip()
-    section = render_reference_section(refs)
-    return f"{body}\n\n{section}" if body else section
+def _format_holdout_block(holdout: dict | None, fit: dict | None = None) -> str:
+    """渲染样本外验证块：只给数字与口径，禁止把样本内 NMSE 当泛化误差来谈。
+
+    数字由 :mod:`drsr_420.analysis.holdout` 算出并会**另行**写成 explain.md 的
+    「样本外验证」小节；这里进提示词是为了让模型在谈泛化时只能依据这些量，
+    而不是拿样本内 NMSE 说事。模型自己写的小节会被 ``strip_holdout_section`` 去掉。
+    """
+    if not holdout:
+        return ("\n\n### 样本外（held-out）验证 ###\n\n"
+                "本次没有可用的 held-out 数据，因此没有任何样本外指标。"
+                "正文里出现的 MSE/NMSE 一律是样本内指标（评估器在同一批点上拟合参数并打分），"
+                "不得把它们说成泛化能力或预测精度。")
+    in_nmse = (fit or {}).get("nmse_before")
+    lines = ["\n\n### 样本外（held-out）验证 ###\n",
+             f"held-out 数据：{_clip(holdout.get('path'), 300)}"
+             f"（{holdout['n_points']} 个点，未参与参数拟合、打分与样本选择）",
+             f"样本外 MSE={holdout['mse']:.6g}"]
+    if holdout.get("nmse") is not None:
+        lines.append(f"样本外 NMSE={holdout['nmse']:.6g}")
+    lines.append(f"样本外最大绝对误差={holdout['max_abs_err']:.6g}，"
+                 f"最大相对误差={holdout['max_rel_err']:.2%}")
+    if in_nmse:
+        lines.append(f"（对照）样本内 NMSE={in_nmse:.6g}")
+        if holdout.get("nmse") is not None:
+            lines.append(f"样本外/样本内 NMSE 之比={holdout['nmse'] / in_nmse:.3g} 倍")
+    lines.append("谈泛化时只能以上述数字为依据：样本内 NMSE 不是泛化误差，"
+                 "held-out 点也很少时只能说\"通过/未通过这次样本外检查\"，"
+                 "不得据此声称公式已具备预测能力。")
+    return "\n".join(lines)
+
+
+def _assemble_explain(answer: str | None, refs: list[dict],
+                      holdout: dict | None = None, fit: dict | None = None) -> str:
+    """正文 + 权威「样本外验证」小节 + 权威参考文献小节。
+
+    正文自带的同名小节会被替换（数字一律由系统算，避免 LLM 转述出两套数字）。
+    """
+    body = strip_holdout_section(answer or "")
+    body = _strip_reference_section(body).rstrip()
+    sections = [render_holdout_section(holdout, fit), render_reference_section(refs)]
+    tail = "\n\n".join(s for s in sections if s)
+    return f"{body}\n\n{tail}" if body else tail
 
 
 def explain_best_sample(results_root: str, func: str, sample_order: str,
-                        role_clients=None, pruning: dict | None = None) -> None:
+                        role_clients=None, pruning: dict | None = None,
+                        holdout: dict | None = None) -> None:
     """按 sample_order 匹配 Good 经验，调用 LLM 生成物理解释并落盘 explain.md。
 
     任意环节失败（无经验文件 / 无匹配条目 / 提示词构造失败 / LLM 初始化失败）
@@ -504,6 +548,9 @@ def explain_best_sample(results_root: str, func: str, sample_order: str,
     Args:
         pruning: ``find_best_eq.prune_and_visualize`` 的剪枝摘要；给定时解释会覆盖
             剪枝后的表达式、被移除项与剪枝前后拟合对比。
+        holdout: 同一次收尾里的样本外验证结果（``holdout.evaluate_holdout``）；
+            省略时从 ``pruning["holdout"]`` 取。给定时 explain.md 会附加机器生成的
+            「样本外验证」小节（样本外指标只报告，不参与任何选择）。
         role_clients: ``llm.roles.RoleClients``；取其中的 ``explain`` 角色客户端。
             省略时按 ``config/agents.config.json`` 自行解析——**不再硬编码档案
             文件名**。旧实现在这里写死了 ``deepseek_deepseek-v4-flash.config``，
@@ -546,7 +593,9 @@ def explain_best_sample(results_root: str, func: str, sample_order: str,
         references = retrieve_rag(_explain_query(parsed[1]))
 
     content = build_explain_content(func, matched, background=background,
-                                    pruning=pruning, references=references)
+                                    pruning=pruning, references=references,
+                                    holdout=holdout if holdout is not None
+                                    else (pruning or {}).get("holdout"))
     if content is None:
         print("[WARN] 构造物理解释提示词失败，跳过。")
         return
@@ -576,8 +625,11 @@ def explain_best_sample(results_root: str, func: str, sample_order: str,
         return
 
     # 正文 + 权威参考文献清单（知识库检索命中 ∪ 解释过程中工具检索命中）
+    #        + 权威「样本外验证」小节（数字由系统算，不经过 LLM 转述）
     refs = merge_references(references, tool_refs)
-    final_text = _assemble_explain(explain, refs)
+    holdout_result = holdout if holdout is not None else (pruning or {}).get("holdout")
+    final_text = _assemble_explain(explain, refs, holdout=holdout_result,
+                                   fit=(pruning or {}).get("fit"))
     print_block(final_text)
     print(f"[INFO] 参考文献 {len(refs)} 条"
           + ("" if refs else "（本次未检索到可引用文献）"))
