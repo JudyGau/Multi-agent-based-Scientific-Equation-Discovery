@@ -155,7 +155,9 @@ class ResidualSanitizeTest(unittest.TestCase):
             eop.evaluate(dataset, free_exponent_equation, seed=0)
 
         cap = eop.residual_cap(dataset['outputs'])
-        residual = captured['fun'](np.full(eop.MAX_NPARAMS, 1000.0))  # 参数顶到上界
+        # 参数顶到上界：跟着 PARAMS_BOUNDS 走，避免边界调整后测试还在测旧值
+        # （旧写法把 1000.0 写死并注释成"上界"，边界改到 ±10000 后就不再是上界了）
+        residual = captured['fun'](np.full(eop.MAX_NPARAMS, eop.PARAMS_BOUNDS[1]))
         self.assertTrue(np.isfinite(residual).all())
         self.assertLessEqual(float(np.abs(residual).max()), cap)
 

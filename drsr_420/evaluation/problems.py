@@ -22,17 +22,17 @@ MAX_NPARAMS = 10                    # 方程参数个数
 DECIMAL_PLACES = 3                  # 结果矩阵保留的小数位数（仅展示，不影响评分）
 N_STARTS = 5                        # 多起点优化的起点数
 MAX_ITER = 300                      # 每个起点的最大函数评估次数
-PARAMS_BOUNDS = (-10000.0, 10000.0)   # 参数边界，防止无界优化导致溢出/NaN；据历史最优参数分布(最大|p|≈738)定
+PARAMS_BOUNDS = (-10000.0, 10000.0) # 参数边界，防止无界优化导致溢出/NaN；据历史最优参数分布(最大|p|≈738)定
 SAMPLE_SIZE = 100                   # 残差采样点数上限
 
 #: 残差幅值上限（清洗阈值），见 _sanitize_residual。
 #:
 #: LLM 写出的骨架常把参数当指数用（如 ``lambda12 ** params[2]``、
-#: ``params[7] * np.exp(params[8] * x)``）。边界放宽到 ±1000 后，优化器只要
-#: 往边界方向探几步，方程输出就会一路涨到 1e50…1e300（还没到 inf 的区间）
-#: 或直接溢出成 inf（0/0 则是 NaN）。旧实现把这些值原样递给 scipy，于是 trf
-#: 的信任域运算成片溢出——实测一个 scale=1e50 的残差就能刷出 876 条
-#: "overflow encountered in power/square"、"invalid value encountered in cast"
+#: ``params[7] * np.exp(params[8] * x)``）。参数边界（``PARAMS_BOUNDS``，现值 ±10000）
+#: 放宽后，优化器只要往边界方向探几步，指数就落到 1e4 量级，方程输出一路涨到
+#: 1e50…1e300（还没到 inf 的区间）或直接溢出成 inf（0/0 则是 NaN）。旧实现把这些值
+#: 原样递给 scipy，于是 trf 的信任域运算成片溢出——实测一个 scale=1e50 的残差就能刷出
+#: 876 条 "overflow encountered in power/square"、"invalid value encountered in cast"
 #: （trf.py:183/195/238/263、common.py:112/115/141/154/161/285/316/320/398），
 #: 而这些行没有任何地方消费：
 #:   * 评估跑在常驻 worker 子进程里（evaluation/sandbox.py），子进程的 stderr
