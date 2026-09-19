@@ -3,15 +3,32 @@
 #   python -m drsr_420.knowledge.tools.mcp_server          # stdio 传输（MCP 协议默认）
 #   python -m drsr_420.knowledge.tools.mcp_server --http   # 单 streamable HTTP 端点，127.0.0.1:8000/mcp
 import json
+import os
 import sys
 import traceback
 
 from mcp.server.mcpserver import MCPServer
 
 from drsr_420.knowledge.tools.search_paper import search_paper as _search_paper_impl
+from drsr_420.knowledge.tools.read_paper import MCP_SERVER_ENV
 from drsr_420.knowledge.tools.read_paper import read_paper as _read_paper_impl
 
 mcp = MCPServer("drsr-tools")
+
+
+def _mark_server_process() -> None:
+    """给本进程打上"MCP 服务器子进程"标记（``DRSR_MCP_SERVER=1``）。
+
+    stdio 传输下 stdout 是 JSON-RPC 通道：子进程启动时解释器按管道把 ``sys.stdout``
+    设成块缓冲，SDK 随后又把 fd 1 重定向到 stderr，但 Python 层的缓冲模式不变——
+    ``print`` 出来的内容会滞留缓冲区、进程被强杀收尾时整块丢失。工具实现据此标记
+    把库内打印改道 stderr（见 ``read_paper._stats_to_stderr``），文献总结的
+    token/耗时统计才能像其它日志一样显示出来。
+
+    必须在 ``mcp.run()`` **之前**、且只在本进程里设置（不能在模块导入时设置：
+    父进程/测试导入本模块会连带被标记，从而误改 stdout 流向）。
+    """
+    os.environ[MCP_SERVER_ENV] = "1"
 
 
 def _error_json(context: str, exc: Exception) -> str:
@@ -100,6 +117,7 @@ def main(argv: list[str] | None = None) -> int:
     ——MCP 客户端只能等到 120s 超时。
     """
     args = list(sys.argv[1:] if argv is None else argv)
+    _mark_server_process()
     if "--http" in args:
         mcp.run(transport="streamable-http")
     else:

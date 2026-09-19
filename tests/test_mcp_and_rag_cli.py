@@ -7,6 +7,7 @@
 - rag_kb.chunk_text：超长段硬切不再重复当前块、硬切片段之间保留 overlap；
 - read_paper._doi_filename：DOI 路径穿越/绝对路径净化，且常见 DOI 文件名向后兼容；
 - read_paper._summarize_text：max_tokens 回退、工具调用/空内容显式报错；
+- read_paper._stats_to_stderr：MCP 子进程里 LLM 统计改道 stderr（否则被 stdout 块缓冲吞掉）；
 - tool_runner._server_env：提供商 API key 环境变量并入 MCP 子进程；
 - mcp_server：底层异常被包装为 {"error": ...} JSON（SDK 会吞掉抛出型错误的文本）。
 """
@@ -15,6 +16,7 @@ import json
 import os
 import sys
 import unittest
+import contextlib
 from unittest import mock
 
 from drsr_420.knowledge import rag_build
@@ -203,6 +205,17 @@ class SummarizeTextTest(unittest.TestCase):
         def chat(self, messages):
             return self._response
 
+    class _StatsClient:
+        """模拟 llm.client：每次 chat 都会 print 一段 token/耗时统计。"""
+
+        def __init__(self):
+            self.kwargs = {"max_tokens": 65536}
+
+        def chat(self, messages):
+            print("[glm][glm-5.3-flash] 第1次\n"
+                  "本次 tokens：prompt=3903, thinking=344, content=239, total=4486")
+            return {"content": "摘要文本"}
+
     def test_max_tokens_fallback_and_no_none_overwrite(self):
         cfg = {"max_tokens": 65536}  # 无 max_completion_tokens 键
         client = self._Client({"content": "摘要文本"})
@@ -220,6 +233,50 @@ class SummarizeTextTest(unittest.TestCase):
         client = self._Client({"content": "   "})
         with self.assertRaises(RuntimeError):
             rp._summarize_text(client, {"max_tokens": 100}, "text")
+
+
+class StatsToStderrTest(unittest.TestCase):
+    """MCP 子进程里 LLM 统计必须落在 stderr 上。
+
+    stdio 传输下子进程的 ``sys.stdout`` 是块缓冲的协议管道（SDK 之后虽把 fd 1 指到
+    stderr，Python 层缓冲模式不变），直接 print 的统计会滞留缓冲区、随强杀一起丢失。
+    """
+
+    def _call_in_child(self):
+        """在"看起来像 MCP 子进程"的环境里跑一次摘要，返回 (stdout, stderr) 文本。"""
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(os.environ, {rp.MCP_SERVER_ENV: "1"}):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rp._summarize_text(SummarizeTextTest._StatsClient(),
+                                   {"max_tokens": 65536}, "full text")
+                # 改道只作用于本次调用：返回后 stdout 必须复原，不能把整个子进程的
+                # print 永久改到 stderr
+                self.assertIs(sys.stdout, out)
+        return out.getvalue(), err.getvalue()
+
+    def test_stats_go_to_stderr_in_child(self):
+        out, err = self._call_in_child()
+        self.assertIn("第1次", err)
+        self.assertIn("本次 tokens", err)
+        self.assertEqual(out, "")
+
+    def test_stats_stay_on_stdout_outside_child(self):
+        """本进程（CLI/测试）直接调用时仍走 stdout，好让 run.out 的 tee 收得到。"""
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(rp.MCP_SERVER_ENV, None)
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rp._summarize_text(SummarizeTextTest._StatsClient(),
+                                   {"max_tokens": 65536}, "full text")
+        self.assertIn("本次 tokens", out.getvalue())
+        self.assertEqual(err.getvalue(), "")
+
+    def test_mark_server_process_sets_the_flag_read_paper_reads(self):
+        """mcp_server 启动时的标记必须正是 read_paper 判定的那个变量名。"""
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(rp.MCP_SERVER_ENV, None)
+            ms._mark_server_process()
+            self.assertEqual(os.environ.get(rp.MCP_SERVER_ENV), "1")
 
 
 class ServerEnvTest(unittest.TestCase):

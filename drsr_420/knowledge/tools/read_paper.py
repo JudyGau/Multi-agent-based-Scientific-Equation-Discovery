@@ -1,3 +1,4 @@
+import contextlib
 import json
 import http.client
 import os
@@ -59,6 +60,43 @@ def _get_reader():
     return _reader_client, _reader_config
 
 
+#: MCP 服务器子进程的标记环境变量，由 ``knowledge/tools/mcp_server._mark_server_process``
+#: 在启动时写入本进程。读它就能判断"当前是不是跑在 MCP 子进程里"——见 ``_stats_to_stderr``。
+MCP_SERVER_ENV = "DRSR_MCP_SERVER"
+
+
+@contextlib.contextmanager
+def _stats_to_stderr():
+    """在 MCP 服务器子进程里，把 LLM 客户端的统计打印改道到 stderr。
+
+    文献总结要调 LLM，``llm.client`` 每次请求都会 print 一段
+    ``[provider][model] 第N次 / 本次 tokens / 累计 tokens / 本次用时``。
+    这段文字在 MCP 子进程里**永远看不到**，原因有两层：
+
+      1. 子进程启动时 stdout 就是 MCP 的 JSON-RPC 管道，解释器据此把 ``sys.stdout``
+         设成块缓冲（8KB）；MCP SDK 之后只把 fd 1 重定向到 stderr，Python 层的缓冲
+         模式不会跟着变——统计文字一直躺在缓冲区里，子进程被强杀收尾时整块丢弃。
+      2. 若是在"fd 1 就是协议通道"的 SDK 版本里，直接 print 还会污染协议
+         （客户端把非 JSON 行丢弃并记 warning）。
+
+    stderr 是行缓冲的，改道后立即落到控制台/``run.err``，也与本模块其余诊断输出
+    （下载成功、文件读取成功、下载失败……）的流向一致。改道只作用于本进程内的
+    ``sys.stdout`` 变量，不碰 fd 1，MCP 传输层用的是启动时私有的那份 dup，不受影响。
+
+    只在子进程里改道：在本进程（CLI/测试）直接调用 ``read_paper`` 时摘要统计仍走
+    stdout，能被 ``cli.main`` 的输出 tee 正常收进 ``run.out``。
+    """
+    if not os.environ.get(MCP_SERVER_ENV):
+        yield
+        return
+    old_stdout = sys.stdout
+    sys.stdout = sys.stderr
+    try:
+        yield
+    finally:
+        sys.stdout = old_stdout
+
+
 def _summarize_text(client, cfg, full_text):
     """调用 LLM 对论文全文做摘要，返回摘要文本。
 
@@ -76,10 +114,12 @@ def _summarize_text(client, cfg, full_text):
         overrides['max_completion_tokens'] = max_out
     if overrides:
         client.kwargs.update(overrides)
-    response = client.chat([
-        {"role": "system", "content": "You are a helpful assistant, you need to read literature and summarize."},
-        {"role": "user", "content": f"{full_text}"}
-    ])
+    # 在 MCP 子进程里把统计打印改道 stderr（否则整段 token/耗时统计会被块缓冲吞掉）
+    with _stats_to_stderr():
+        response = client.chat([
+            {"role": "system", "content": "You are a helpful assistant, you need to read literature and summarize."},
+            {"role": "user", "content": f"{full_text}"}
+        ])
     # drsr_420.llm.client 对每个请求都附带 tools + tool_choice=auto：摘要模型偶尔会"回答"成
     # 工具调用而 content 为空——必须显式报错（由调用方记入返回列表），
     # 否则空字符串会被当成合法摘要静默入库。
@@ -410,8 +450,9 @@ def agent_run(user_query: str, model: str | None = None):
     if model:
         client.model = model  # 允许调用方显式指定模型名
 
-    # 第一轮：让模型决定是否调工具
-    resp = client.chat(messages)
+    # 第一轮：让模型决定是否调工具（统计打印同 _summarize_text，见 _stats_to_stderr）
+    with _stats_to_stderr():
+        resp = client.chat(messages)
     msg = resp
 
     while True:
@@ -454,7 +495,8 @@ def agent_run(user_query: str, model: str | None = None):
                 })
 
             # 第二轮：模型拿到 Scholar 结果后做自然语言回答
-            resp = client.chat(messages)
+            with _stats_to_stderr():
+                resp = client.chat(messages)
             msg = resp
         # 如果未调用，则跳出循环
         else:
