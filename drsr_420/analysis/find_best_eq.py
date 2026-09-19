@@ -183,6 +183,31 @@ def find_best_eq(results_root: str, threshold: float = 0.1,
                             role_clients=role_clients, pruning=pruning)
 
 
+def _latest_run_dir(root: str = "experiments") -> str | None:
+    """返回最近修改的实验目录，供手工排查时"不传路径"使用。
+
+    兼容两种布局：新布局 ``experiments/<问题>/<问题>_<时间戳>/`` 与旧布局
+    ``experiments/<问题>_<时间戳>/``；判据是目录里确实有实验根目录的标志产物
+    （``run.out`` 或 ``checkpoint.json``），避免误取 ``samples/`` 之类的子目录。
+    """
+    candidates = [p for p in glob.glob(os.path.join(root, "*", "*")) if os.path.isdir(p)]
+    candidates += [p for p in glob.glob(os.path.join(root, "*")) if os.path.isdir(p)]
+    runs = [p for p in candidates
+            if os.path.exists(os.path.join(p, "run.out"))
+            or os.path.exists(os.path.join(p, "checkpoint.json"))]
+    if not runs:
+        return None
+    return max(runs, key=os.path.getmtime)
+
+
 if __name__ == "__main__":
-    # 手工排查用：对指定实验目录跑一遍收尾（默认取最近一次 MRF 压缩实验）
-    find_best_eq("..\\experiments\\MRFCompress-Ellipsoid_20260813-133229")
+    # 手工排查用：`python -m drsr_420.analysis.find_best_eq [实验目录]`
+    # 不给路径时取 experiments/ 下最近修改的一次 run（见 _latest_run_dir）。
+    import sys
+
+    target = sys.argv[1] if len(sys.argv) > 1 else _latest_run_dir()
+    if target is None:
+        print("[WARN] 未找到任何实验目录，请显式给出路径。")
+    else:
+        print(f"[INFO] 收尾分析目标: {target}")
+        find_best_eq(target)

@@ -414,7 +414,7 @@ def build_explain_content(func: str, exp: dict, background: str | None = None,
     ``background`` 是问题的领域背景（来自 config_snapshot.json 的 ``background``
     字段，即 --background / --background_file 的最终文本）。解释 LLM 只看公式与
     经验推导时，会凭先验把自变量脑补成变形/拉伸量、把材料脑补成磁流变弹性体
-    （MRE）——实测 experiments/MRFCompress-Cuboid_20260917-134427/explain.md 即
+    （MRE）——实测 experiments/MRFCompress-Cuboid/MRFCompress-Cuboid_20260917-134427/explain.md 即
     如此，而该问题的材料是磁流变液（MRF）、自变量是颗粒轴长比。背景必须显式
     进入提示词，并声明其优先级高于文献摘要与先验直觉。
 

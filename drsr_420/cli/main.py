@@ -202,12 +202,18 @@ def apply_seed(seed: int | None) -> None:
 
 
 def resolve_results_root(problem_name: str, experiment_dir: str | None) -> str:
-    """统一结果目录：``--experiment_dir`` 优先，否则 ``experiments/{problem}_{ts}``。"""
+    """统一结果目录：``--experiment_dir`` 优先，否则 ``experiments/{problem}/{problem}_{ts}``。
+
+    同一问题的多次实验归到以问题名命名的子目录下（``experiments/MRFCompress-Cuboid/
+    MRFCompress-Cuboid_20260918-195057/``）：几十上百次 run 平铺在一个目录里既难
+    浏览也没有"同题成组"的结构；分组后既可直接整目录对比，也让"某问题一共跑过
+    多少次"一眼可见。目录不存在时连同问题名一级一起创建。
+    """
     if experiment_dir:
         results_root = experiment_dir
     else:
         ts = time.strftime('%Y%m%d-%H%M%S')
-        results_root = os.path.join('experiments', f"{problem_name}_{ts}")
+        results_root = os.path.join('experiments', problem_name, f"{problem_name}_{ts}")
     os.makedirs(results_root, exist_ok=True)
     # 所有产物直接放在实验根目录（不创建 logs 子目录）
     return results_root

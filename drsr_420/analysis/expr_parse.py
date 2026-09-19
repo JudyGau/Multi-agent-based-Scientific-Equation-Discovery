@@ -36,7 +36,8 @@ import sympy as sp
 #: 参数代入表达式时保留的**有效数字**位数（不是小数点后位数）。
 #:
 #: 旧实现是 ``round(x, 2)``（小数点后 2 位），对"小系数 × 巨量项"的骨架是灾难：
-#: 实测 experiments/MRFCompress-Cuboid_20260918-195057 的最优样本，params[3]=0.0074
+#: 实测 experiments/MRFCompress-Cuboid/MRFCompress-Cuboid_20260918-195057 的最优样本，
+#: params[3]=0.0074
 #: 被舍成 0.01，而它乘的 (lambda23**3.59 - 1) 量级到 1e4 —— MSE 从 2.9e-4 飙到 186
 #: （六个数数量级）。于是收尾产物解释的根本不是实验选出的那个模型：剪枝在错的
 #: 表达式上做、曲线偏离数据、explain.md 拿 186 去论证"剪枝合理"。

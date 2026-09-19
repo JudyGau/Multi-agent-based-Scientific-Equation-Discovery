@@ -735,7 +735,7 @@ class ExplainBackgroundInjectionTest(unittest.TestCase):
 
     旧实现只喂公式 + 经验推导 + RAG 文献摘要：解释 LLM 不知道材料体系与自变量
     定义，凭先验把磁流变液（MRF）解释成磁流变弹性体（MRE）、把颗粒轴长比
-    lambda12/lambda23 脑补成变形拉伸量（实测 experiments/
+    lambda12/lambda23 脑补成变形拉伸量（实测 experiments/MRFCompress-Cuboid/
     MRFCompress-Cuboid_20260917-134427/explain.md）。背景必须显式进入提示词，
     且声明优先级高于文献摘要。
     """

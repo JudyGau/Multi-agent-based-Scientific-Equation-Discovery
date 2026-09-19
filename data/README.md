@@ -6,7 +6,7 @@
 
 - CSV 必须带表头：**前 n-1 列为自变量（特征），最后一列为因变量**。
 - `python -m drsr_420.cli.main --data_csv <路径>` 读取该 CSV；列名会作为提示词中的自变量/因变量名传给模型。
-- `--problem_name` 仅用于结果目录命名（`experiments/{problem_name}_{timestamp}/`），
+- `--problem_name` 仅用于结果目录命名（`experiments/{problem_name}/{problem_name}_{timestamp}/`），
   匿名实验中不会把该名字暴露给模型（见 `prompt_config.PromptContext.problem`）。
 
 ## 文件命名（各数据集不完全一致，历史原因）

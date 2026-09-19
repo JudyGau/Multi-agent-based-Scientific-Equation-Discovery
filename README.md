@@ -40,7 +40,7 @@ python -m drsr_420.cli.main \
   --background 'Find the mathematical function skeleton that represents acceleration in a damped nonlinear oscillator system with driving force, given data on position, and velocity.'
 ```
 
-运行后在 `experiments/{problem}_{时间戳}/` 下生成所有产物。
+运行后在 `experiments/{problem}/{problem}_{时间戳}/` 下生成所有产物（同一问题的多次实验归入以问题名命名的子目录，便于同题对比）。
 
 > 须在**仓库根目录**执行：`--data_csv ./data/…` 与 `--llm_config llm.config` 都按当前
 > 工作目录解析（IDE 运行配置的 `WORKING_DIRECTORY` 也正是 `$PROJECT_DIR$`）。
@@ -176,7 +176,7 @@ python -m drsr_420.knowledge.rag_build --query "磁流变 屈服应力 压缩" [
 
 ## 结果产物
 
-以 `experiments/oscillator1_20250101-120000/` 为例：
+以 `experiments/oscillator1/oscillator1_20250101-120000/` 为例：
 
 - `run.out` / `run.err`：标准输出/错误输出
 - `spec_dynamic.txt`：本次运行的动态 spec（便于复现）
@@ -278,7 +278,7 @@ drsr_420/                     # 单一顶层包（8 层，依赖方向自底向�
     main.py                   #   命令行入口：python -m drsr_420.cli.main（拆分为可测函数）
     llm_setup.py              #   档案加载 / 角色客户端池（配置没准备好时给出可操作报错）
 specs/                        # 历史静态 spec（动态模式已不使用，保留备查）
-experiments/{problem}_{timestamp}/   # 本次运行产物
+experiments/{problem}/{problem}_{timestamp}/   # 本次运行产物（按问题名分组）
 ```
 
 > `drsr_420/` 顶层只有 `__init__.py`：实现全部分层，历史的一层平铺路径已清退

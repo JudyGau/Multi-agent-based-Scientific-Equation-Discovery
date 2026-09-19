@@ -215,7 +215,8 @@ python -c "from drsr_420.agents import agent_specs; print(agent_specs())"
 
 ## 6. 产物清单
 
-一次实验的全部产物在 `experiments/{problem}_{时间戳}/`：
+一次实验的全部产物在 `experiments/{problem}/{problem}_{时间戳}/`（同一问题的多次
+实验归入以问题名命名的子目录，便于同题对比与批量分析）：
 
 | 文件 | 写入者 | 说明 |
 |---|---|---|
