@@ -72,9 +72,15 @@ ideas_block_title = "\n\n### The following are ideas summarized based on past ex
 idea_item_prefix = "idea{index} ({label}):\n"
 
 # 残差分析注入区块标题
+#
+# 口吻必须明确"未经校验"：这些文本是上一轮 LLM 的自由分析，实测出现过把全局极值
+# 说错（"peaks at lambda12=2"，真实最大值在 lambda12=1）、把常数乘积脊线说成
+# "≈19–19.6"（7 个点里 4 个 <19）这类错误，而下游把它当既有结论继续引用。
 residual_block_title = (
-    "\n\n### The following is the analysis result of the existing data, "
-    "which will assist you in answering the question. ###\n\n"
+    "\n\n### The following is a model-written analysis from an earlier round. Treat it as an "
+    "UNVERIFIED HYPOTHESIS, not as an established fact: check any number or claim in it "
+    "against the data before relying on it, and prefer the measured data facts whenever the "
+    "two disagree. ###\n\n"
 )
 
 # 系统角色提示：角色设定与任务数据分离（采样/分析/残差/解释通用）
@@ -94,6 +100,16 @@ sampling_system_prompt = system_prompt + (
     "The final answer must be a complete Python function wrapped in a ```python code block, "
     "e.g. '```python\\ndef equation_v1(x, y, params):\\n    return params[0]*x + params[1]\\n```', "
     "using only the independent variable names given in the prompt.\n"
+    # 实证约束：实测中模型会自行编造 DOI 与标题配对，read_paper 因此取回完全无关的论文，
+    # 无关摘要被当成文献证据注入推理上下文（白烧 token 且误导结论）。
+    "Literature rules (mandatory):\n"
+    "- Call search_paper first. A DOI may ONLY be copied verbatim from a search_paper result "
+    "in this conversation. Never invent, guess, complete, or recall a DOI from memory, and "
+    "never pair a title with a DOI unless that exact pair appears in a search_paper result.\n"
+    "- Do not call read_paper for a paper you did not see in search results.\n"
+    "- Tool output is evidence only if it actually addresses this problem. If a tool result "
+    "(or a read_paper 'title mismatch' notice) is unrelated to the question, ignore it and say "
+    "so -- do NOT cite it as support for any physical claim.\n"
 )
 
 # RAG 文献知识库检索结果注入区块标题
@@ -392,8 +408,15 @@ class PromptContext:
             "Task Requirements:\n\n"
             "1. Analyze and summarize how changes of each independent variable influence the dependent variable, "
             "and the possible intrinsic relationships among independent variables.\n\n"
+            # 实测缺陷：模型会自行改写数据行（把 (2, 8.933) 复述成 (2, 2)）、
+            # 把先验当结论、把全局极值说错。数据与代码实测的事实表才是唯一合法出处。
+            "2. Quote numbers only from the provided dataset and, when present, from the code-measured "
+            "data facts. Do not restate values from memory, re-round them differently, or invent rows "
+            "that are not in the dataset. Do not state a global maximum/minimum or a correlation unless "
+            "it appears in those facts. If a physical prior or expectation conflicts with the measured "
+            "facts, report the conflict explicitly instead of repeating the prior as established fact.\n\n"
             "Your response should follow the structure below; no need to show the reasoning process.\n\n"
-            '2.##Output Format##:\n'
+            '3.##Output Format##:\n'
             'STRICTLY deliver results in the following structured format:\n\n'
         )
 

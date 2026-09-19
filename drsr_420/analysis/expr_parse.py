@@ -28,6 +28,7 @@ LLM 写出来的"类 Python"骨架与 SymPy 的语义有三处系统性偏差，
 """
 from __future__ import annotations
 
+import ast
 import math
 import re
 
@@ -134,6 +135,51 @@ def _known_names(independent_list: list, inter_vars: dict) -> list:
     return [*independent_list, *(str(sym) for sym in inter_vars)]
 
 
+def fold_constant_comparisons(text: str) -> str:
+    """把"两侧都是数值常量"的比较折叠成 0/1（``(-0.219 == 0) * 1e-12`` → ``0 * 1e-12``）。
+
+    模型为避免除零常写 ``(params[k] == 0) * 1e-12`` 这类保护；参数代入后比较两侧都成了
+    数值，``parse_expr`` 会把 ``==`` 求值成 Python 的 ``bool``，于是 ``bool * Float``
+    抛 ``TypeError``——整条中间变量行解析失败（实测：最优样本的三个 sat 项因此变成
+    孤儿符号，剪枝又把它们全删掉，公式塌缩成常数）。两侧都是常量时结果本就确定，
+    折叠成 ``int(bool)`` 语义不变。
+
+    只折叠**常量**比较：``x1 == 0``（含符号）原样保留——它属于
+    :func:`normalize_condition` 的职责，在这里折叠会静默丢掉分支。文本不是合法的
+    Python 表达式时原样返回（交由下游按原样解析/报错）。
+    """
+    try:
+        tree = ast.parse(text, mode="eval")
+    except SyntaxError:
+        return text
+
+    def _numeric(node) -> bool:
+        if isinstance(node, ast.Constant):
+            return isinstance(node.value, (int, float, bool))
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+            return _numeric(node.operand)
+        return False
+
+    class _Fold(ast.NodeTransformer):
+        def visit_Compare(self, node):
+            self.generic_visit(node)
+            if len(node.ops) != 1 or not all(
+                    _numeric(o) for o in (node.left, *node.comparators)):
+                return node
+            try:
+                # 只含数值常量，无名字/调用，eval 无副作用
+                value = eval(compile(ast.Expression(node), "<fold>", "eval"),
+                             {"__builtins__": {}}, {})
+            except Exception:
+                return node         # 例如常量除零：原样留给下游报错
+            return ast.copy_location(ast.Constant(int(bool(value))), node)
+
+    try:
+        return ast.unparse(_Fold().visit(tree))
+    except Exception:
+        return text
+
+
 def _parse_expr_with_symbols(text: str, names: list) -> sp.Expr:
     """用显式符号表解析表达式，避免与 SymPy 全局名撞名。
 
@@ -152,7 +198,7 @@ def _parse_expr_with_symbols(text: str, names: list) -> sp.Expr:
     """
     local = {name: sp.Symbol(name) for name in names}
     local.setdefault('N', sp.Symbol('N'))
-    return sp.parse_expr(text, local)
+    return sp.parse_expr(fold_constant_comparisons(text), local)
 
 
 def normalize_condition(cond: str) -> str:
@@ -389,6 +435,8 @@ def expr_substitution(func: str, params: list) -> sp.Expr | None:
             expr = _parse_expr_with_symbols(
                 eq_right, _known_names(independent_list, inter_vars))
         except Exception as e:
+            # 跳过这一行本身可以（该变量可能没被 return 用到），但**不能因此交出
+            # 含未定义符号的表达式**——函数尾部的自由符号校验会拦住那种情况。
             print(f"[WARN] 中间变量行解析失败（跳过）: {eq_left} = {eq_right} -> {e}")
             continue
 
@@ -421,5 +469,18 @@ def expr_substitution(func: str, params: list) -> sp.Expr | None:
     # 失真在 ~2000 量级的项上放大成 ±30 的函数值偏差——精确拟合（NMSE 1e-29）
     # 的曲线会"神秘地"不穿过数据点（实测 MRFCompress-Cuboid_20260917-134427）。
     # 参数已在函数入口按 2 位小数舍入（±0.005，无损量级），此处保持全精度。
+    # 自由符号校验：只允许自变量（外加历史约定保留的样本数符号 N）。
+    # 中间变量行解析失败时它是被"跳过"的，于是 return 里的那个名字成了**孤儿符号**：
+    # 表达式必然求值不出有限值，而"求值失败"在敏感度侧曾被当成"敏感度 0"，剪枝据此
+    # 把每一项都删掉——实测最优样本因此从 NMSE 8.7e-07 塌缩成常数 193.054（NMSE 6.81，
+    # 比"预测样本均值"的 1.0 还差 6.8 倍）。这种表达式交给下游只会静默产出错误结论，
+    # 一律拒绝：返回 None，由调用方按"解析失败"处理（跳过剪枝，保留原式）。
+    allowed = {str(name) for name in independent_list} | {"N"}
+    unknown = sorted(str(s) for s in expr.free_symbols if str(s) not in allowed)
+    if unknown:
+        print(f"[WARN] 表达式含未定义符号 {unknown}（自变量只有 {independent_list}）"
+              f"：无法求值，返回 None")
+        return None
+
     print(f"代入中间变量后的表达式: {expr}")
     return expr

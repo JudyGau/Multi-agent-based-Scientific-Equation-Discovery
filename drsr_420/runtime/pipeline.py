@@ -191,10 +191,13 @@ def _run_initial_analysis(
     # 客户端按角色取：analysis 在 config/agents.config.json 里可绑定独立档案。
     if role_clients is not None:
         llm_client = role_clients.get('analysis')
-    analyzer = DataAnalyzerAgent(timeout=600, base_dir=results_root, llm_client=llm_client, seed=seed)
-
-    # PromptContext 用于动态渲染初次数据分析/残差分析提示（变量名、因变量、输出格式均动态化）
     prompt_ctx = kwargs.get('prompt_ctx', None)
+    # 事实表里的相关性对名要与提示词里的变量名一致，否则模型无法把两者对上号
+    analyzer = DataAnalyzerAgent(
+        timeout=600, base_dir=results_root, llm_client=llm_client, seed=seed,
+        feature_names=prompt_ctx.features if prompt_ctx else None,
+        dependent_name=prompt_ctx.dependent if prompt_ctx else None,
+    )
     initial_analysis_prompt = prompt_ctx.render_initial_analysis_prompt() if prompt_ctx else None
     # RAG 检索增强：从文献知识库检索物理背景并注入初次分析提示（检索失败或库为空时静默跳过，不影响主流程）
     if initial_analysis_prompt:

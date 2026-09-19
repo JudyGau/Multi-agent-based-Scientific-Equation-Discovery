@@ -135,6 +135,10 @@ class ExpressionEvaluator:
             mean   : mean_k |Δ_k|
             median : median_k |Δ_k|     （抗离群点）
             p95    : 95% 分位 |Δ_k|     （忽略罕见尖峰）
+
+        **无有效采样点**（表达式在该区间求值不出任何有限值）时返回 ``inf``：这是
+        "测不出来" 而不是 "敏感度为零"。判据是 ``s <= threshold``，把它当成 0 会让
+        每一项都被判为可删——实测把最优样本整个剪成一个常数（NMSE 8.7e-07 → 6.81）。
         """
         diff = np.abs(orig - pruned)
         if self.metric == "relative":
@@ -142,7 +146,7 @@ class ExpressionEvaluator:
             diff = diff / denom
         valid = diff[np.isfinite(diff)]
         if len(valid) == 0:
-            return 0.0
+            return float("inf")
         if self.reduction == "mean":
             return float(np.mean(valid))
         if self.reduction == "median":

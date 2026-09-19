@@ -6,15 +6,19 @@
   （含改名提示）；``backend="api"`` 时必须给**完整 URL**，裸主机域名/空值同样报错；
 - rag_kb.chunk_text：超长段硬切不再重复当前块、硬切片段之间保留 overlap；
 - read_paper._doi_filename：DOI 路径穿越/绝对路径净化，且常见 DOI 文件名向后兼容；
+- read_paper 标题校验：编造的 (标题, DOI) 配对必须回传"标题不符"而不是无关论文摘要，
+  且合法配对不得被误杀（对真实下错的 PDF 做回归）；
 - read_paper._summarize_text：max_tokens 回退、工具调用/空内容显式报错；
 - read_paper._stats_to_stderr：MCP 子进程里 LLM 统计改道 stderr（否则被 stdout 块缓冲吞掉）；
-- tool_runner._server_env：提供商 API key 环境变量并入 MCP 子进程；
+- tool_runner._server_env：提供商 API key 环境变量并入 MCP 子进程，实验目录（DRSR_ 前缀）透传；
+- mcp_server.attach_server_stderr：子进程把 stderr 也旁路进 run.err（否则摘要统计只闪在终端）；
 - mcp_server：底层异常被包装为 {"error": ...} JSON（SDK 会吞掉抛出型错误的文本）。
 """
 import io
 import json
 import os
 import sys
+import tempfile
 import unittest
 import contextlib
 from unittest import mock
@@ -196,6 +200,133 @@ class DoiFilenameTest(unittest.TestCase):
         self.assertEqual(rp._doi_filename("///"), "unnamed")
 
 
+class _FakePage:
+    """pymupdf Page 的最小替身：只需 get_text() 与 get_text("dict")。"""
+
+    def __init__(self, text, blocks):
+        self._text = text
+        self._blocks = blocks
+
+    def get_text(self, kind=None):
+        return {"blocks": self._blocks} if kind == "dict" else self._text
+
+
+class _FakeDoc:
+    """pymupdf Document 的最小替身。"""
+
+    def __init__(self, page_text, blocks=None, metadata=None):
+        self.metadata = metadata or {}
+        self._page = _FakePage(page_text, blocks or [])
+
+    def load_page(self, _n):
+        return self._page
+
+    def close(self):
+        pass
+
+
+#: 真实下错的两对 (PDF 文件, 当时的请求标题)：DOI 有效但不是请求的那篇，
+#: 见 run.out L7193 与 pdf_downloads/ 里 14:46 下载的这两份 PDF。
+_REAL_MISMATCHED_PDFS = (
+    ("pdf_downloads/10.10631.3480551.pdf",
+     "Effect of particle shape in magnetorheology"),
+    ("pdf_downloads/10.10880964-1726212025014.pdf",
+     "Effect of particle aspect ratio in magnetorheology"),
+)
+
+
+class PaperTitleGuardTest(unittest.TestCase):
+    """read_paper 必须校验"DOI 下到的 PDF 是不是请求的那篇"。
+
+    历史缺陷：只按 DOI 取 PDF、从不看内容，于是 LLM 编造的 (标题, DOI) 配对会把
+    完全无关的论文摘要当文献证据喂进上下文（实测 8073 字符的无关摘要，采样者随后
+    写下 "tool outputs were irrelevant"）。
+    """
+
+    def test_mismatched_title_is_rejected_with_the_actual_title(self):
+        doc = _FakeDoc("Fabry-Perot interferometer utilized for displacement measurement "
+                       "in a large measuring range. Rev. Sci. Instrum. 81, 093102 (2010)")
+        notice = rp._verify_pdf_title(
+            doc, "Effect of particle shape in magnetorheology", "10.1063/1.3480551")
+        self.assertIsNotNone(notice)
+        self.assertIn("标题不符", notice)
+        self.assertIn("Fabry-Perot", notice)      # 报错要带上"实际下到的是什么"
+        self.assertIn("10.1063/1.3480551", notice)
+
+    def test_matching_title_passes(self):
+        doc = _FakeDoc("Effect of particle shape in magnetorheology. "
+                       "Journal of Applied Physics 108, 093102 (2010)")
+        self.assertIsNone(rp._verify_pdf_title(
+            doc, "Effect of particle shape in magnetorheology", "10.1063/1.3480551"))
+
+    def test_doi_passed_as_title_is_skipped(self):
+        # 模型有时把 DOI 本身当标题传（实测 3 例）：无从校验，放行而不是误杀
+        doc = _FakeDoc("Magnetorheology of suspensions")
+        self.assertIsNone(rp._verify_pdf_title(doc, "10.11221/.3005402", "10.11221/.3005402"))
+
+    def test_title_without_letters_is_skipped(self):
+        doc = _FakeDoc("Some unrelated optics paper")
+        self.assertIsNone(rp._verify_pdf_title(doc, "-----", "10.x"))
+
+    def test_single_word_title_still_checked(self):
+        # 单 token 标题也要判：命中通过、不命中拒绝（覆盖率阈值对短标题同样成立）
+        self.assertIsNone(rp._verify_pdf_title(
+            _FakeDoc("Magnetorheology of suspensions"), "Magnetorheology", "10.x"))
+        self.assertIsNotNone(rp._verify_pdf_title(
+            _FakeDoc("Fabry-Perot interferometer utilized for displacement"), "Magnetorheology", "10.x"))
+
+    def test_largest_font_line_is_used_as_title_candidate(self):
+        blocks = [{"lines": [
+            {"spans": [{"text": "Real Paper Title", "size": 18.0}]},
+            {"spans": [{"text": "some author name", "size": 9.0}]},
+        ]}]
+        doc = _FakeDoc("", blocks=blocks, metadata={"title": "Microsoft Word - draft.doc"})
+        self.assertEqual(rp._first_page_title_candidate(doc), "Real Paper Title")
+
+    def test_read_paper_returns_notice_instead_of_summary(self):
+        """本地缓存命中路径：标题不符时不得调用摘要，且返回值与请求一一对齐。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            doi = "10.1063/1.3480551"
+            with open(os.path.join(tmp, rp._doi_filename(doi) + ".pdf"), "wb"):
+                pass
+            doc = _FakeDoc("Fabry-Perot interferometer utilized for displacement measurement")
+            with mock.patch.object(rp.pymupdf, "open", return_value=doc), \
+                    mock.patch.object(rp, "_summarize_text") as summarize:
+                out = json.loads(rp.read_paper(
+                    [["Effect of particle shape in magnetorheology", doi]], save_dir=tmp))
+            self.assertEqual(len(out), 1)           # 数组与请求条目对齐
+            self.assertIn("标题不符", out[0])
+            summarize.assert_not_called()           # 无关 PDF 不进 LLM
+
+
+class RealPdfTitleGuardTest(unittest.TestCase):
+    """对真实下错的 PDF 做回归；文件不存在时跳过，不阻塞无文献环境。"""
+
+    @unittest.skipUnless(os.path.exists(_REAL_MISMATCHED_PDFS[0][0]),
+                         "缺少真实 PDF 夹具")
+    def test_fabry_perot_pdf_rejected_for_shape_title(self):
+        path, title = _REAL_MISMATCHED_PDFS[0]
+        doc = rp.pymupdf.open(path)
+        try:
+            notice = rp._verify_pdf_title(doc, title, "10.1063/1.3480551")
+        finally:
+            doc.close()
+        self.assertIsNotNone(notice)
+        self.assertIn("Fabry", notice)
+
+    @unittest.skipUnless(os.path.exists(_REAL_MISMATCHED_PDFS[1][0]),
+                         "缺少真实 PDF 夹具")
+    def test_damper_pdf_rejected_for_aspect_ratio_title(self):
+        path, title = _REAL_MISMATCHED_PDFS[1]
+        doc = rp.pymupdf.open(path)
+        try:
+            notice = rp._verify_pdf_title(doc, title, "10.1088/0964-1726/21/2/025014")
+        finally:
+            doc.close()
+        self.assertIsNotNone(notice)
+        self.assertIn("self-sensing", notice)
+
+
 class SummarizeTextTest(unittest.TestCase):
     class _Client:
         def __init__(self, response):
@@ -294,6 +425,69 @@ class ServerEnvTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"ZHIPU_API_KEY": "kk"}):
             c = tr.MCPStdioClient()
         self.assertEqual(c._params.env.get("ZHIPU_API_KEY"), "kk")
+
+    def test_results_root_forwarded(self):
+        # 实验目录靠 DRSR_ 前缀透传：MCP 子进程据此把自己的 stderr 旁路进 run.err
+        with mock.patch.dict(os.environ, {ms.RESULTS_ROOT_ENV: r"C:\tmp\run1"}):
+            env = tr._server_env()
+            c = tr.MCPStdioClient()
+        self.assertEqual(env.get(ms.RESULTS_ROOT_ENV), r"C:\tmp\run1")
+        self.assertEqual(c._params.env.get(ms.RESULTS_ROOT_ENV), r"C:\tmp\run1")
+
+
+class ServerStderrTeeTest(unittest.TestCase):
+    """MCP 子进程的 stderr 必须同时落进实验目录的 run.err。
+
+    子进程的 fd 2 由父进程的 ``errlog`` 决定（只到控制台）；``run.err`` 是主进程在
+    Python 层替换 ``sys.stderr`` 得到的，子进程看不到——文献总结的 token/耗时统计
+    因此只闪在终端里，产物里查不到（"摘要用了哪个模型"无法事后核实）。
+    """
+
+    def setUp(self):
+        self._orig = sys.stderr
+        self.addCleanup(setattr, sys, "stderr", self._orig)
+
+    def _attach(self, root):
+        with mock.patch.dict(os.environ, {ms.RESULTS_ROOT_ENV: str(root)}):
+            ms.attach_server_stderr()
+
+    def test_stderr_mirrored_into_run_err(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            console = io.StringIO()
+            sys.stderr = console
+            self._attach(tmp)
+            sys.stderr.write("[dashscope][qwen3.7-flash] 第1次\n")
+            sys.stderr.flush()
+            tee = sys.stderr
+            body = open(os.path.join(tmp, "run.err"), encoding="utf-8").read()
+            tee.close()
+        self.assertIn("[dashscope][qwen3.7-flash] 第1次", body)   # 落进产物
+        self.assertIn("[dashscope][qwen3.7-flash] 第1次", console.getvalue())  # 控制台不丢
+
+    def test_attach_is_idempotent(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            sys.stderr = io.StringIO()
+            self._attach(tmp)
+            first = sys.stderr
+            self._attach(tmp)                 # 第二次不得再套一层
+            self.assertIs(sys.stderr, first)
+            sys.stderr.close()
+
+    def test_missing_env_is_noop(self):
+        console = io.StringIO()
+        sys.stderr = console
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(ms.RESULTS_ROOT_ENV, None)
+            ms.attach_server_stderr()
+        self.assertIs(sys.stderr, console)
+
+    def test_unusable_root_degrades_silently(self):
+        console = io.StringIO()
+        sys.stderr = console
+        self._attach("\x00:/nowhere")         # 非法路径：open 抛 ValueError
+        self.assertIs(sys.stderr, console)
 
 
 class McpServerErrorWrappingTest(unittest.TestCase):

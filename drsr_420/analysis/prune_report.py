@@ -183,6 +183,10 @@ def _evaluate(expr, sym_names: list[str], args: list[np.ndarray]) -> np.ndarray 
 
     用 ``errstate`` 静音数值告警：剪枝前后的表达式都可能在被修剪的项上溢出，
     这里是"评估"而不是"优化"，没有清洗残差的必要，但也没必要刷警告。
+
+    常量表达式（``lambdify`` 出来是 0 维标量）按采样点数广播成 1 维：否则下游的
+    ``vals[mask]`` 会抛 ``IndexError: too many indices for array``。剪枝结果退化成
+    常数时（正是要判定的那种情形）走的就是这条路。
     """
     try:
         func = sp.lambdify(list(sp.symbols(sym_names)), expr, modules="numpy")
@@ -191,6 +195,9 @@ def _evaluate(expr, sym_names: list[str], args: list[np.ndarray]) -> np.ndarray 
     except Exception as e:
         print(f"[WARN] 表达式数值化失败: {e}")
         return None
+    if vals.ndim == 0:
+        length = len(args[0]) if args else 1
+        vals = np.full(length, float(vals))
     return vals
 
 
@@ -314,6 +321,7 @@ def classify_pruning(expr, published, stats, sym_names: list[str] | None = None,
 
     判定分层（``nodes_pruned`` 是唯一硬判据，数值比较只用来论证"形式变化"）::
 
+        nodes_pruned > 0 但剪枝结果不含任何自变量 → 'degenerate'（退化剪枝，公式回退原式）
         nodes_pruned > 0                        → 'pruned'（真剪枝，公式用剪枝结果）
         nodes_pruned == 0 且 simplify 没改写形式 → 'none'（什么都没变）
         nodes_pruned == 0 且 simplify 改写了形式 → 'form_only'（通分/重排，公式已回退原式）
@@ -365,6 +373,28 @@ def classify_pruning(expr, published, stats, sym_names: list[str] | None = None,
             expr, compared, list(sym_names), sample_range)
     if out["max_rel_diff"] is not None:
         out["numerically_equivalent"] = bool(out["max_rel_diff"] <= FORM_ONLY_RTOL)
+
+    # 退化剪枝：剪枝结果不再含任何自变量（因变量被写成一个常数）。这在语义上就是
+    # 剪枝失败——发布它等于宣称"σ 与自变量无关"：实测最优样本因此从 NMSE 8.7e-07
+    # 退到 6.81（比"预测样本均值"的 1.0 还差 6.8 倍）。判据是"公式里还有没有自变量"，
+    # 属**结果层面**的兜底（与"节点数是否变少"无关），故在这里把发布形式一并回退原式。
+    independents = {str(s) for s in (sym_names or [])}
+    kept_symbols = {str(s) for s in getattr(published, "free_symbols", set())}
+    if actually and independents and not (independents & kept_symbols):
+        out.update({
+            "kind": "degenerate",
+            "actually_pruned": False,
+            "used_original": True,
+            "form_changed": False,
+            "ops_published": int(ops_before),
+        })
+        out["summary"] = (
+            f"本次剪枝被拒（退化剪枝）：剪枝结果不含任何自变量（公式退化为常数），"
+            f"判为剪枝失败、公式沿用剪枝前的表达式"
+            f"（被移除 {out['nodes_pruned']} 项，节点数 {out['ops_before']} → "
+            f"{out['ops_published']}，被拒结果 {sp.count_ops(published)} 节点）"
+            + _rel_note(out))
+        return out
 
     if actually:
         out["summary"] = (

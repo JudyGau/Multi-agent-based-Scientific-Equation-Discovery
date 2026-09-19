@@ -61,6 +61,23 @@ def resolve_policy(exp_cfg) -> config_lib.ExperienceInjectionConfig:
     )
 
 
+#: 注入的残差分析文本上限（字符）。此前是硬切 2000：会把同一段里
+#: "……但乘积骨架的 NMSE 反而更高"这类转折句整句截掉，注入下游只剩半句结论，
+#: 比不注入更误导——所以改为按段落边界截断。
+_RESIDUAL_CHAR_LIMIT = 2000
+
+
+def _clip_paragraph(text: str, limit: int) -> str:
+    """超长文本按段落边界截断；找不到足够靠后的换行时才硬切。"""
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    cut = head.rfind("\n")
+    if cut < limit // 2:      # 段落太长/没有换行：硬切，但至少保住一半内容
+        cut = limit
+    return head[:cut] + "..."
+
+
 class PromptInjector:
     """把 ``experiences.json`` / ``residual_analyze.json`` 注入采样提示词。
 
@@ -160,8 +177,9 @@ class PromptInjector:
         # analysis 可能是 list（初始数据记录的历史格式），取首条
         if isinstance(last_analysis, list):
             last_analysis = last_analysis[0] if last_analysis else ""
-        if len(last_analysis) > 2000:
-            last_analysis = last_analysis[:2000] + "..."
+        last_analysis = _clip_paragraph(last_analysis, _RESIDUAL_CHAR_LIMIT)
+        # 明确标注"未校验"：这段文本是上一轮模型写的，实测含事实错误，不能被下游当结论
+        last_analysis = "[unverified hypothesis from an earlier round]\n" + last_analysis
 
         block_title = (
             self.prompt_ctx.render_residual_block_title()

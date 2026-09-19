@@ -20,7 +20,7 @@
     "",
     "当前绑定：除下面两个角色外都共用 default 档案。",
     "  explain -> deepseek_deepseek-v4-flash  （官方 DeepSeek 端点）",
-    "  summary -> ustc_deepseek-v4-flash      （**自定义提供商**：USTC 校内网关）",
+    "  summary -> dashscope_qwen3.7-flash     （**自定义提供商**：阿里云百炼兼容端点）",
     "",
     "自定义提供商 = provider 段不在 factory 内置表里，只要档案里给出 base_url 就能用，",
     "**不需要改代码**；请求体差异用档案的 dialect 字段声明。可照抄的完整例子见",

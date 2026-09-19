@@ -365,7 +365,11 @@ def _format_pruning_block(pruning: dict) -> str:
     if after is None:
         lines.append("剪枝后：本次没有得到剪枝结果（剪枝未执行或失败）。")
     elif after == before:
-        lines.append("剪枝后：与剪枝前完全相同（没有移除任何项）。")
+        if verdict.get("kind") == "degenerate":
+            lines.append("剪枝后：沿用剪枝前的公式——上面那次剪枝把自变量全剪掉了"
+                         "（结果退化为常数），已判为剪枝失败并回退。")
+        else:
+            lines.append("剪枝后：与剪枝前完全相同（没有移除任何项）。")
     else:
         lines.append(f"剪枝后：{_clip(after)}")
 
@@ -405,10 +409,17 @@ _REQUIRED_STRUCTURE = (
     "量纲一致性与物理机制，论证剪枝没有削弱模型对数据的解释能力；若某项虽然敏感度低、"
     "但在物理上不可去（例如保证 lambda12 = lambda23 = 1 时退化为立方颗粒基线的项），"
     "必须明确指出并说明应当保留；\n"
-    "6. 结论。\n\n"
+    "6. **公式形状/物理先验与实测基线的对照**：把上方的候选骨架基线（NMSE 越小越好）"
+    "与你引用的物理机理逐条对照；若某个先验（例如\"响应由整体长细比 lambda12*lambda23 支配\"）"
+    "与基线排名冲突，必须显式报告这一冲突，不得把先验写成已被数据证实的事实；"
+    "若给出了可辨识性告警（自变量近似共线），必须写明哪些指数在本次数据上不可单独辨识，"
+    "不得把它们的相对大小解释成独立的物理发现；\n"
+    "7. 结论。\n\n"
     "关于剪枝的硬性约束：只有判定为\"本次实际剪枝\"时，才把它写成剪枝结果；"
     "判定为\"未实际剪枝/仅形式变化\"时，最终公式就是剪枝前的公式，"
-    "simplify 的通分/展开形式**不是**剪枝结果，不得据此编造\"被移除的项\"。\n\n"
+    "simplify 的通分/展开形式**不是**剪枝结果，不得据此编造\"被移除的项\"；"
+    "判定为\"退化剪枝被拒\"时，那次剪枝已被否决，最终公式仍是剪枝前的公式，"
+    "不得把被剪掉的那几项写成\"已经简化掉的项\"。\n\n"
     "引用规范：正文引用文献处用 [n] 标注（n 为下方文献清单的编号）；只允许引用该清单"
     "内的文献，不得编造文献；文末的参考文献列表由系统自动附加，你不需要自己编写。"
 )
@@ -426,7 +437,8 @@ def _parse_func_header(func: str) -> tuple[str, str] | None:
 def build_explain_content(func: str, exp: dict, background: str | None = None,
                           pruning: dict | None = None,
                           references: list | None = None,
-                          holdout: dict | None = None) -> str | None:
+                          holdout: dict | None = None,
+                          facts: dict | None = None) -> str | None:
     """从样本函数、匹配的经验条目、剪枝摘要与文献构造解释提示词；失败返回 None。
 
     ``background`` 是问题的领域背景（来自 config_snapshot.json 的 ``background``
@@ -438,6 +450,8 @@ def build_explain_content(func: str, exp: dict, background: str | None = None,
 
     ``pruning`` 是 ``find_best_eq.prune_and_visualize`` 的剪枝摘要；``references``
     是已检索到的文献条目（``None`` 表示本函数自行检索，便于单独调用本函数）。
+    ``facts`` 是代码实测的数据事实表（``data_facts.json``，由 evaluation 层算出）；
+    给定时提示词里会带上候选骨架基线与可辨识性告警，用于对质物理先验。
     """
     thinking = exp.get("thinking_content", "")
     if not thinking:
@@ -478,6 +492,9 @@ def build_explain_content(func: str, exp: dict, background: str | None = None,
     # 样本外验证块：泛化性数字（机器算的），并明确"样本内 NMSE 不是泛化误差"
     holdout_block = _format_holdout_block(holdout, (pruning or {}).get("fit"))
 
+    # 代码实测的数据事实块：候选骨架基线与可辨识性告警，用于对质物理先验
+    facts_block = _format_facts_block(facts)
+
     # RAG 检索增强：注入相关文献背景（失败/库为空时静默跳过）。
     # references=None 表示调用方没检索过（直接调用本函数的情形），这里代劳。
     if references is None:
@@ -486,7 +503,7 @@ def build_explain_content(func: str, exp: dict, background: str | None = None,
     rag_block = _numbered_rag_context(refs)
     ref_list_block = _format_reference_list(refs)
 
-    return (head + bg_block + prune_block + holdout_block + "\n" + eq + "\n" + thinking
+    return (head + bg_block + facts_block + prune_block + holdout_block + "\n" + eq + "\n" + thinking
             + ("\n\n### 以下是相关文献背景，供力学解释参考 ###\n\n" + rag_block if rag_block else "")
             + ("\n\n" + ref_list_block if ref_list_block else "")
             + _REQUIRED_STRUCTURE + "\n"
@@ -521,6 +538,62 @@ def _format_holdout_block(holdout: dict | None, fit: dict | None = None) -> str:
     lines.append("谈泛化时只能以上述数字为依据：样本内 NMSE 不是泛化误差，"
                  "held-out 点也很少时只能说\"通过/未通过这次样本外检查\"，"
                  "不得据此声称公式已具备预测能力。")
+    return "\n".join(lines)
+
+
+def _load_facts(results_root: str) -> dict | None:
+    """读取同一次实验目录里的 ``data_facts.json``（缺失/损坏返回 None）。
+
+    只做 json 读盘、不 import evaluation：analysis 层的依赖白名单是
+    {core, llm, knowledge}，而事实表的计算在 evaluation 层（见
+    tests/test_architecture.py 的分层约束）。
+    """
+    try:
+        path = os.path.join(results_root, "data_facts.json")
+        if not os.path.exists(path):
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        print(f"[WARN] 读取 data_facts.json 失败（解释将不含实测基线块）: {e}")
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _format_facts_block(facts: dict | None) -> str:
+    """渲染代码实测的数据事实块（极值点、相关结构、候选骨架基线、可辨识性）。
+
+    数据由 evaluation 层算出并落在同一次实验目录（``data_facts.json``），本函数只读文件
+    ——analysis 层不能 import evaluation（分层约束见 tests/test_architecture.py）。
+
+    为什么要进解释提示词：实测里解释/采样模型会把物理先验讲成结论（"压缩模式应力由
+    整体长细比 lambda12*lambda23 支配"），而代码实测的乘积骨架 NMSE 是分别幂律的
+    8 倍；若不把实测基线摆到它面前，它没有理由放弃先验。
+    """
+    if not facts:
+        return ("\n\n### 以下是代码实测的数据事实 ###\n\n"
+                "本次实验目录里没有 data_facts.json（旧实验或计算失败），因此没有任何"
+                "实测基线数字。谈\"哪个自变量主导\"\"该形状是否符合数据\"时只能引用公式"
+                "自身的拟合数值，不得声称某个先验或骨架形状已被数据支持。")
+    lines = ["\n\n### 以下是代码实测的数据事实（与评估器同一拟合口径，可作为唯一数值出处） ###\n"]
+    ex = (facts.get("extremes") or {}).get("max")
+    if ex:
+        at = ", ".join(f"{k}={v}" for k, v in ex["at"].items())
+        lines.append(f"- 全局 {facts.get('dependent')} 最大：{ex['value']} 在 ({at})")
+    for c in facts.get("correlations") or []:
+        if c.get("b") != facts.get("dependent"):
+            continue
+        lines.append(f"- {c['a']} vs {c['b']}：pearson={c['pearson']}、spearman={c['spearman']}、"
+                     f"对数空间 pearson={c['log_pearson']}")
+    if facts.get("skeletons"):
+        lines.append("- 候选骨架基线（NMSE 越小越好）：")
+        for s in facts["skeletons"]:
+            shown = "拟合失败" if s.get("nmse") is None else f"NMSE={s['nmse']} R2={s.get('r2')}"
+            lines.append(f"  - {s['expression']} -> {shown}")
+    for w in facts.get("identifiability") or []:
+        lines.append(f"- 可辨识性告警：{w['message']}")
+    lines.append("以上数字是唯一依据：不要把物理先验、文献结论或经验说法当作已被数据证实的事实；"
+                 "若它们与上述基线冲突，必须显式报告冲突。")
     return "\n".join(lines)
 
 
@@ -595,7 +668,8 @@ def explain_best_sample(results_root: str, func: str, sample_order: str,
     content = build_explain_content(func, matched, background=background,
                                     pruning=pruning, references=references,
                                     holdout=holdout if holdout is not None
-                                    else (pruning or {}).get("holdout"))
+                                    else (pruning or {}).get("holdout"),
+                                    facts=_load_facts(results_root))
     if content is None:
         print("[WARN] 构造物理解释提示词失败，跳过。")
         return

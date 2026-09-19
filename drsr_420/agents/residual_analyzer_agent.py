@@ -20,6 +20,7 @@ from drsr_420.core import prompt_config as pc
 
 from drsr_420.agents.base import THREAD_PER_SAMPLER, AgentSpec, BaseAgent
 from drsr_420.agents.messages import ResidualInsight
+from drsr_420.evaluation.data_facts import load_facts, render_facts
 
 
 class ResidualAnalyzerAgent(BaseAgent):
@@ -43,6 +44,20 @@ class ResidualAnalyzerAgent(BaseAgent):
         self._llm_client = llm_client
         self._prompt_ctx = prompt_ctx
         self._results_root = results_root or '.'
+
+    def _load_facts_block(self) -> str:
+        """读取代码实测的数据事实表并渲染（缺失/损坏时返回空串，不注入）。
+
+        残差分析只拿到 (输入, 残差) 矩阵、拿不到原始因变量，无法自己重算统计量；
+        事实表由初次分析（DataAnalyzerAgent）写入同一实验目录，这里读盘复用，
+        保证"峰在哪""谁与响应相关"这类断言必须与实测数字一致。
+        """
+        try:
+            facts = load_facts(self._results_root)
+        except Exception as e:
+            print(f"读取数据事实表失败（跳过注入）: {e}")
+            return ""
+        return render_facts(facts) if facts else ""
 
     def analyze(self, sample, residual) -> ResidualInsight:
         """构造残差分析提示并调用 LLM，返回残差洞察（样本 + 分析文本）。
@@ -82,6 +97,10 @@ class ResidualAnalyzerAgent(BaseAgent):
                 residual=residual,
                 sample=sample,
             )
+        # 附上代码实测的数据事实表（与初次分析共用同一份 <results_root>/data_facts.json）
+        facts_block = self._load_facts_block()
+        if facts_block:
+            res_analyze += facts_block
 
         print_block("========这是输入的残差提示词==========\n")
         print_block(res_analyze)

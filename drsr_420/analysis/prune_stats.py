@@ -41,6 +41,9 @@ class PruneStats:
     simplify_applied: bool = False       # 是否真的调用了 sp.simplify
     #: 诊断：0 项剪枝时 simplify 会给出的**不同**形式（与原文同形时留 None）
     simplified_expr: Optional[sp.Expr] = None
+    #: 诊断：敏感度**无法测量**（该候选在采样区间求值不出有限值）而被迫保留的次数。
+    #: 大于 0 说明这次剪枝是在"测不出敏感度"的表达式上做的——结论不可信，必须可见。
+    nonfinite_sensitivity: int = 0
 
     @property
     def prune_rate(self) -> float:
@@ -60,6 +63,10 @@ class PruneStats:
             f"  剪枝率     : {self.prune_rate:.1%}",
             self._actual_pruning_line(),
         ]
+        if self.nonfinite_sensitivity:
+            lines.append(
+                f"  无法测量项 : {self.nonfinite_sensitivity}（求值未得到有限值，"
+                f"已全部保留、未参与剪枝——本次剪枝结论不可信）")
         if self.records:
             lines += ["", "  已剪枝节点："]
             for r in self.records:

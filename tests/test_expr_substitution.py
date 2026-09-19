@@ -7,6 +7,7 @@ from drsr_420.analysis.expr_parse import (
     WhereArityError,
     expr_substitution,
     find_matching_paren,
+    fold_constant_comparisons,
     normalize_condition,
     rewrite_where_calls,
     split_top_level,
@@ -333,7 +334,8 @@ class WherePiecewiseTest(_ExprTestCase):
 
     def test_aliases_respect_identifier_boundaries(self):
         """回归：旧实现 `str.replace("maximum", "Max")` 会把 maximum_likelihood 改成 Max_likelihood。"""
-        func = _spec(["return maximum_likelihood * x1"])
+        func = _spec(["return maximum_likelihood * x1"],
+                     independents="x1, maximum_likelihood")
         expr = expr_substitution(func, [1.0])
         self.assertIsNotNone(expr)
         names = {s.name for s in expr.free_symbols}
@@ -435,6 +437,76 @@ class IntermediateVariableLineTest(_ExprTestCase):
         expr = expr_substitution(func, [4.0])
         self.assertIsNotNone(expr)
         self.assertEqual(sp.simplify(expr - 4 * X1), 0)
+
+
+def _guard_spec(params_index: int) -> str:
+    """模型手写的防除零骨架：`(params[k] == 0) * 1e-12`。
+
+    真实事故（MRFCompress-Cuboid_20260919-143926 的最优样本）就是这种写法：参数代入后
+    比较两侧都成了常量，``parse_expr`` 把它求值成 Python ``bool``，``bool * Float`` 抛
+    TypeError → 中间变量行被跳过 → return 里的名字成了**孤儿符号** → 求值全 NaN →
+    敏感度被当成 0 → 剪枝把公式剪成常数 193.054（NMSE 8.7e-07 → 6.81）。
+    """
+    k = params_index
+    return _spec([
+        "e12 = x1 - 1.0",
+        f"sat12 = params[0] * e12 / (params[{k}] + abs(e12) + (params[{k}] == 0) * 1e-12)",
+        "return sat12 + params[1]",
+    ])
+
+
+class ConstantComparisonFoldingTest(_ExprTestCase):
+    """``(params[k] == 0) * 1e-12`` 代入参数后是**常量比较**：必须折叠成 0/1。"""
+
+    def test_constant_comparison_folded_and_line_parses(self):
+        expr = expr_substitution(_guard_spec(1), [2.0, 200.0, 0.0])
+        self.assertIsNotNone(expr, "防除零写法不得让整条中间变量行解析失败")
+        self.assertEqual({str(s) for s in expr.free_symbols}, {"x1"})
+        # 守卫条件为假 → 分母里加的是 0，与手工代入逐点一致
+        expected = 2.0 * (X1 - 1.0) / (200.0 + sp.Abs(X1 - 1.0)) + 200.0
+        self.assert_expr_close(expr, expected)
+
+    def test_folds_to_zero_when_guard_is_inactive(self):
+        # 守卫条件为假 → 加 0，与手工代入完全一致
+        func = _spec(["return params[0] + (params[0] == 0) * 1e-12"])
+        expr = expr_substitution(func, [7.0])
+        self.assertEqual(expr, sp.Float(7.0))
+
+    def test_symbolic_comparison_left_alone(self):
+        # 含符号的比较不属于折叠范围：在这里折叠会静默丢掉分支（那是 normalize_condition 的事）
+        self.assertEqual(fold_constant_comparisons("x1 == 0"), "x1 == 0")
+        self.assertEqual(fold_constant_comparisons("where(x1 == 0, 1, 2)").count("x1 == 0"), 1)
+
+    def test_non_python_text_passes_through(self):
+        self.assertEqual(fold_constant_comparisons("Piecewise((a, x1 >= 0), (b, True))"),
+                         "Piecewise((a, x1 >= 0), (b, True))")
+        self.assertEqual(fold_constant_comparisons("2 x"), "2 x")
+
+
+class OrphanSymbolRejectionTest(_ExprTestCase):
+    """return 用到未定义符号（中间变量行解析失败的后果）时必须拒绝解析。
+
+    这类表达式求值必然全非有限，交给下游只会静默产出错误结论——真实事故里剪枝据此
+    把公式剪成了常数。
+    """
+
+    def test_orphan_intermediate_symbol_is_rejected(self):
+        func = _spec([
+            "a = params[0]*((",
+            "return a + x1",             # a 未定义：孤儿符号
+        ])
+        self.assertIsNone(expr_substitution(func, [1.0]))
+
+    def test_undefined_symbol_in_expression_is_rejected(self):
+        func = _spec(["b = x1 + params[0]", "return b + c"])
+        self.assertIsNone(expr_substitution(func, [1.0]))
+
+    def test_sample_count_symbol_n_is_still_allowed(self):
+        # N（样本数）按历史约定始终保留为符号，不得被当成未定义符号拒绝
+        func = _spec(["return params[0]*x1/N"])
+        expr = expr_substitution(func, [6.0])
+        self.assertIsNotNone(expr)
+        self.assertIn(sp.Symbol("N"), expr.free_symbols)
 
 
 class SympyNameCollisionTest(_ExprTestCase):

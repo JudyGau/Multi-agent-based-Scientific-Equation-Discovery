@@ -25,6 +25,12 @@ from drsr_420.agents.base import (
     AgentSpec,
     BaseAgent,
 )
+from drsr_420.evaluation.data_facts import (
+    compute_facts,
+    extract_xy,
+    facts_path,
+    render_facts,
+)
 
 
 class DataAnalyzerAgent(BaseAgent):
@@ -52,7 +58,8 @@ class DataAnalyzerAgent(BaseAgent):
 
     def __init__(self, api_url: str = "http://127.0.0.1:5000/completions", timeout: int = 300,
                  decimal_places: int | None = None, sample_size: int | None = None, base_dir: str | None = None,
-                 llm_client: object | None = None, seed: int | None = None):
+                 llm_client: object | None = None, seed: int | None = None,
+                 feature_names: list[str] | None = None, dependent_name: str | None = None):
         """
         初始化数据分析器
 
@@ -61,12 +68,17 @@ class DataAnalyzerAgent(BaseAgent):
             timeout: API请求超时时间(秒)
             decimal_places: 保留小数位数，None表示使用默认值
             sample_size: 随机采样数量，None表示使用默认值
+            feature_names: 自变量名（取自 PromptContext），用于数据事实表的相关性对名；
+                缺省时按 x1..xN 生成（事实表仍可用，只是名字与提示词里的不一致）。
+            dependent_name: 因变量名，缺省 y。
         """
         self.api_url = api_url
         self.timeout = timeout
         self.base_dir = base_dir or "."
         self.llm_client = llm_client
         self.seed = seed
+        self.feature_names = feature_names
+        self.dependent_name = dependent_name
         # 实例级配置：原先 self.__class__.DECIMAL_PLACES = ... 会污染所有实例共享的
         # 类属性（多实例/复用类时互相覆盖），改为实例属性隔离。
         self.decimal_places = self.DECIMAL_PLACES if decimal_places is None else decimal_places
@@ -207,6 +219,35 @@ STRICTLY deliver results in the following structured format:
         """
 
 
+    def _build_facts_block(self, data_source, max_rows: Optional[int]) -> str:
+        """算并落盘数据事实表，返回可注入提示词的文本块（任何失败都退回空串）。
+
+        事实表写进 ``<base_dir>/data_facts.json``：残差分析（同类 Agent）与收尾解释
+        （analysis 层）都从这里读，避免各层重复计算或各自造一套口径。只支持数据字典
+        形态的数据源（``{'data': {'inputs','outputs'}}``，主流程走的就是它）；CSV 路径
+        形态取不到数值数组，直接跳过注入。
+        """
+        xy = extract_xy(data_source)
+        if xy is None:
+            return ""
+        X, y = xy
+        if max_rows is not None:
+            X, y = X[:max_rows], y[:max_rows]
+        names = list(self.feature_names) if self.feature_names else \
+            [f"x{i + 1}" for i in range(X.shape[1])]
+        if len(names) != X.shape[1]:
+            names = [f"x{i + 1}" for i in range(X.shape[1])]
+        try:
+            facts = compute_facts(X, y, names, self.dependent_name or "y", seed=self.seed)
+            with open(facts_path(self.base_dir), "w", encoding="utf-8") as f:
+                json.dump(facts, f, ensure_ascii=False, indent=2)
+            print(f"已写入数据事实表: {facts_path(self.base_dir)}")
+        except Exception as e:
+            # 事实表只是提示词增强：算不出来不能拖垮实验，退回"不注入"
+            print(f"数据事实表计算失败（跳过注入）: {e}")
+            return ""
+        return render_facts(facts)
+
     def _query_model(self, prompt: str) -> str:
         """
         向远程API发送请求
@@ -295,8 +336,12 @@ STRICTLY deliver results in the following structured format:
             # 仅 dict 分支定义的 array_data，CSV 分支会 NameError，此处为死代码已移除）
             print(f"数据大小: {len(data_content)} 字符")
 
+        # 代码算出的数据事实表（统计/相关/极值点/骨架基线）随后注入提示词，
+        # 让模型的数值断言有唯一出处，别无中生有地复述数据。
+        facts_block = self._build_facts_block(data_source, max_rows)
+
         # 创建提示
-        prompt = self._create_prompt(data_content, custom_prompt)
+        prompt = self._create_prompt(data_content, custom_prompt) + facts_block
 
         if verbose:
             print_block("输入给DataAnalyzer的提示词：\n"+prompt)

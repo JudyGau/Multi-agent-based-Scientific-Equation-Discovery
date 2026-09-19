@@ -1,25 +1,16 @@
 import contextlib
 import json
-import http.client
 import os
 import random
 import re
 import sys
-from pathlib import Path
-from typing import List
 from urllib.parse import quote, urljoin
-
-if __package__ in (None, ""):
-    # 直接以脚本运行（python drsr_420/tools/read_paper.py）时项目根不在 sys.path，
-    # 下面的 drsr_420.* 绝对导入会 ModuleNotFoundError；补上根目录使两种方式均可用。
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from bs4 import BeautifulSoup
 import pymupdf  # PyMuPDF
 import requests
 from tqdm import tqdm
 import drsr_420.llm as llm
-from drsr_420.knowledge.tools.search_paper import search_paper
 
 # ── 客户端（懒加载，避免模块导入时创建客户端而崩溃）────
 def _load_llm_config():
@@ -116,30 +107,22 @@ def _summarize_text(client, cfg, full_text):
         client.kwargs.update(overrides)
     # 在 MCP 子进程里把统计打印改道 stderr（否则整段 token/耗时统计会被块缓冲吞掉）
     with _stats_to_stderr():
+        # 摘要请求必须是"不许调工具"的：客户端对每个请求都附带 tools + tool_choice=auto，
+        # 而 qwen3.7-flash 会把"读文献并总结"答成一次 search_paper 调用（content 为空），
+        # 摘要永远拿不到。这条策略由 summary 角色的档案声明（extra_body.tool_choice），
+        # 不在代码里写死——换模型时改配置即可。
         response = client.chat([
             {"role": "system", "content": "You are a helpful assistant, you need to read literature and summarize."},
             {"role": "user", "content": f"{full_text}"}
         ])
-    # drsr_420.llm.client 对每个请求都附带 tools + tool_choice=auto：摘要模型偶尔会"回答"成
-    # 工具调用而 content 为空——必须显式报错（由调用方记入返回列表），
-    # 否则空字符串会被当成合法摘要静默入库。
+    # 兜底：档案没声明、或端点忽略了该字段时，模型仍可能回工具调用或空内容——
+    # 必须显式报错（由调用方记入返回列表），否则空字符串会被当成合法摘要静默入库。
     if response.get("tool_calls"):
         raise RuntimeError("摘要模型返回了工具调用而非文本摘要")
     content = (response.get("content") or "").strip()
     if not content:
         raise RuntimeError("摘要模型返回空内容")
     return content
-
-
-_agent_client = None
-
-
-def _get_agent_client():
-    """懒加载 agent_run 使用的客户端（基于模型配置文件配置的模型）。"""
-    global _agent_client
-    if _agent_client is None:
-        _agent_client = _build_client(_load_llm_config())
-    return _agent_client
 
 # ── Sci-Hub 反爬规避 ────────────────────────────────
 # 镜像会不定期失效或被封，多镜像依次尝试，命中反爬/失效自动切换
@@ -319,16 +302,142 @@ def _download_pdf_by_doi(doi: str, save_dir: str, timeout: int = 30) -> str:
 
     raise RuntimeError(f"所有下载渠道失败（Unpaywall 无 OA + Sci-Hub 全部不可达/被反爬）: {last_err}")
 
-# SERPER_KEY = "ac28c1aac4d446f3de5c8e79ea6d406727509455"
+
+# ── 标题校验：拒绝"DOI 下到的不是请求的那篇"────────────────
+#: 判定"PDF 内容就是请求的那篇"时，请求标题的 token 覆盖率下限。
+_TITLE_MIN_COVERAGE = 0.6
+#: 覆盖率低于 0.9 时额外要求的最少命中 token 数（防止两三个通用词就判通过）。
+_TITLE_MIN_MATCHED = 3
+#: 标题比对时忽略的虚词（对论文标题没有区分度，却常见于任意论文首页）。
+_TITLE_STOPWORDS = frozenset({
+    "of", "in", "the", "a", "an", "and", "or", "on", "for", "to", "with",
+    "by", "as", "at", "from", "into", "via", "using", "use", "is", "are",
+})
+#: 首页启发式取最大字号文本时，最多保留的字符数（只为报错提示用）。
+_TITLE_CANDIDATE_CHARS = 300
 
 
-# ── 工具 2：web visit ───────────────────────
+def _title_tokens(text: str) -> set[str]:
+    """标题/首页文本 → 归一化 token 集合（小写、只留字母数字、去虚词）。"""
+    words = re.findall(r"[a-z0-9]+", str(text or "").lower())
+    return {w for w in words if w not in _TITLE_STOPWORDS}
+
+
+def _title_matches(requested: str, text: str) -> bool:
+    """请求标题的 token 是否基本都被 ``text`` 覆盖。
+
+    用"覆盖率"而不是集合相似度：真实论文首页除了标题还会有期刊名、作者、
+    DOI、摘要等，做 Jaccard 会因这些额外 token 把命中率稀释掉。
+    """
+    req = _title_tokens(requested)
+    if not req:
+        # 请求没给标题（只有 DOI）时不校验，避免把合法调用判死
+        return True
+    got = _title_tokens(text)
+    if not got:
+        return False
+    matched = len(req & got)
+    coverage = matched / len(req)
+    if coverage >= 0.9:
+        return True
+    return matched >= _TITLE_MIN_MATCHED and coverage >= _TITLE_MIN_COVERAGE
+
+
+def _first_page_title_candidate(doc) -> str:
+    """从首页挑一段"最像标题"的文本（启发式）：最大字号的行优先。
+
+    pymupdf 的 ``doc.metadata['title']`` 在 Sci-Hub/出版商 PDF 上经常为空、
+    或是排版软件的文件名（"Microsoft Word - xxx.doc"），因此只作为候选之一；
+    真正稳定的是首页字号最大的那几行。全部空时回退到首页前若干非空行。
+    """
+    try:
+        meta_title = (doc.metadata or {}).get("title") or ""
+    except Exception:
+        meta_title = ""
+    meta_title = meta_title.strip()
+    # 排版软件留下的文件名痕迹，不是真标题
+    if meta_title.lower().startswith("microsoft word"):
+        meta_title = ""
+
+    try:
+        page = doc.load_page(0)
+        data = page.get_text("dict")
+    except Exception:
+        return meta_title
+
+    largest = 0.0
+    lines: list[str] = []
+    fallback: list[str] = []
+    for block in data.get("blocks", []):
+        for line in block.get("lines", []):
+            spans = line.get("spans") or []
+            text = "".join((s.get("text") or "") for s in spans).strip()
+            if not text:
+                continue
+            if len(fallback) < 20:
+                fallback.append(text)
+            size = max((s.get("size") or 0.0) for s in spans) if spans else 0.0
+            if size > largest + 0.1:
+                largest = size
+                lines = [text]
+            elif lines and abs(size - largest) <= 0.1:
+                lines.append(text)
+
+    candidate = " ".join(lines).strip() or " ".join(fallback).strip()
+    candidate = candidate or meta_title
+    return candidate[:_TITLE_CANDIDATE_CHARS]
+
+
+def _verify_pdf_title(doc, title: str, doi: str) -> str | None:
+    """校验打开的 PDF 是否就是请求标题那篇；不匹配时返回拒绝语，匹配返回 ``None``。
+
+    历史上 ``read_paper`` 只按 DOI 取 PDF、从不看内容是不是要的那篇，于是
+    LLM 编造的 (标题, DOI) 配对会把**完全无关的论文摘要**当文献证据喂进上下文
+    （实测：请求 "Effect of particle shape in magnetorheology" 却拿到
+    Fabry-Pérot 干涉仪论文的 8073 字符摘要，采样者随即写下 "tool outputs were
+    irrelevant"）。这里在摘要之前做一次标题比对，不匹配就明确回传"标题不符"，
+    而不是把无关摘要塞进返回值。
+    """
+    title = str(title or "").strip()
+    if not title:
+        return None
+    # 没有可校验的标题就放行：模型有时把 DOI 本身当标题传（实测 3 例），
+    # 或标题里没有一个字母词——拿这些去比对只会误杀合法调用。
+    if re.search(r"10\.\d{4,9}/", title) or not re.search(r"[A-Za-z]", title):
+        return None
+    try:
+        page_text = doc.load_page(0).get_text()
+    except Exception:
+        page_text = ""
+    candidate = _first_page_title_candidate(doc)
+    # 请求标题的 token 只要基本被"首页文本"或"首页标题候选"之一覆盖即视为命中
+    if _title_matches(title, page_text) or _title_matches(title, candidate):
+        return None
+    shown = candidate or (page_text[:200] if page_text else "（首页无文本）")
+    return (
+        f"标题不符，已拒绝摘要：请求标题 '{title}'，但 DOI {doi} 下到的 PDF 首页标题为 "
+        f"'{shown}'。DOI 可能不是你想要的论文——请从 search_paper 的返回结果里逐字"
+        "复制 DOI 与标题后重试，不要凭记忆拼写 DOI。"
+    )
+
+
+# ── 工具：read_paper（取文献正文 + 摘要）────────────────
 def read_paper(title_doi: list[tuple[str, str]] | tuple[str, str], save_dir="pdf_downloads") -> str :
+    """按 (标题, DOI) 取文献正文并交给 ``summary`` 角色做摘要，返回摘要的 JSON 数组。
+
+    每篇条目独立处理：本地文献库（``save_dir`` 下以 DOI 命名的 PDF）命中就直接读，
+    否则先下 PDF（Unpaywall OA → Sci-Hub 多镜像 failover，见 ``_download_pdf_by_doi``），
+    再用 pymupdf 提取全文送 LLM 摘要。单篇失败只把错误写进返回数组的对应位置，
+    不让整批调用崩溃——数组与请求的条目一一对齐，agent 不会误判成"该文无内容"。
+
+    取到 PDF 后**先校验首页标题与请求标题是否一致**（``_verify_pdf_title``）：
+    不一致说明 (标题, DOI) 配对是模型编的（DOI 有效但不是这篇），此时回传"标题不符"
+    而不是无关论文的摘要，避免错误文献被当证据注入推理上下文。
+
+    Args:
+        title_doi: ``[title, doi]`` 二元组，或这类二元组的列表（单个二元组可直接传）。
+        save_dir: 本地 PDF 文献库目录，同时是下载落盘处，默认 ``pdf_downloads``。
     """
-    调 Serper 的 WebPage API，
-    返回『已摘选结构化』的 JSON 字符串，方便模型消费。
-    """
-    """下载PDF文件并保存到本地"""
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
 
@@ -362,6 +471,12 @@ def read_paper(title_doi: list[tuple[str, str]] | tuple[str, str], save_dir="pdf
             if os.path.exists(file_path):
                 print(f"在本地文献库找到文献: {file_path}", file=sys.stderr)
                 doc = pymupdf.open(file_path)
+                mismatch = _verify_pdf_title(doc, title, doi)
+                if mismatch:
+                    doc.close()
+                    print(f"标题不符，跳过摘要: {title}", file=sys.stderr)
+                    textlist.append(mismatch)
+                    continue
                 full_text = ""
                 for page_num in range(doc.page_count):
                     page = doc.load_page(page_num)
@@ -387,6 +502,12 @@ def read_paper(title_doi: list[tuple[str, str]] | tuple[str, str], save_dir="pdf
 
                 # 读取全文并做 LLM 摘要（与本地库路径一致，恒返回摘要而非原文）
                 doc = pymupdf.open(file_path)
+                mismatch = _verify_pdf_title(doc, title, doi)
+                if mismatch:
+                    doc.close()
+                    print(f"标题不符，跳过摘要: {title}", file=sys.stderr)
+                    textlist.append(mismatch)
+                    continue
                 full_text = ""
                 for page_num in range(doc.page_count):
                     page = doc.load_page(page_num)
@@ -408,108 +529,3 @@ def read_paper(title_doi: list[tuple[str, str]] | tuple[str, str], save_dir="pdf
             textlist.append(f"未知错误: {title} | 错误: {e}")
 
     return json.dumps(textlist)
-
-
-
-
-    # # 只留 organic 里有用的字段（跟上一轮你贴的结构对齐）
-    # cleaned = []
-    # for item in raw.get("organic", []):
-    #     cleaned.append({
-    #         "title": item.get("title"),
-    #         "link": item.get("link"),
-    #         "publicationInfo": item.get("publicationInfo"),
-    #         "snippet": item.get("snippet"),
-    #         "year": item.get("year"),
-    #         "citedBy": item.get("citedBy"),
-    #         "pdfUrl": item.get("pdfUrl"),
-    #     })
-    #
-    # return json.dumps(cleaned, ensure_ascii=False)
-
-
-# ── Tool Schema（DeepSeek 兼容 OpenAI tools 协议）───────
-
-
-# ── Agent Loop ──────────────────────────────────────────
-def agent_run(user_query: str, model: str | None = None):
-    """
-    deepseek-chat = V3.2 非思考模式
-    deepseek-reasoner = V3.2 思考模式（tool call 时要回传 reasoning_content，见下方提示）
-
-    :param model: 覆盖模型名；``None`` 表示沿用 ``summary`` 角色档案里配置的模型。
-        曾经这里写死 ``"deepseek-v4-pro"``——它会**覆盖**档案里的选择，于是"给文献摘要
-        换模型"这件事在配置层完全失效（且那个模型名已随档案一起下线）。
-    """
-    messages = [
-        {"role": "system", "content": "You are an academic assistant skilled at searching for papers, downloading them, and summarizing them."},
-        {"role": "user", "content": user_query},
-    ]
-
-    client = _get_agent_client()
-    if model:
-        client.model = model  # 允许调用方显式指定模型名
-
-    # 第一轮：让模型决定是否调工具（统计打印同 _summarize_text，见 _stats_to_stderr）
-    with _stats_to_stderr():
-        resp = client.chat(messages)
-    msg = resp
-
-    while True:
-        # print("========================思考过程========================\n")
-        # print(resp.get('reasoning_content', ''))
-        # print("====================================================\n")
-
-        tool_calls = msg.get('tool_calls') or []
-        messages.append(msg)
-
-        # 如果调了 tool，执行后回传
-        if tool_calls:
-            print("调用了工具：", tool_calls)
-
-            for tc in tool_calls:
-                fn_name = tc.get('function', {}).get('name')
-                try:
-                    args = json.loads(tc.get('function', {}).get('arguments', '{}') or '{}')
-                except json.JSONDecodeError as e:
-                    # LLM 偶发产出非法工具参数 JSON：把错误回传给模型自行纠正，
-                    # 而不是让整个循环崩溃
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc.get('id', ''),
-                        "content": json.dumps({"error": f"invalid tool arguments: {e}"})
-                    })
-                    continue
-                result = ''
-                if fn_name == "search_paper":
-                    result = search_paper(**args)
-                elif fn_name == "read_paper":
-                    result = read_paper(**args)
-                else:
-                    result = json.dumps({"error": "unknown tool"})
-
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.get('id', ''),
-                    "content": result
-                })
-
-            # 第二轮：模型拿到 Scholar 结果后做自然语言回答
-            with _stats_to_stderr():
-                resp = client.chat(messages)
-            msg = resp
-        # 如果未调用，则跳出循环
-        else:
-            return msg.get('content', '')
-
-
-# ── 试运行 ──────────────────────────────────────────────
-if __name__ == "__main__":
-    q = "MRF"
-    answer = agent_run(q)
-    print("\n[DeepSeek 回答]\n")
-    print(answer)
-
-
-    # pdf_links="https://ieeexplore.ieee.org/stampPDF/getPDF.jsp?tp=&arnumber=11323465"
-    # read_paper(pdf_links,"LLMSR")

@@ -207,7 +207,14 @@ class LLMClient:
         return self.provider or 'llm'
 
     def _build_payload(self, messages: List[Dict[str, str]]) -> dict:
-        """构造请求体：固定字段 + 白名单生成参数 + 提供商差异适配。"""
+        """构造请求体：固定字段 + 白名单生成参数 + 提供商差异适配。
+
+        工具声明是**默认行为**（``tools`` + ``tool_choice=auto``），要"不许调工具"
+        只能由档案的 ``extra_body.tool_choice`` 改写：``extra_body`` 在本方法末尾
+        并入请求体顶层，能覆盖这里的默认值（这也是它作为"端点私有能力唯一出口"的
+        用法之一）。直接把 ``tool_choice`` 写在档案顶层则**无效**——它不在
+        :data:`ALLOWED_GEN_KEYS` 白名单里，会被静默丢弃。
+        """
         payload = {
             "model": self.model,
             "messages": messages,

@@ -33,12 +33,16 @@ from drsr_420.core import code_manipulation
 from drsr_420.evaluation import accelerate as evaluator_accelerate
 from drsr_420.evaluation import problems as evaluate_on_problems
 
-#: 主进程通过该环境变量把实验目录告诉 worker 子进程（``cli.main.setup_output_tee``
-#: 设置）。multiprocessing 的 spawn 子进程继承环境变量，但 **stderr 只继承到
-#: 控制台 fd**——主进程的 run.out/run.err 是通过替换 ``sys.stderr`` 实现的，子进程
-#: 里根本看不到这个替换。结果就是：评估过程中的数值告警（scipy/numpy 的
-#: RuntimeWarning）只在 IDE 控制台一闪而过，实验产物里查不到（第 9 轮实测教训）。
-WORKER_LOG_ENV = 'DSR_RESULTS_ROOT'
+#: 主进程通过该环境变量把实验目录告诉子进程（``cli.main.setup_output_tee`` 设置）。
+#: multiprocessing 的 spawn 子进程继承环境变量，但 **stderr 只继承到控制台 fd**——
+#: 主进程的 run.out/run.err 是通过替换 ``sys.stderr`` 实现的，子进程里根本看不到这个
+#: 替换。结果就是：评估过程中的数值告警（scipy/numpy 的 RuntimeWarning）只在 IDE
+#: 控制台一闪而过，实验产物里查不到（第 9 轮实测教训）。
+#:
+#: 名字必须带 ``DRSR_`` 前缀：MCP 工具子进程靠 ``tool_runner._ENV_PREFIXES`` 透传
+#: "项目自有变量"，用的就是这个约定——两类子进程都要据此把自己的 stderr 旁路进
+#: run.err（见 ``mcp_server.attach_server_stderr``）。
+WORKER_LOG_ENV = 'DRSR_RESULTS_ROOT'
 
 
 class _WorkerStderrTee:

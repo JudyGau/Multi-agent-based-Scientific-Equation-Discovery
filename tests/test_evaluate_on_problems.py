@@ -19,6 +19,61 @@ def linear_equation(x1, x2, params):
     return params[0] * x1 + params[1] * x2 + params[2]
 
 
+class SpecTemplateMatchesEvaluatorTest(unittest.TestCase):
+    """动态 spec 写给 LLM 的拟合口径必须与真实评估器一致。
+
+    旧模板写的是 ``minimize(loss, [1.0]*MAX_NPARAMS, method='BFGS')``——无界、单起点、
+    初值全 1，而实际评估器是**多起点有界** ``least_squares``（``N_STARTS`` 个 U(-1,1)
+    起点 + 热启动，``bounds=PARAMS_BOUNDS``）。模型据此判断"这个骨架能不能被拟合出来"，
+    文档漂移会让它按错误的初值/收敛假设设计骨架。
+    """
+
+    def setUp(self):
+        from drsr_420.cli.main import render_spec
+        self.spec = render_spec(2, ["x1", "x2"], "sigma", "bg")
+
+    def test_uses_the_real_optimizer_and_bounds(self):
+        self.assertIn("from scipy.optimize import least_squares", self.spec)
+        self.assertIn(f"bounds={eop.PARAMS_BOUNDS}", self.spec)
+        self.assertIn(f"{eop.N_STARTS} 个起点", self.spec)
+        self.assertNotIn("BFGS", self.spec)
+        self.assertNotIn("minimize(", self.spec)
+
+    def test_keeps_the_scoring_contract(self):
+        # score = -MSE；非有限损失返回 None（与 evaluate() 的返回契约一致）
+        self.assertIn("return -loss_val", self.spec)
+        self.assertIn("if not np.isfinite(loss_val):", self.spec)
+        self.assertIn(f"MAX_NPARAMS = {eop.MAX_NPARAMS}", self.spec)
+
+
+class LegacySpecsMatchEvaluatorTest(unittest.TestCase):
+    """``specs/*.txt`` 这批历史静态 spec 里的拟合口径也要与评估器一致。
+
+    它们已不参与运行（动态 spec 由 ``render_spec`` 生成），但仍是可复制的骨架范例，
+    写着旧优化器会继续误导人（与动态模板同一处漂移）。
+    """
+
+    def _specs(self):
+        import glob
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parents[1]
+        return sorted(glob.glob(str(root / "specs" / "*.txt")))
+
+    def test_no_stale_optimizer_and_constants_are_current(self):
+        files = self._specs()
+        self.assertTrue(files, "specs/ 下应有历史静态 spec")
+        for path in files:
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+            with self.subTest(spec=path.rsplit("\\", 1)[-1]):
+                self.assertNotIn("BFGS", text)
+                self.assertNotIn("minimize(", text)
+                self.assertIn(f"bounds={eop.PARAMS_BOUNDS}", text)
+                self.assertIn(f"{eop.N_STARTS} 个起点", text)
+                self.assertIn("not np.isfinite(loss)", text)
+                self.assertIn("loss = float(np.mean(np.square(result.fun)))", text)
+
+
 class EvaluateTest(unittest.TestCase):
     def test_returns_negative_score_and_matrices(self):
         score, matrix, params = eop.evaluate(make_dataset(), linear_equation)

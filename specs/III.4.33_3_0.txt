@@ -19,19 +19,21 @@ def evaluate(data: dict) -> float:
     X = inputs
     
     # Optimize parameters based on data
-    from scipy.optimize import minimize
-    def loss(params):
+    from scipy.optimize import least_squares
+    def residual(params):
         y_pred = equation(*X.T, params)
-        return np.mean((y_pred - outputs) ** 2)
+        return y_pred - outputs        # least_squares 的残差向量
 
-    loss_partial = lambda params: loss(params)
-    result = minimize(loss_partial, [1.0]*MAX_NPARAMS, method='BFGS')
+    # 参数以**多起点有界最小二乘**求解（与项目评估器 evaluation/problems.py 一致）：
+    # 5 个起点取自 U(-1, 1)（逐个裁剪进边界）+ 可选热启动，逐起点取残差平方均值最小者；
+    # bounds 防止无界优化让参数发散（NaN/inf），对应 problems.PARAMS_BOUNDS。
+    result = least_squares(residual, [1.0]*MAX_NPARAMS, bounds=(-10000.0, 10000.0))
     
     # Return evaluation score
     optimized_params = result.x
-    loss = result.fun
+    loss = float(np.mean(np.square(result.fun)))
 
-    if np.isnan(loss) or np.isinf(loss):
+    if not np.isfinite(loss):
         return None
     else:
         return -loss

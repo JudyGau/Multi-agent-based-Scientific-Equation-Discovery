@@ -110,10 +110,36 @@ class SensitivityMetricTest(unittest.TestCase):
             ExpressionEvaluator([x], metric="absolute", reduction="max")
             .sensitivity(orig, pruned), 4.0)
 
-    def test_all_nan_returns_zero(self):
+    def test_all_nan_returns_inf(self):
+        # 求值不可用 = "测不出来"，不是"敏感度 0"：后者会让每一项都被判为可删
         ev = ExpressionEvaluator([x])
         s = ev.sensitivity(np.array([np.nan]), np.array([np.nan]))
-        self.assertEqual(s, 0.0)
+        self.assertEqual(s, float("inf"))
+
+
+class UnevaluableExpressionTest(unittest.TestCase):
+    """表达式求不出有限值时：测不出敏感度 → 全部保留，且统计里必须可见。
+
+    真实事故（MRFCompress-Cuboid_20260919-143926）：含孤儿符号的表达式求值全 NaN，
+    旧实现把 NaN 判成敏感度 0 → 每一项都被删 → 公式塌缩成常数 193.054。
+    """
+
+    def test_nothing_pruned_and_visible_in_stats(self):
+        expr = sp.Symbol("t") + x**2 + y**2      # t 未定义：lambdify/subs 都求不出数
+        pruner = SensitivityPruner([x, y], threshold=0.5, sample_range=(1, 6), seed=42)
+        published = pruner.prune(expr)
+        self.assertEqual(pruner.stats.nodes_pruned, 0)
+        self.assertIs(published, expr)
+        self.assertGreater(pruner.stats.nonfinite_sensitivity, 0)
+        self.assertIn("无法测量项", pruner.stats.summary())
+
+    def test_evaluable_subterm_alone_is_still_prunable(self):
+        # 单个候选自身不可求值时不参与排序；可求值的父节点仍按原判据正常工作
+        expr = x**2 + y**2 + eps * x * y
+        pruner = SensitivityPruner([x, y], threshold=0.01, sample_range=(1, 6), seed=42)
+        pruner.prune(expr)
+        self.assertEqual(pruner.stats.nonfinite_sensitivity, 0)
+        self.assertGreater(pruner.stats.nodes_pruned, 0)
 
 
 class PruneBehaviorTest(unittest.TestCase):

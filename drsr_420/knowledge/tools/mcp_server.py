@@ -31,6 +31,85 @@ def _mark_server_process() -> None:
     os.environ[MCP_SERVER_ENV] = "1"
 
 
+#: 实验目录环境变量。与评估 worker 共用同一个名字（定义在
+#: ``evaluation.sandbox.WORKER_LOG_ENV``）——knowledge 层按分层规则不能 import
+#: evaluation，只能在需要处重述一次；它是"主进程 ↔ 子进程"的约定，改一处要改两处。
+RESULTS_ROOT_ENV = "DRSR_RESULTS_ROOT"
+
+
+class _StderrTee:
+    """子进程侧 stderr 分流：控制台 + 实验 ``run.err``。
+
+    每次 write 都 flush：服务器子进程随时可能被父进程强杀，留在缓冲区里的内容会直接
+    丢掉——而刚刚那次下载/总结的现场恰恰是最想留下的。语义与 ``cli.main._Tee``、
+    ``sandbox._WorkerStderrTee`` 一致（控制台优先、旁路写入失败不影响主流程）。
+    """
+
+    def __init__(self, console, fp):
+        self._console = console
+        self._fp = fp
+
+    def write(self, data):
+        for stream in (self._console, self._fp):
+            try:
+                stream.write(data)
+            except Exception:
+                pass
+        try:
+            self._fp.flush()
+        except Exception:
+            pass
+
+    def flush(self):
+        for stream in (self._console, self._fp):
+            try:
+                stream.flush()
+            except Exception:
+                pass
+
+    def fileno(self):
+        # 第三方库会拿 sys.stderr.fileno() 探测终端/给子进程用，透传控制台 fd
+        # （run.err 的旁路写入不受影响）。
+        return self._console.fileno()
+
+    def isatty(self):
+        try:
+            return bool(self._console.isatty())
+        except Exception:
+            return False
+
+    def close(self):
+        """关闭旁路文件句柄（进程退出时由解释器兜底，主要供测试收尾）。"""
+        try:
+            self._fp.close()
+        except Exception:
+            pass
+
+
+def attach_server_stderr() -> None:
+    """把本子进程的 stderr 也旁路进实验目录的 ``run.err``。
+
+    子进程的 fd 2 由父进程传给 ``stdio_client`` 的 ``errlog`` 决定（``tool_runner``
+    用的是 ``sys.__stderr__``），只到控制台；而 ``run.err`` 是主进程在 Python 层替换
+    ``sys.stderr`` 得到的，子进程根本看不到。于是文献总结的 token/耗时统计
+    （``read_paper._stats_to_stderr``）与下载失败原因只闪在终端里，实验产物查无此物
+    ——"这次摘要到底用了哪个模型"因此无法事后核实。
+
+    办法与评估 worker 相同：主进程把实验目录写进环境变量（``RESULTS_ROOT_ENV``，
+    由 ``tool_runner._ENV_PREFIXES`` 透传），子进程自己开一路追加写。
+
+    失败一律静默降级：这只是诊断通道，任何环境问题都不该影响工具本身。
+    """
+    root = os.environ.get(RESULTS_ROOT_ENV)
+    if not root or isinstance(sys.stderr, _StderrTee):
+        return
+    try:
+        fp = open(os.path.join(root, "run.err"), "a", encoding="utf-8")
+    except (OSError, ValueError):   # 路径非法时 open 抛 ValueError 而不是 OSError
+        return
+    sys.stderr = _StderrTee(sys.stderr, fp)
+
+
 def _error_json(context: str, exc: Exception) -> str:
     """统一的工具错误返回格式（{"error": ...} JSON）。
 
@@ -61,7 +140,10 @@ def search_paper(query: str, num: int = 10) -> str:
     description=(
         "Download a paper by its DOI link and return its content "
         "(optionally summarized by an LLM). "
-        "title_doi is a list of (title, doi) pairs."
+        "title_doi is a list of (title, doi) pairs; each DOI must be copied verbatim "
+        "from a search_paper result. The downloaded PDF's title is verified against the "
+        "requested title, and a 'title mismatch' notice is returned instead of a summary "
+        "when they disagree."
     )
 )
 def read_paper(title_doi: list[list[str]]) -> str:
@@ -118,6 +200,7 @@ def main(argv: list[str] | None = None) -> int:
     """
     args = list(sys.argv[1:] if argv is None else argv)
     _mark_server_process()
+    attach_server_stderr()
     if "--http" in args:
         mcp.run(transport="streamable-http")
     else:

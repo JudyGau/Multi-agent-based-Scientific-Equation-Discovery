@@ -377,10 +377,6 @@ class LazyImportTest(unittest.TestCase):
 
 
 # ── 阶段 3：分层结构（兼容层已于阶段 6 清退，见 LegacyPathRemovalTest）──
-#: 独立运行时需要 `__file__` 兜底插入仓库根的脚本（搬迁后深度必须同步修正）
-_STANDALONE_SCRIPTS = (
-    "drsr_420/knowledge/tools/read_paper.py",   # 最深层：parents[3]
-)
 
 
 def _all_imports(path: str) -> list[str]:
@@ -505,34 +501,6 @@ class PathAnchorTest(unittest.TestCase):
             with self.subTest(anchor=label):
                 self.assertEqual(Path(anchor).resolve(), expected,
                                  f"{label} 指错了目录——相对配置/子进程 cwd 会静默跑偏")
-
-    def test_standalone_script_bootstrap_resolves_repo_root(self):
-        """把脚本文件当脚本加载时（__package__ 为空）`__file__` 兜底必须让包可导入。"""
-        import tempfile
-
-        code = (
-            "import importlib.util, sys;"
-            "name = 'probe_{i}';"
-            "spec = importlib.util.spec_from_file_location(name, r'{script}');"
-            "module = importlib.util.module_from_spec(spec);"
-            # 真实导入会先把模块注册进 sys.modules 再执行（兼容层的模块类替换依赖这一点）
-            "sys.modules[name] = module;"
-            "spec.loader.exec_module(module);"
-            "print('IMPORTED-OK')"
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            for i, rel in enumerate(_STANDALONE_SCRIPTS):
-                script = os.path.join(_REPO_ROOT, rel)
-                with self.subTest(script=rel):
-                    proc = subprocess.run(
-                        [sys.executable, "-c",
-                         code.format(i=i, script=script).replace("\\", "\\\\")],
-                        cwd=tmp, capture_output=True, text=True,
-                    )
-                    self.assertEqual(proc.returncode, 0,
-                                     f"{rel} 独立加载失败（__file__ 兜底级数不对？）:\n"
-                                     f"{proc.stderr[-1200:]}")
-                    self.assertIn("IMPORTED-OK", proc.stdout)
 
 
 class EvaluationSubsystemTest(unittest.TestCase):

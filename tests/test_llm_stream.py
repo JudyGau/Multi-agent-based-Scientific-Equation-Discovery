@@ -186,6 +186,29 @@ class ChatStreamTest(unittest.TestCase):
         self.assertIs(args[2]['stream'], False)
 
     @mock.patch('drsr_420.llm.client._post_with_retry')
+    def test_extra_body_can_disable_tools(self, mock_post):
+        # 工具声明是客户端默认行为；档案要"不许调工具"只能走 extra_body——
+        # 它在方言适配之后并入请求体顶层，能覆盖默认的 tool_choice=auto。
+        # 这条路径是文献摘要的依赖（qwen3.7-flash 否则会把摘要答成一次工具调用）。
+        self.client.kwargs['extra_body'] = {'tool_choice': 'none'}
+        mock_post.return_value = _FakeResponse(lines=_sse(
+            '{"choices":[{"delta":{"content":"摘要"}}]}'))
+        self.client.chat([{'role': 'user', 'content': 'hi'}])
+        payload = mock_post.call_args[0][2]
+        self.assertEqual(payload['tool_choice'], 'none')
+        self.assertTrue(payload['tools'])          # tools 仍在，只是不被允许调用
+
+    @mock.patch('drsr_420.llm.client._post_with_retry')
+    def test_top_level_tool_choice_is_ignored(self, mock_post):
+        # 反过来锁住"写在档案顶层的 tool_choice 无效"：它不在 ALLOWED_GEN_KEYS 里，
+        # 会被静默丢弃（实测：payload 仍是 auto，模型照样返回工具调用）。
+        self.client.kwargs['tool_choice'] = 'none'
+        mock_post.return_value = _FakeResponse(lines=_sse(
+            '{"choices":[{"delta":{"content":"ok"}}]}'))
+        self.client.chat([{'role': 'user', 'content': 'hi'}])
+        self.assertEqual(mock_post.call_args[0][2]['tool_choice'], 'auto')
+
+    @mock.patch('drsr_420.llm.client._post_with_retry')
     def test_stream_falls_back_to_full_json(self, mock_post):
         # 个别网关忽略 stream 参数、直接返回完整 JSON：按单块处理
         json_data = {

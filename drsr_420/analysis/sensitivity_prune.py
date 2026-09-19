@@ -14,6 +14,10 @@ sensitivity_prune.py
   3. 计算最大相对变化（或绝对变化）作为敏感度 s。
   4. 若 s ≤ threshold → 执行剪枝（移除该子表达式）；
      否则保留，继续向下递归其子树。
+  5. 若 s 无法测量（表达式在该采样区间求值不出有限值）→ **保留**该项：
+     "测不出来" 不能当成 "敏感度为 0"。后者会让每一项都被判为可删，实测把最优样本
+     整个剪成一个常数（NMSE 8.7e-07 → 6.81，比预测样本均值还差 6.8 倍）；
+     这种情况计入 ``PruneStats.nonfinite_sensitivity`` 供日志追查。
 
 贪心策略：在每个 Add/Mul 层，按平均绝对贡献从小到大依次判断，
 优先尝试移除最不重要的项，避免因高敏感项的存在掩盖低敏感项。
@@ -27,6 +31,7 @@ sensitivity_prune.py
 
 from __future__ import annotations
 
+import math
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -236,12 +241,13 @@ class SensitivityPruner:
             return reducer(*items)
 
         # 按各项在采样点上的贡献排序（贡献小的优先尝试）。
-        # 用 nanmedian 抗离群点；若全部无效则视为 0 贡献（最后再尝试移除）。
+        # 用 nanmedian 抗离群点；求值不可用（全非有限）的项放到最后——
+        # 它不该被优先删除，见下面"测不出敏感度就保留"的分支。
         def contrib(e):
             v = self.evaluator.evaluate(e)
             valid = np.abs(v)[np.isfinite(v)]
             if len(valid) == 0:
-                return 0.0
+                return float("inf")
             return float(np.nanmedian(valid))
 
         order = sorted(range(len(kept)), key=lambda i: contrib(kept[i]))
@@ -276,6 +282,14 @@ class SensitivityPruner:
             pruned_vals = self.evaluator.evaluate(parent_pruned)
             s = self.evaluator.sensitivity(orig_vals, pruned_vals)
             self.stats.nodes_visited += 1
+
+            if not math.isfinite(s):
+                # 求值没得到有限值 → 敏感度无法测量 → **保留**该项。
+                # 以前这里 s 是 0.0，等价于"所有项都最该删"：实测最优样本因此被剪成
+                # 常数 193.054（NMSE 8.7e-07 → 6.81）。方向必须与"不确定就不动"一致。
+                self.stats.nonfinite_sensitivity += 1
+                i += 1
+                continue
 
             if s <= self.threshold:
                 self._log(depth, kind, candidate, s)

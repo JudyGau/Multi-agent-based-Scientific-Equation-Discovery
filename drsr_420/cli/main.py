@@ -35,7 +35,7 @@ from drsr_420.cli.llm_setup import (
 from drsr_420.core import config as config_lib
 from drsr_420.core import prompt_config as pc
 from drsr_420.runtime import pipeline
-from drsr_420.evaluation.problems import MAX_NPARAMS
+from drsr_420.evaluation.problems import MAX_NPARAMS, N_STARTS, PARAMS_BOUNDS
 
 DEFAULT_BACKGROUND = (
     "The physical properties of this equation are unknown and need to be analyzed "
@@ -43,6 +43,11 @@ DEFAULT_BACKGROUND = (
 )
 
 #: 动态 spec 模板（NumPy 版）。占位符由 :func:`render_spec` 填充。
+#:
+#: 里面的 ``evaluate`` **必须与真实评估器口径一致**（``evaluation.problems``）：
+#: 参数是用**多起点有界** ``least_squares`` 拟合的，不是无界的 BFGS。这段文字是给
+#: LLM 看的——它据此刻画"这个骨架能不能被拟合出来"，写错优化器会让模型按错误的
+#: 初值/收敛假设去设计骨架（旧模板写的是 ``minimize(..., method='BFGS')``）。
 SPEC_TEMPLATE_NUMPY = '''\
 """
 Find the mathematical function skeleton that fits the data.
@@ -56,7 +61,7 @@ Variables:
 """
 
 import numpy as np
-from scipy.optimize import minimize
+from scipy.optimize import least_squares
 
 # Initialize parameters
 MAX_NPARAMS = {MAX_NPARAMS}
@@ -68,16 +73,20 @@ def evaluate(data: dict) -> float:
     inputs, outputs = data['inputs'], data['outputs']
     X = inputs
 
-    def loss(params):
+    def residual(params):
         y_pred = equation(*X.T, params)
-        return np.mean((y_pred - outputs) ** 2)
+        return y_pred - outputs
 
-    result = minimize(loss, [1.0]*MAX_NPARAMS, method='BFGS')
-    loss_val = result.fun
-    if np.isnan(loss_val) or np.isinf(loss_val):
+    # 拟合口径（示意；实际由评估器执行）：参数以**多起点有界最小二乘**求解——
+    # {N_STARTS} 个起点取自 U(-1, 1)（逐个裁剪进边界），另可选热启动（上一轮最优参数）；
+    # 每个起点用 bounds={PARAMS_BOUNDS} 的 least_squares 收敛，取残差平方均值最小者。
+    # 边界用来防止无界优化让参数发散（NaN/inf）；起点**不是**固定的全 1，
+    # 所以骨架只需"存在可拟合的参数区域"，不必迁就某一个特定初值。
+    result = least_squares(residual, x0=[1.0]*MAX_NPARAMS, bounds={PARAMS_BOUNDS})
+    loss_val = float(np.mean(np.square(result.fun)))
+    if not np.isfinite(loss_val):
         return None
-    else:
-        return -loss_val
+    return -loss_val
 
 @equation.evolve
 def equation({FEATURE_SIG}, params: np.ndarray) -> np.ndarray:
@@ -298,6 +307,8 @@ def render_spec(n_features, feature_names=None, dependent_name=None,
         FEATURE_DOC=feature_doc,
         DEPENDENT=dep,
         MAX_NPARAMS=max_nparams,
+        N_STARTS=N_STARTS,
+        PARAMS_BOUNDS=PARAMS_BOUNDS,
         LINEAR_SEED=linear_seed,
     )
 

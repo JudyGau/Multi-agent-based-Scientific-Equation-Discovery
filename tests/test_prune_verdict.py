@@ -178,6 +178,66 @@ class ClassifyPruningTest(unittest.TestCase):
         self.assertFalse(not_pruned.actually_pruned)
 
 
+class DegeneratePruningRejectedTest(unittest.TestCase):
+    """剪枝结果不含任何自变量（公式塌缩成常数）→ 判为剪枝失败、回退原式。
+
+    真实事故：MRFCompress-Cuboid_20260919-143926 的最优样本被剪成常数 193.054，
+    NMSE 从 8.7e-07 退到 6.81（比"预测样本均值"的 1.0 还差 6.8 倍）。
+    """
+
+    def _stats(self, pruned: int, visited: int) -> PruneStats:
+        st = PruneStats()
+        st.nodes_visited = visited
+        st.nodes_pruned = pruned
+        st.ops_before = sp.count_ops(COMMON_DENOM)
+        return st
+
+    def test_constant_result_is_rejected(self):
+        verdict = pr.classify_pruning(COMMON_DENOM, sp.Integer(3),
+                                      self._stats(2, 2), ["x", "y"], (1, 6))
+        self.assertEqual(verdict["kind"], "degenerate")
+        self.assertFalse(verdict["actually_pruned"])
+        self.assertTrue(verdict["used_original"])
+        self.assertFalse(verdict["form_changed"])
+        self.assertEqual(verdict["ops_published"], verdict["ops_before"])
+        self.assertIn("退化剪枝", verdict["summary"])
+        self.assertIn("沿用剪枝前", verdict["summary"])
+
+    def test_result_keeping_one_independent_is_fine(self):
+        verdict = pr.classify_pruning(COMMON_DENOM, 1 / (x + 1), self._stats(1, 2),
+                                      ["x", "y"], (1, 6))
+        self.assertEqual(verdict["kind"], "pruned")
+        self.assertTrue(verdict["actually_pruned"])
+
+    def test_rejection_is_wired_through_prune_and_visualize(self):
+        """端到端：退化剪枝被拒后，对外发布的仍是原式（含自变量）。
+
+        夹具：第二项在剪枝采样区间 (1,6) 上恒为 0（条件 x1 > 100 不成立），于是它被
+        判为"零敏感"而剪掉，剪枝结果只剩常数——正是要被拒的那种退化。
+        """
+        from drsr_420.analysis.find_best_eq import prune_and_visualize
+
+        func = ("Variables:\n"
+                "- Independents: x1, x2\n"
+                "- Dependent: y\n"
+                "def equation(x1, x2, params):\n"
+                "    return params[0] + params[1]*where(x1 > 100, x1, 0)\n")
+        params = [3.0, 1.0]
+        rows = [f"{v1},{6.0 - v1},3.0" for v1 in (1.0, 2.0, 3.0, 4.0, 5.0)]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            _make_experiment(root, func, params, rows)
+            with mock.patch("builtins.print"):
+                summary = prune_and_visualize(str(root), func, params,
+                                              threshold=0.1, sample_range=(1, 6))
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary["verdict"]["kind"], "degenerate")   # 退化剪枝被识别
+        self.assertTrue(summary["used_original"])
+        published = sp.sympify(summary["pruned_expr"])
+        self.assertTrue({str(s) for s in published.free_symbols} & {"x1", "x2"},
+                        "对外发布的公式必须仍含自变量（不得退化为常数）")
+
+
 class ExplainBlockTest(unittest.TestCase):
     """解释提示词必须点明判定，并把 simplify 的改写标成"未采用"。"""
 
@@ -215,6 +275,74 @@ class ExplainBlockTest(unittest.TestCase):
 
         self.assertIn("未实际剪枝", _REQUIRED_STRUCTURE)
         self.assertIn("不是**剪枝结果", _REQUIRED_STRUCTURE)
+        self.assertIn("退化剪枝被拒", _REQUIRED_STRUCTURE)
+
+    def test_required_structure_confronts_priors_with_measured_baselines(self):
+        """解释必须把物理先验与代码实测的骨架基线对质，并交代可辨识性限制。"""
+        from drsr_420.analysis.explain import _REQUIRED_STRUCTURE
+
+        self.assertIn("候选骨架基线", _REQUIRED_STRUCTURE)
+        self.assertIn("不得把先验写成已被数据证实的事实", _REQUIRED_STRUCTURE)
+        self.assertIn("不可单独辨识", _REQUIRED_STRUCTURE)
+
+    def test_facts_block_lists_baselines_and_identifiability(self):
+        from drsr_420.analysis.explain import _format_facts_block
+
+        text = _format_facts_block({
+            "dependent": "sigma",
+            "extremes": {"max": {"value": 352.1991,
+                                 "at": {"lambda12": 1.0, "lambda23": 14.1245}}},
+            "correlations": [{"a": "lambda23", "b": "sigma", "pearson": 0.8336,
+                              "spearman": 0.8571, "log_pearson": 0.9651},
+                             {"a": "lambda12", "b": "lambda23", "pearson": -0.376,
+                              "spearman": -0.4192, "log_pearson": 0.0924}],
+            "skeletons": [
+                {"expression": "a*(lambda12*lambda23)^b + c", "nmse": 0.1698, "r2": 0.8302},
+                {"expression": "a*lambda12^b*lambda23^c + d", "nmse": 0.0307, "r2": 0.9693},
+            ],
+            "identifiability": [{"a": "lambda12", "b": "lambda23",
+                                 "message": "NOT separately identifiable"}],
+        })
+
+        self.assertIn("352.1991", text)
+        self.assertIn("lambda23 vs sigma", text)
+        self.assertIn("NMSE=0.0307", text)
+        self.assertIn("NOT separately identifiable", text)
+        self.assertIn("必须显式报告冲突", text)
+        # 只列与因变量相关的配对，不把自变量两两相关也当成解释依据
+        self.assertNotIn("lambda12 vs lambda23：", text)
+
+    def test_facts_block_degrades_when_file_missing(self):
+        from drsr_420.analysis.explain import _format_facts_block
+
+        text = _format_facts_block(None)
+        self.assertIn("没有 data_facts.json", text)
+        self.assertIn("不得声称某个先验或骨架形状已被数据支持", text)
+
+    def test_block_explains_rejected_degenerate_pruning(self):
+        """退化剪枝被拒时，提示词必须说清"最终还是剪枝前的公式"，不能写成已简化。"""
+        from drsr_420.analysis.explain import _format_pruning_block
+
+        stats = PruneStats(nodes_visited=2, nodes_pruned=2,
+                           ops_before=sp.count_ops(COMMON_DENOM))
+        verdict = pr.classify_pruning(COMMON_DENOM, sp.Integer(3), stats, ["x", "y"], (1, 6))
+        text = _format_pruning_block({
+            "dependent": "y",
+            "sym_names": ["x", "y"],
+            "threshold": 0.1,
+            "sample_range": (1, 6),
+            "substituted_expr": sp.sstr(COMMON_DENOM),
+            "pruned_expr": sp.sstr(COMMON_DENOM),      # 回退后发布的仍是原式
+            "nodes_visited": stats.nodes_visited,
+            "nodes_pruned": stats.nodes_pruned,
+            "prune_rate": stats.prune_rate,
+            "removed": [],
+            "verdict": verdict,
+            "fit": None,
+        })
+        self.assertIn("退化剪枝", text)
+        self.assertIn("沿用剪枝前的公式", text)
+        self.assertNotIn("与剪枝前完全相同（没有移除任何项）", text)
 
 
 class ArtifactSuppressionTest(unittest.TestCase):

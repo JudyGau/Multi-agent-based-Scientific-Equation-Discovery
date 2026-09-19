@@ -344,6 +344,23 @@ class ResidualInjectionTest(unittest.TestCase):
         injector = PromptInjector(_FakePromptContext(), base_dir=self.root)
         self.assertIn("RESIDUAL-TITLE-FROM-CONTEXT", injector.inject_residual("BODY", 1.0))
 
+    def test_truncation_stops_at_a_paragraph_boundary(self):
+        """超长分析按段落边界截断，而不是把某个段落从中间切开。"""
+        _write_json(self.exp_path, {})
+        _write_json(self.res_path, [{"analysis": "A" * 1500 + "\n" + "B" * 2000,
+                                     "sample_order": 2}])
+        out = self.injector.inject_residual("BODY", 1.0)
+        self.assertIn("A" * 1500 + "...", out)
+        self.assertNotIn("B" * 10, out)
+
+    def test_injected_hypothesis_is_marked_unverified(self):
+        """回归：这段文本含事实错误（错报全局极值），必须标明未经校验。"""
+        _write_json(self.exp_path, {})
+        _write_json(self.res_path, [{"analysis": "LATEST", "sample_order": 2}])
+        out = self.injector.inject_residual("BODY", 1.0)
+        self.assertIn("[unverified hypothesis from an earlier round]", out)
+        self.assertIn("UNVERIFIED HYPOTHESIS", out)
+
 
 class BuildRequestContentTest(unittest.TestCase):
     """`build_request_content`：任务头 + 注入块 + 原始 content 的组装顺序。"""
