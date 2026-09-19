@@ -49,7 +49,7 @@ echo ================================================================
   --data_csv data/MRFCompress-Cuboid/train.csv ^
   --num_samplers 4 ^
   --llm_config "%LLM_CONFIG%" ^
-  --niterations 6 ^
+  --niterations 5 ^
   --samples_per_iteration 4 ^
   --target_nmse 1e-6 ^
   --max_failed_batches 3 ^

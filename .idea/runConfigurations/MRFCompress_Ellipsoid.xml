@@ -14,7 +14,7 @@
     <option name="ADD_SOURCE_ROOTS" value="true" />
     <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
     <option name="SCRIPT_NAME" value="drsr_420.cli.main" />
-    <option name="PARAMETERS" value="--problem_name MRFCompress-Ellipsoid --data_csv ./data/MRFCompress-Ellipsoid/train.csv --num_samplers 4 --llm_config config/glm_glm-5.3-flash.config --niterations 6 --samples_per_iteration 4 --target_nmse 1e-6 --max_failed_batches 3 --early_stop_patience 20 --min_batches 10 --background_file backgrounds/MRFCompress-Ellipsoid.txt" />
+    <option name="PARAMETERS" value="--problem_name MRFCompress-Ellipsoid --data_csv ./data/MRFCompress-Ellipsoid/train.csv --num_samplers 4 --llm_config config/glm_glm-5.3-flash.config --niterations 5 --samples_per_iteration 4 --target_nmse 1e-6 --max_failed_batches 3 --early_stop_patience 20 --min_batches 10 --background_file backgrounds/MRFCompress-Ellipsoid.txt" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="true" />
