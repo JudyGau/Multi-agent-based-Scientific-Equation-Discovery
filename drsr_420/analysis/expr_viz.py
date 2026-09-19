@@ -39,8 +39,17 @@ def safe_preview(expr, filename: str) -> None:
 
 
 def render_expr_trees(results_root: str, expr, pruned_expr) -> None:
-    """表达式树可视化（依赖 graphviz，缺失或失败时仅告警，不中断流程）。"""
+    """表达式树可视化（依赖 graphviz，缺失或失败时仅告警，不中断流程）。
+
+    ``pruned_expr`` 为 ``None`` 表示**本次没有剪枝后的表达式**（没真剪掉项，或剪枝
+    失败/未执行）：此时只画原始树，不再画一张与它相同的"剪枝后"树。
+    """
     for name, e in (("original_expr_tree", expr), ("pruned_expr_tree", pruned_expr)):
+        if e is None:
+            # 旧实现在这里 sp.dotprint(None) 会抛异常，再被下面的 except 当成
+            # "缺 graphviz" 报出来——噪声且误导（真实原因是本次没有剪枝结果）。
+            print(f"[INFO] 跳过表达式树图（{name}）：本次没有剪枝后的表达式")
+            continue
         if Source is None:
             print(f"[WARN] 跳过表达式树图（{name}）：未安装 graphviz")
             continue

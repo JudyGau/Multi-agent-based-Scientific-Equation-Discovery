@@ -17,6 +17,8 @@
     python -m drsr_420.analysis.expr_curves <results_root> [--threshold 0.1]
 
 产物：``<results_root>/expr_curve_<自变量名>.png``（每个自变量一幅）。
+**本次没有真剪掉项时只画一条曲线**并在图注里注明未剪枝——画两条完全重合的曲线
+（甚至"剪枝后"比"剪枝前"更复杂，那只是 simplify 通分）会误导读者。
 
 依赖：matplotlib（缺失时只告警跳过，不影响实验）；公式解析复用
 ``expr_substitution`` / ``SensitivityPruner``，与剪枝流程的参数完全一致，
@@ -40,6 +42,9 @@ __all__ = ["plot_data_curves", "plot_expr_curves", "_resolve_csv"]
 def plot_data_curves(results_root: str, dependent: str, sym_names: list[str],
                      expr, pruned=None) -> list[str]:
     """核心绘图：按训练数据路径画剪枝前/后表达式曲线 + 数据散点。
+
+    ``pruned=None`` 表示**本次没有剪枝后的表达式**（没真剪掉项，或剪枝失败/未执行）：
+    此时只画一条曲线并在图注里注明"未剪枝"，不画一条与它完全重合的"剪枝后"曲线。
 
     供两处调用：``prune_and_visualize``（剪枝完成后自动触发）与本模块的
     ``plot_expr_curves``（对既有实验目录独立补跑）。返回成功写出的图片路径；
@@ -92,14 +97,20 @@ def plot_data_curves(results_root: str, dependent: str, sym_names: list[str],
         ax.scatter(x_all, np.asarray(data[dependent], dtype=float),
                    s=28, facecolors="none", edgecolors="tab:gray",
                    label="data points")
-        ax.plot(xs, y_orig, color="tab:blue", lw=2, label="before pruning")
+        ax.plot(xs, y_orig, color="tab:blue", lw=2,
+                label="before pruning" if y_pruned is not None
+                else "model (no pruning applied)")
         if y_pruned is not None:
             ax.plot(xs, y_pruned, color="tab:red", lw=2, ls="--",
                     label="after pruning")
         ax.set_xlabel(var)
         ax.set_ylabel(dependent)
+        # 未剪枝时（pruned=None）在图注里写明，避免读者以为"少了一条曲线"是画漏了
+        note = ("" if y_pruned is not None
+                else "\n(no pruning applied: the pruning step removed nothing)")
         ax.set_title(f"{dependent} vs {var}"
-                     f"\n(model evaluated along the training data path, sorted by {var})")
+                     f"\n(model evaluated along the training data path, sorted by {var})"
+                     + note)
         ax.grid(True, alpha=0.3)
         ax.legend()
         fig.tight_layout()
@@ -145,6 +156,11 @@ def plot_expr_curves(results_root: str, threshold: float = 0.1,
         pruned = pruner.prune(expr, verbose=False)
     except Exception as e:
         print(f"[WARN] 剪枝失败，只画剪枝前曲线: {e}")
+        pruned = None
+    if pruned is not None and not pruner.stats.actually_pruned:
+        # 没真剪掉项（prune() 已把公式回退成原式）：只画一条曲线，
+        # 不画一条与它完全重合的"剪枝后"曲线。
+        print("[INFO] 本次剪枝未移除任何项：曲线只画一条（未剪枝）。")
         pruned = None
 
     return plot_data_curves(results_root, dependent, sym_names, expr, pruned)

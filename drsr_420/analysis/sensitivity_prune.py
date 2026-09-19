@@ -88,7 +88,7 @@ class SensitivityPruner:
 
     def prune(self, expr: sp.Expr, verbose: bool = False) -> sp.Expr:
         """
-        对表达式 expr 执行敏感度剪枝，返回剪枝并化简后的结果。
+        对表达式 expr 执行敏感度剪枝，返回剪枝后的结果。
 
         Parameters
         ----------
@@ -97,14 +97,43 @@ class SensitivityPruner:
 
         Returns
         -------
-        sp.Expr : 剪枝后的表达式（已 simplify）。
+        sp.Expr : 剪枝后的表达式。
+
+        返回值契约（"没剪掉项就不改公式"）
+        ----------------------------------
+        只要本次**没有真正移除任何子表达式**（``stats.nodes_pruned == 0``），返回值就是
+        **原表达式**本身：此时递归重建的自动整理与 ``sp.simplify`` 的通分/展开都只改变
+        公式的书写形式，把它当成"剪枝结果"发布出去会误导读者与下游解释 LLM
+        （实测某次 0 项剪枝后运算节点数从 17 涨到 21，纯粹是分母通分）。
+        ``stats.simplified_expr`` 仍保留 ``simplify`` 会给出的形式，但**只作诊断**，
+        用于让日志说清"形式重排"的规模。只有真剪掉了项（``nodes_pruned > 0``）才调用
+        ``simplify`` 并返回化简后的剪枝结果。
         """
         self.stats = PruneStats()
         self._verbose = verbose
         self.evaluator.clear_cache()
 
         result = self._prune_node(expr, depth=0)
+        self.stats.ops_before = sp.count_ops(expr)
+
+        if not self.stats.actually_pruned:
+            # 没真剪枝：公式沿用原式（见 docstring 的返回值契约）。
+            # simplify 的结果只作为"形式变化规模"的证据留在 stats 里；与原文同形时留 None，
+            # 免得日志写成"simplify 只会改写成等价形式（节点数 4 → 4）"这种废话。
+            # 它在这里失败（复杂表达式可能超时/抛异常）也不影响主流程。
+            try:
+                simplified = sp.simplify(result)
+                self.stats.simplified_expr = simplified if simplified != expr else None
+            except Exception:
+                self.stats.simplified_expr = None
+            self.stats.ops_after = sp.count_ops(expr)
+            if verbose:
+                print("\n" + self.stats.summary())
+            return expr
+
         result = sp.simplify(result)
+        self.stats.simplify_applied = True
+        self.stats.ops_after = sp.count_ops(result)
 
         if verbose:
             print("\n" + self.stats.summary())

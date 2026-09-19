@@ -14,10 +14,12 @@
       ├── prune_and_visualize()   **先剪枝**（解释要覆盖剪枝结果与剪枝过程）
       │     ├── expr_parse.expr_substitution()   骨架字符串 → SymPy 表达式
       │     ├── sensitivity_prune.SensitivityPruner.prune()  敏感度剪枝
-      │     ├── prune_report.compare_fits()      剪枝前后在训练数据上的拟合对比
+      │     │     └── 没真剪掉项时返回原式（simplify 只做通分/重排，不算剪枝结果）
+      │     ├── prune_report.classify_pruning()  判定真剪枝 / 仅形式变化 + 拟合对比
       │     ├── expr_viz.safe_preview() / render_expr_trees()  预览图与树图
+      │     │     └── 未实际剪枝时不产出重复的"剪枝后"图件
       │     └── expr_curves.plot_data_curves()  剪枝前后曲线 + 数据点（可失败，仅告警）
-      │     └── 返回剪枝摘要 dict（剪掉了哪些项 + 敏感度 + 拟合变化）
+      │     └── 返回剪枝摘要 dict（剪掉了哪些项 + 敏感度 + 拟合变化 + 判定结论）
       └── explain.explain_best_sample(pruning=摘要)
             把剪枝前/后表达式、被移除项与拟合数值一起交给解释 LLM → explain.md
             （含参考文献清单：知识库检索结果 + 解释过程中的工具检索结果）
@@ -37,7 +39,8 @@ import sympy as sp
 from drsr_420.analysis.expr_parse import expr_substitution
 from drsr_420.analysis.expr_viz import render_expr_trees, safe_preview
 from drsr_420.analysis.explain import explain_best_sample
-from drsr_420.analysis.prune_report import compare_fits, format_fit_summary, load_training_data
+from drsr_420.analysis.prune_report import (classify_pruning, compare_fits,
+                                            format_fit_summary, load_training_data)
 from drsr_420.analysis.sensitivity_prune import SensitivityPruner
 
 
@@ -104,26 +107,47 @@ def prune_and_visualize(results_root: str, func: str, params,
         print(f"[WARN] 剪枝失败: {e}")
         pruned_expr = None
 
+    # 判定这次"剪枝"的实质：真剪掉了项 / 只是 simplify 换了写法（通分）/ 什么都没做。
+    # 「没真正剪掉项就沿用原式」的策略在 SensitivityPruner.prune 里执行，这里只把证据
+    # 算出来——同一份判据同时给控制台、图件选择与 explain 提示词用，避免三处各判一次。
+    verdict = None
     if pruned_expr is not None:
+        verdict = classify_pruning(expr, pruned_expr, pruner.stats,
+                                   sym_names=sym_names, sample_range=sample_range)
+        print(f"[PRUNE] {verdict['summary']}")
+    actually_pruned = bool(verdict and verdict["actually_pruned"])
+    # 对外发布的表达式：真剪枝才用剪枝结果，否则一律是剪枝前的原式
+    published = pruned_expr if actually_pruned else expr
+
+    if actually_pruned:
         # n(2) 仅用于控制台打印/预览图的观感；曲线绘制与解释必须用全精度表达式
         # （2 位有效数字会在 ~2000 量级的项上引入 ±30 的偏差，见 expr_parse 的教训）
         display_expr = pruned_expr.n(2)
         print(f"剪枝后的表达式为 {dependent} =")
         sp.pprint(display_expr)
         safe_preview(display_expr, f'{results_root}/prunedExpr.png')
+    else:
+        # 未实际剪枝：不再产出与 expr.png 重复（甚至更啰嗦）的"剪枝后"图件，
+        # 曲线图也只画一条并在图注里注明本次未剪枝。
+        # （剪枝失败的情形上面已有 [WARN]，不再重复同一句话。）
+        if pruned_expr is not None:
+            print("[PRUNE] 本次未实际剪枝：不生成 prunedExpr.png / pruned_expr_tree，"
+                  "曲线图只画一条并注明本次未剪枝。")
 
-    render_expr_trees(results_root, expr, pruned_expr)
+    render_expr_trees(results_root, expr, pruned_expr if actually_pruned else None)
 
-    # 剪枝前后在训练数据上的拟合对比：解释 LLM 要靠它论证"剪掉这些项是否合理"
+    # 剪枝前后在训练数据上的拟合对比：解释 LLM 要靠它论证"剪掉这些项是否合理"。
+    # 未实际剪枝时 published == expr，对比结果自然是"逐点完全相同（剪枝未改变模型）"。
     data = load_training_data(results_root)
-    fit = compare_fits(dependent, sym_names, data, expr, pruned_expr)
+    fit = compare_fits(dependent, sym_names, data, expr, published)
     print(f"[PRUNE] {format_fit_summary(fit)}")
 
     # 剪枝完成 → 剪枝前后表达式曲线 + 数据点（每个自变量一幅，人工检查贴合度）。
     # 与 expr.png 同级别的"给人看"产物：失败只告警，不拖垮收尾流程。
     try:
         from drsr_420.analysis.expr_curves import plot_data_curves
-        plot_data_curves(results_root, dependent, sym_names, expr, pruned_expr)
+        plot_data_curves(results_root, dependent, sym_names, expr,
+                         published if actually_pruned else None)
     except Exception as e:
         print(f"[WARN] 剪枝前后曲线图生成失败（跳过）: {e}")
 
@@ -133,10 +157,19 @@ def prune_and_visualize(results_root: str, func: str, params,
         "threshold": threshold,
         "sample_range": tuple(sample_range),
         "substituted_expr": sp.sstr(expr),
-        "pruned_expr": sp.sstr(pruned_expr) if pruned_expr is not None else None,
+        # pruned_expr 是**对外发布**的最终表达式：未实际剪枝时它就是剪枝前的原式
+        # （下游 explain 的 `after == before` 分支据此说明"与剪枝前完全相同"）。
+        "pruned_expr": sp.sstr(published) if pruned_expr is not None else None,
+        "used_original": not actually_pruned,
+        "verdict": verdict,
+        # 诊断用：0 项剪枝时 simplify 会给出的形式（未被采用，仅说明"只是换写法"）
+        "simplify_expr": (sp.sstr(pruner.stats.simplified_expr)
+                          if pruner.stats.simplified_expr is not None else None),
         "nodes_visited": pruner.stats.nodes_visited,
         "nodes_pruned": pruner.stats.nodes_pruned,
         "prune_rate": pruner.stats.prune_rate,
+        "ops_before": pruner.stats.ops_before,
+        "ops_after": pruner.stats.ops_after,
         "removed": [
             {
                 "kind": r.node_type,
