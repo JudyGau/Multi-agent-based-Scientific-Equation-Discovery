@@ -160,11 +160,39 @@ class IdentifiabilityTest(unittest.TestCase):
         self.assertIn("NOT separately identifiable", facts["identifiability"][0]["message"])
 
     def test_independent_design_is_not_flagged(self):
+        # 也覆盖"子集脊"检查的不误报：均匀随机设计即使剔除端点组后仍不共线。
         rng = np.random.default_rng(0)
         X = rng.uniform(1.0, 5.0, size=(30, 2))
         facts = df.compute_facts(X, X[:, 0] + 2 * X[:, 1], ["a", "b"], "y",
                                  with_skeletons=False)
         self.assertEqual(facts["identifiability"], [])
+
+
+class SubsetRidgeTest(_MRFFixtureTest):
+    """回归：全样本不共线、但有一部分点成脊的设计必须告警。
+
+    实测本数据 8 行里两个 lambda12=1 的点把 lambda23 从 1 扫到 14.12，整样本
+    log_pearson 只有 0.0924；剔除这两行后其余 6 个点在 ln 空间 |r|=0.9996，是
+    一条一维脊。旧判据只看全样本，于是不告警——而 explain.md 里那条"lambda12 的
+    指数不可辨识"的结论就只能靠模型自己发现，没有代码兜底。
+    """
+
+    def test_mrf_subset_ridge_is_flagged(self):
+        X, names, y, dep = _load_mrf()
+        facts = df.compute_facts(X, y, names, dep, with_skeletons=False)
+        warnings = facts["identifiability"]
+        self.assertEqual(len(warnings), 1)
+        w = warnings[0]
+        self.assertTrue(w["subset"])
+        self.assertAlmostEqual(abs(w["pearson"]), 0.376, places=3)   # 全样本并不共线
+        self.assertIn("0.9996", w["message"])
+        self.assertIn("NOT separately identifiable", w["message"])
+
+    def test_subset_ridge_is_rendered_into_the_facts_block(self):
+        X, names, y, dep = _load_mrf()
+        text = df.render_facts(df.compute_facts(X, y, names, dep, with_skeletons=False))
+        self.assertIn("identifiability warning:", text)
+        self.assertIn("nearly one-dimensional ridge", text)
 
 
 class RenderFactsTest(_MRFFixtureTest):

@@ -39,6 +39,9 @@ MAX_TABLE_ROWS = 40
 #: 判为"近乎共线/不可辨识"的相关系数阈值（线性或对数空间任一命中即告警）。
 COLLINEAR_R = 0.98
 
+#: 子集脊检测要求保留的最少点数：少于它相关系数失去意义。
+_MIN_SUBSET_ROWS = 4
+
 
 # ── 取值与相关 ──────────────────────────────────────────────
 def _rank(values: np.ndarray) -> np.ndarray:
@@ -255,7 +258,7 @@ def compute_facts(inputs, outputs, feature_names, dependent_name,
         "table_rows": [[_round(v) for v in row] for row in np.column_stack((X, y))] 
         if int(X.shape[0]) <= int(max_table_rows) else [],
         "skeletons": skeleton_baselines(X, y, names, dep, seed=seed) if with_skeletons else [],
-        "identifiability": _identifiability(names, correlations),
+        "identifiability": _identifiability(names, correlations, X),
     }
     return facts
 
@@ -298,13 +301,18 @@ def _monotonicity(names: list[str], X: np.ndarray, y: np.ndarray) -> list[dict]:
     return report
 
 
-def _identifiability(names: list[str], correlations: list[dict]) -> list[dict]:
+def _identifiability(names: list[str], correlations: list[dict], X=None) -> list[dict]:
     """自变量之间近乎共线时给出"指数不可辨识"告警。
 
     数据设计常把自变量沿一条一维曲线采样（实测 MRFCompress-Cuboid 的 7 个点
     在 ln 空间 r=-0.9996）。此时两个指数的**分配**在数学上不可辨识，最终公式里
     谁大谁小不该被解释成独立发现——必须在提示词里说清楚，否则 explain.md 会把
     拟合出来的一对指数当成物理结论。
+
+    判据分两层：全样本相关（线性/对数空间）命中即告警；全样本不命中时再看
+    "剔除某列端点组后的子集"（``_subset_collinearity``）。第二层是必需的——
+    实测本数据集全样本 log_pearson 只有 0.0924（被两个 lambda12=1 的杠杆点稀释），
+    而剔除它们后的 6 个点在 ln 空间 |r|=0.9996，只看全样本就漏报。
     """
     warnings = []
     for c in correlations:
@@ -313,21 +321,75 @@ def _identifiability(names: list[str], correlations: list[dict]) -> list[dict]:
         r = c.get("pearson")
         r_log = c.get("log_pearson")
         hit = [x for x in (r, r_log) if isinstance(x, (int, float)) and abs(x) >= COLLINEAR_R]
-        if not hit:
+        if hit:
+            space = "log space" if isinstance(r_log, (int, float)) and abs(r_log) >= COLLINEAR_R \
+                else "linear space"
+            warnings.append({
+                "a": c["a"], "b": c["b"], "pearson": r, "log_pearson": r_log,
+                "message": (
+                    f"{c['a']} and {c['b']} are nearly collinear on this dataset "
+                    f"(|r|={abs(max(hit, key=abs)):.4f} in {space}). Their exponents are NOT "
+                    "separately identifiable: do not present their split as an independent "
+                    "physical finding, and do not claim one drives the response more than the "
+                    "other unless a single-variable baseline shows it."
+                ),
+            })
             continue
-        space = "log space" if isinstance(r_log, (int, float)) and abs(r_log) >= COLLINEAR_R \
-            else "linear space"
+        sub = _subset_collinearity(names.index(c["a"]), names.index(c["b"]), X, names)
+        if not sub:
+            continue
         warnings.append({
-            "a": c["a"], "b": c["b"], "pearson": r, "log_pearson": r_log,
+            "a": c["a"], "b": c["b"], "pearson": r, "log_pearson": r_log, "subset": True,
             "message": (
-                f"{c['a']} and {c['b']} are nearly collinear on this dataset "
-                f"(|r|={abs(max(hit, key=abs)):.4f} in {space}). Their exponents are NOT "
-                "separately identifiable: do not present their split as an independent "
-                "physical finding, and do not claim one drives the response more than the "
-                "other unless a single-variable baseline shows it."
+                f"{c['a']} and {c['b']} are NOT collinear over the full dataset, but the "
+                f"{sub['rows']} points left after removing {sub['column']}={sub['value']} lie on "
+                f"a nearly one-dimensional ridge (|r|={sub['abs_r']:.4f} in {sub['space']}). On "
+                "that subset their exponents are NOT separately identifiable: do not present "
+                "their split as an independent physical finding, and do not claim one drives the "
+                "response more than the other unless a single-variable baseline shows it."
             ),
         })
     return warnings
+
+
+def _subset_collinearity(i: int, j: int, X, names: list[str]) -> dict | None:
+    """剔除某一列的端点取值组后，剩余点是否反而几乎共线（"子集脊"）。
+
+    全样本相关系数会被"被单独扫描的那一列取值"稀释：本数据集 8 行里两个 lambda12=1
+    的点把 lambda23 从 1 扫到 14.12（乘积分别是 1 和 14.12，远离其余 6 点的 17.9–19.6），
+    于是整样本对数空间相关只有 0.0924；去掉这两行后其余 6 点在 ln 空间 |r|=0.9996，
+    指数分配在该子集上完全不可辨识。
+
+    只枚举"某列取最小值/最大值的全部行"这一种剔除（端点组通常正是那个单独扫描组），
+    既覆盖实测情形，也避免任意子集组合的爆炸。
+    """
+    if X is None:
+        return None
+    best = None
+    for col in (i, j):
+        colv = X[:, col]
+        lo, hi = float(np.min(colv)), float(np.max(colv))
+        if lo == hi:                      # 常数列：剔除会删空，没有子集可言
+            continue
+        for value in (lo, hi):
+            mask = colv != value
+            if int(mask.sum()) < _MIN_SUBSET_ROWS:
+                continue
+            a, b = X[mask, i], X[mask, j]
+            cands = []
+            r = _pearson(a, b)
+            if r is not None:
+                cands.append((abs(r), r, "linear space"))
+            if np.all(a > 0) and np.all(b > 0):
+                r_log = _pearson(np.log(a), np.log(b))
+                if r_log is not None:
+                    cands.append((abs(r_log), r_log, "log space"))
+            for mag, r_val, space in cands:
+                if mag >= COLLINEAR_R and (best is None or mag > best["abs_r"]):
+                    best = {"column": names[col], "value": _round(value),
+                            "rows": int(mask.sum()), "abs_r": mag,
+                            "correlation": _round(r_val), "space": space}
+    return best
 
 
 # ── 渲染 ────────────────────────────────────────────────────
