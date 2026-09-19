@@ -115,6 +115,16 @@ class AnalysisPromptConstraintsTest(unittest.TestCase):
         # 不走 pipeline 的调用方用这条 str.format 模板，约束必须一致
         self.assertIn("Never reinterpret a variable", pc.residual_analysis_prompt)
 
+    def test_analysis_must_not_leak_self_talk(self):
+        """回归：实测 analysis 字段里出现过模型独白（"Maybe search literature? ... Keep to
+        analysis output."），完全没按 output_format 输出。这类元话语会原样注入采样提示。"""
+        for text in (self._ctx().render_initial_analysis_prompt(),
+                     self._ctx().render_residual_analysis_prompt("prev", "residual", "sample")):
+            self.assertIn("Output ONLY the structured result below", text)
+            self.assertIn("no plan or self-talk", text)
+            self.assertIn("no tool-intent comments", text)
+        self.assertIn("ONLY the structured result below", pc.residual_analysis_prompt)
+
 
 class SamplingSystemPromptTest(unittest.TestCase):
     """采样系统提示里的文献约束：必须是"选用文献时的约束"，不是"必须检索"。"""

@@ -192,7 +192,8 @@ Task Requirements:
 1. Please help me analyze and summarize the influence of the changes in the values of different independent variables on the dependent variable,
 as well as the possible intrinsic relationships among different independent variables.
 
-Your response only needs to answer your analysis results in the form below, and you don't need to show your analysis process.
+Your response must contain ONLY the structured result below: no reasoning process, no plan or
+self-talk, no tool-intent comments, and no text outside the structure.
 
 """+"""
 2. Use ONLY the variable meanings given in the task description. Never reinterpret a variable as a

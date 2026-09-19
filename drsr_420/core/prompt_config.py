@@ -173,7 +173,8 @@ residual_analysis_prompt = (
     "Task Requirements:\n\n"
     "1. Please analyze and summarize the influence of the changes in the values of different independent variables on the dependent variable,\n"
     "as well as the possible intrinsic relationships among different independent variables.\n\n"
-    "Your response only needs to answer your analysis results in the form below, and you don't need to show your analysis process.\n\n"
+    "Your response must contain ONLY the structured result below: no reasoning process, no plan or "
+    "self-talk, no tool-intent comments, and no text outside the structure.\n\n"
     "2. Use ONLY the variable meanings given in the task description. Never reinterpret a variable as a "
     "different physical quantity (e.g. a geometric ratio is not a rate ratio, and a compressive stress is "
     "not a shear stress), and do not import mechanisms from another mode, geometry, or material system.\n\n"
@@ -447,7 +448,13 @@ class PromptContext:
             "that are not in the dataset. Do not state a global maximum/minimum or a correlation unless "
             "it appears in those facts. If a physical prior or expectation conflicts with the measured "
             "facts, report the conflict explicitly instead of repeating the prior as established fact.\n\n"
-            "Your response should follow the structure below; no need to show the reasoning process.\n\n"
+            # 实测缺陷：分析阶段会把独白写进 analysis 字段（如 "Maybe search literature? Could
+            # search for MR effect compress mode papers quickly, but not required. Keep to
+            # analysis output."），完全没按 output_format 输出；这类元话语会原样注入采样
+            # 提示，白烧 token 且挤掉真正的分析内容。
+            "Output ONLY the structured result below -- no reasoning process, no plan or "
+            "self-talk (e.g. 'maybe I should search the literature'), no tool-intent comments, "
+            "and no text before or after the structure.\n\n"
             # 实测缺陷：初始残差分析把 lambda12/lambda23 说成 "shear rate ratios"、把压缩模式的
             # sigma 说成 "shear stress"，还引了 shear-thinning —— 把 shear 文献的语境套到了
             # compress 任务上（与题面对轴长比/压缩应力的定义直接冲突）。变量含义必须以题面
