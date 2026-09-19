@@ -572,5 +572,43 @@ class RagConfigNamingTest(unittest.TestCase):
         self.assertEqual(rag_kb._env_key_for_base_url("https://unknown.example/v1"), "")
 
 
+class KnowledgeMetadataInferenceTest(unittest.TestCase):
+    """入库元数据的推断链：不得把文件名或 DOI 冒充标题。
+
+    实测 explain.md 的参考文献标题显示成 ``10.216561000-0887.380021.pdf``、
+    ``10.11221.3005402.pdf``——那是历史实现 ``title = title or doi or stem`` 与
+    "把去斜杠文件名当 DOI 恢复"共同造成的：文件名抹掉的是哪个 ``/`` 无从判断，
+    恢复出来的是假 DOI。
+    """
+
+    def test_ambiguous_filename_doi_is_refused(self):
+        # 后缀含 '-'：既可能是 DOI 自带的连字符、也可能是被抹掉的 '/'，无法唯一还原
+        self.assertIsNone(rag_kb._recover_doi("10.216561000-0887.380021"))
+        self.assertIsNone(rag_kb._recover_doi("10.10880964-17262412125005"))
+
+    def test_unambiguous_filename_doi_is_recovered(self):
+        self.assertEqual(rag_kb._recover_doi("10.1016j.jmmm.2020.166652"),
+                         "10.1016/j.jmmm.2020.166652")
+        self.assertEqual(rag_kb._recover_doi("10.1002smll.202410011"),
+                         "10.1002/smll.202410011")
+
+    def test_printed_doi_in_pdf_text_wins(self):
+        text = "Journal of Magnetics 21(2)\nhttp://dx.doi.org/10.4283/JMAG.2016.21.2.244\n"
+        self.assertEqual(rag_kb.doi_from_pdf_text(text), "10.4283/JMAG.2016.21.2.244")
+        self.assertIsNone(rag_kb.doi_from_pdf_text("no doi in this text"))
+
+    def test_title_never_falls_back_to_a_doi(self):
+        self.assertEqual(rag_kb._resolve_title("", "", "", "some_paper_name"),
+                         "some_paper_name")
+        # 文件名是 DOI 形态时宁可留空，也不写成标题
+        self.assertEqual(rag_kb._resolve_title("", "", "", "10.216561000-0887.380021"), "")
+
+    def test_page_title_beats_placeholder_metadata(self):
+        self.assertEqual(
+            rag_kb._resolve_title("", "Microsoft Word - x.doc", "Real Paper Title", "10.1/2"),
+            "Real Paper Title")
+        self.assertEqual(rag_kb._resolve_title("Given", "meta", "page", "stem"), "Given")
+
+
 if __name__ == "__main__":
     unittest.main()

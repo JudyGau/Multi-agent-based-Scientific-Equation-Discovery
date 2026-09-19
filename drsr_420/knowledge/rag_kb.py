@@ -206,13 +206,101 @@ def extract_pdf_text(path: str) -> str:
     return "".join(parts)
 
 
+#: 论文正文里印出来的 DOI（含页脚 "http://dx.doi.org/10.xxxx/yyy" 形态）。
+_DOI_RE = re.compile(r"10\.\d{4,9}/[^\s\"'<>()\[\],;]+")
+
+
+def _looks_like_doi(name: str) -> bool:
+    """字符串是不是 DOI/DOI 去掉斜杠后的形态（用来拒绝把 DOI 当标题）。"""
+    return bool(re.match(r"^10\.\d{4,9}", str(name or "").strip()))
+
+
+def doi_from_pdf_text(text: str, head_chars: int = 3000) -> str | None:
+    """从 PDF 文本里取**印出来的 DOI**，取不到返回 ``None``。
+
+    这是恢复 DOI 的权威来源。去斜杠文件名无法唯一还原（``10.216561000-0887.380021``
+    实际是 ``10.21656/1000-0887.380021``），而论文自己印的 DOI 没有歧义。只看开头
+    若干字符：正文靠前的 DOI 属于本文，参考文献里的 DOI 是别人的。
+    """
+    if not text:
+        return None
+    m = _DOI_RE.search(str(text)[:head_chars])
+    return m.group(0).rstrip(".,;)]") if m else None
+
+
 def _recover_doi(stem: str) -> str | None:
-    """从去斜杠文件名恢复 DOI（如 10.1016j.jmmm.2020.166652 -> 10.1016/j.jmmm.2020.166652）。"""
-    m = re.match(r"^10\.\d+", stem)
+    """从去斜杠文件名恢复 DOI（如 10.1016j.jmmm.2020.166652 -> 10.1016/j.jmmm.2020.166652）。
+
+    只在**无歧义**时恢复：文件名抹掉的是哪一个 ``/``（注册号几位）无从判断，后缀里
+    一旦出现 ``-``（``10.216561000-0887.380021``、``10.10880964-17262412125005``），
+    它既可能是 DOI 自带的连字符、也可能是被抹掉的斜杠，猜出来的 DOI 多半是错的——
+    实测这两种都进了 knowledge base 的元数据。宁可留空，也不要写一个假 DOI。
+    """
+    m = re.match(r"^10\.\d{4,9}", stem)
     if not m:
         return None
     prefix, rest = m.group(0), stem[m.end():]
-    return prefix + "/" + rest if rest else prefix
+    if not rest or "-" in rest:
+        return None
+    return prefix + "/" + rest
+
+
+def _is_placeholder_title(text: str) -> bool:
+    """判断一段"标题"其实是占位物：排版软件痕迹、文件名或 DOI。"""
+    s = str(text or "").strip()
+    if not s:
+        return True
+    low = s.lower()
+    return (low.startswith("microsoft word") or low.endswith(".pdf")
+            or low.endswith(".doc") or _looks_like_doi(s))
+
+
+def _first_page_title(pdf_path: str, limit: int = 300) -> str:
+    """用首页**最大字号**的那几行当标题（元数据 title 常为空或是排版软件文件名）。
+
+    与 ``knowledge/tools/read_paper._first_page_title_candidate`` 同类启发式；这里另起
+    一份是为了不让知识库模块反向依赖 knowledge/tools（那边顶层 import 了 requests/llm，
+    而本模块的既有约定是重依赖一律懒加载）。
+    """
+    try:
+        import pymupdf
+        doc = pymupdf.open(pdf_path)
+    except Exception:
+        return ""
+    try:
+        data = doc.load_page(0).get_text("dict")
+    except Exception:
+        return ""
+    finally:
+        doc.close()
+    largest, lines = 0.0, []
+    for block in data.get("blocks", []):
+        for line in block.get("lines", []):
+            spans = line.get("spans") or []
+            text = "".join((s.get("text") or "") for s in spans).strip()
+            if not text:
+                continue
+            size = max((s.get("size") or 0.0) for s in spans) if spans else 0.0
+            if size > largest + 0.1:
+                largest, lines = size, [text]
+            elif lines and abs(size - largest) <= 0.1:
+                lines.append(text)
+    return " ".join(lines).strip()[:limit]
+
+
+def _resolve_title(explicit: str, meta_title: str, page_title: str, stem: str) -> str:
+    """标题回退链：显式传入 → PDF 元数据 → 首页最大字号 → 文件名（不像 DOI 时）→ 空串。
+
+    **绝不用 DOI 冒充标题**：历史实现在两者都取不到时退化成 ``doi or stem``，于是
+    explain.md 的参考文献出现 ``10.216561000-0887.380021.pdf`` 这种"标题"（实测），
+    读者无从判断是哪篇文献，模型也无法据此判断相关性。
+    """
+    for cand in (explicit, meta_title, page_title):
+        if not _is_placeholder_title(cand):
+            return str(cand).strip()
+    if stem and not _looks_like_doi(stem):
+        return stem
+    return ""
 
 
 def _safe_id(name: str) -> str:
@@ -398,7 +486,14 @@ class RagKB:
         return len(chunks)
 
     def add_pdf(self, pdf_path: str, doi: str = "", title: str = "") -> int:
-        """把单个 PDF 嵌入知识库，返回 chunk 数。"""
+        """把单个 PDF 嵌入知识库，返回 chunk 数。
+
+        DOI 与标题只在调用方没显式给出时才推断，推断链见 :func:`doi_from_pdf_text`
+        （论文自己印的 DOI，权威）→ :func:`_recover_doi`（仅无歧义时）与
+        :func:`_resolve_title`（元数据 → 首页最大字号 → 文件名 → 空串）。列表页
+        不能再出现"用文件名/DOI 冒充标题"的元数据——实测 explain.md 的参考文献
+        因此显示成 ``10.216561000-0887.380021.pdf``。
+        """
         if not os.path.exists(pdf_path):
             raise FileNotFoundError(pdf_path)
         text = extract_pdf_text(pdf_path)
@@ -407,18 +502,23 @@ class RagKB:
         source_file = os.path.basename(pdf_path)
         stem = os.path.splitext(source_file)[0]
         if not doi:
-            doi = _recover_doi(stem) or ""
+            doi = doi_from_pdf_text(text) or _recover_doi(stem) or ""
+        meta_title = ""
+        page_title = ""
         if not title:
             try:
                 import pymupdf
                 doc = pymupdf.open(pdf_path)
                 try:
-                    title = ((doc.metadata or {}).get("title") or "").strip()
+                    meta_title = ((doc.metadata or {}).get("title") or "").strip()
                 finally:
                     doc.close()  # 异常路径也要释放文件句柄（Windows 上句柄不关会锁文件）
             except Exception:
-                title = ""
-        title = title or doi or stem
+                meta_title = ""
+            # 元数据已给出真标题时不再开第二次 PDF（首页字号启发式是兜底手段）
+            if _is_placeholder_title(meta_title):
+                page_title = _first_page_title(pdf_path)
+        title = _resolve_title(title, meta_title, page_title, stem)
         return self.add_text(text, source_file=source_file, doi=doi, title=title)
 
     def ingest_dir(self, dir_path: str = "pdf_downloads", limit: int | None = None) -> dict:
