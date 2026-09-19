@@ -91,6 +91,36 @@ class FactSheetTest(_MRFFixtureTest):
         self.assertEqual(facts["table_rows"], [])
 
 
+class MonotonicityTest(_MRFFixtureTest):
+    def test_lambda23_is_reported_as_non_monotone_with_the_real_reversal(self):
+        """回归：分析文本曾写"Monotone increase with lambda23"，而数据里明明有反转
+        （σ(λ23=3.9174)=306.577 > σ(λ23=4.8446)=296.651）。相关系数高不等于单调。"""
+        X, names, y, dep = _load_mrf()
+        facts = df.compute_facts(X, y, names, dep, with_skeletons=False)
+        by_feature = {m["feature"]: m for m in facts["monotonicity"]}
+        lam23 = by_feature["lambda23"]
+        self.assertFalse(lam23["monotone"])
+        self.assertEqual(lam23["reversals"], 1)
+        rev = lam23["first_reversal"]
+        self.assertAlmostEqual(rev["from"]["lambda23"], 3.9174, places=3)
+        self.assertAlmostEqual(rev["from"]["dependent"], 306.577, places=3)
+        self.assertAlmostEqual(rev["to"]["lambda23"], 4.8446, places=3)
+        self.assertAlmostEqual(rev["to"]["dependent"], 296.651, places=3)
+
+    def test_monotone_relation_is_reported_as_monotone(self):
+        x = np.array([1.0, 2.0, 3.0, 4.0])
+        facts = df.compute_facts(x.reshape(-1, 1), 2.0 * x, ["a"], "y", with_skeletons=False)
+        entry = facts["monotonicity"][0]
+        self.assertTrue(entry["monotone"])
+        self.assertEqual(entry["direction"], "increasing")
+
+    def test_render_states_the_non_monotone_verdict(self):
+        X, names, y, dep = _load_mrf()
+        text = df.render_facts(df.compute_facts(X, y, names, dep, with_skeletons=False))
+        self.assertIn("NOT monotone in lambda23", text)
+        self.assertIn("Do not describe it as a monotone/saturating trend", text)
+
+
 class SkeletonBaselineTest(_MRFFixtureTest):
     def test_separate_power_beats_product_skeleton(self):
         """核心回归：把"整体长细比支配"这一先验变成可被实测反驳的候选。

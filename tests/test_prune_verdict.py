@@ -302,6 +302,9 @@ class ExplainBlockTest(unittest.TestCase):
             ],
             "identifiability": [{"a": "lambda12", "b": "lambda23",
                                  "message": "NOT separately identifiable"}],
+            "monotonicity": [{"feature": "lambda23", "monotone": False, "reversals": 1,
+                              "first_reversal": {"from": {"lambda23": 3.9174, "dependent": 306.577},
+                                                 "to": {"lambda23": 4.8446, "dependent": 296.651}}}],
         })
 
         self.assertIn("352.1991", text)
@@ -309,6 +312,9 @@ class ExplainBlockTest(unittest.TestCase):
         self.assertIn("NMSE=0.0307", text)
         self.assertIn("NOT separately identifiable", text)
         self.assertIn("必须显式报告冲突", text)
+        # 单调性必须由代码给出结论，解释不得写成单调/饱和趋势
+        self.assertIn("**不单调**", text)
+        self.assertIn("306.577->296.651", text)
         # 只列与因变量相关的配对，不把自变量两两相关也当成解释依据
         self.assertNotIn("lambda12 vs lambda23：", text)
 

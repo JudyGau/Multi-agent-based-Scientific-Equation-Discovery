@@ -86,5 +86,25 @@ class PromptTemplateFormatTest(unittest.TestCase):
             _declared_fields(pc.residual_analysis_prompt + '\n  "extra": {\n')
 
 
+class SamplingSystemPromptTest(unittest.TestCase):
+    """采样系统提示里的文献约束：必须是"选用文献时的约束"，不是"必须检索"。"""
+
+    def test_literature_use_is_explicitly_optional(self):
+        # 回归：早期写法以 "Literature rules (mandatory): Call search_paper first" 开头，
+        # 模型读成硬性检索要求，不需要文献也要先搜一轮（实测 Sampler-0 原话引用了它）。
+        text = pc.sampling_system_prompt
+        self.assertIn("using literature is optional", text)
+        self.assertIn("never search just because of these rules", text)
+        self.assertNotIn("Literature rules (mandatory)", text)
+
+    def test_doi_must_come_verbatim_from_search_results(self):
+        text = pc.sampling_system_prompt
+        self.assertIn("verbatim", text)
+        self.assertIn("Never invent, guess, complete, or recall a DOI", text)
+
+    def test_irrelevant_tool_output_must_not_be_cited(self):
+        self.assertIn("unrelated to the question, ignore it", pc.sampling_system_prompt)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -102,14 +102,23 @@ sampling_system_prompt = system_prompt + (
     "using only the independent variable names given in the prompt.\n"
     # 实证约束：实测中模型会自行编造 DOI 与标题配对，read_paper 因此取回完全无关的论文，
     # 无关摘要被当成文献证据注入推理上下文（白烧 token 且误导结论）。
-    "Literature rules (mandatory):\n"
-    "- Call search_paper first. A DOI may ONLY be copied verbatim from a search_paper result "
-    "in this conversation. Never invent, guess, complete, or recall a DOI from memory, and "
-    "never pair a title with a DOI unless that exact pair appears in a search_paper result.\n"
+    # 这些是"使用文献时的约束"，不是"必须检索文献"的义务：早期写法以
+    # "Literature rules (mandatory): Call search_paper first" 开头，模型把它读成硬性检索
+    # 要求，于是明明不需要文献也要先搜一轮（实测 Sampler-0 原话："The mandatory rule says
+    # 'Call search_paper first' ... Maybe one search is fine"），白烧 token 且与本段前面的
+    # "prefer writing the equation skeleton directly / at most 2-3 tool calls" 自相矛盾。
+    "Literature rules (constraints that apply ONLY IF you choose to use literature -- "
+    "using literature is optional and often unnecessary; never search just because of these "
+    "rules):\n"
+    "- If you do use it, call search_paper first. A DOI may ONLY be copied verbatim from a "
+    "search_paper result in this conversation. Never invent, guess, complete, or recall a DOI "
+    "from memory, and never pair a title with a DOI unless that exact pair appears in a "
+    "search_paper result.\n"
     "- Do not call read_paper for a paper you did not see in search results.\n"
     "- Tool output is evidence only if it actually addresses this problem. If a tool result "
     "(or a read_paper 'title mismatch' notice) is unrelated to the question, ignore it and say "
-    "so -- do NOT cite it as support for any physical claim.\n"
+    "so -- do NOT cite it as support for any physical claim. Searching and finding nothing "
+    "relevant is an acceptable outcome; say the results were not relevant and move on.\n"
 )
 
 # RAG 文献知识库检索结果注入区块标题

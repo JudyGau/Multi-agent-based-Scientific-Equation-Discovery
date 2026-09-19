@@ -248,6 +248,7 @@ def compute_facts(inputs, outputs, feature_names, dependent_name,
         "dependent": dep,
         "columns": columns,
         "correlations": correlations,
+        "monotonicity": _monotonicity(names, X, y),
         "extremes": extremes,
         "table_included": int(X.shape[0]) <= int(max_table_rows),
         "table_columns": names + [dep],
@@ -257,6 +258,44 @@ def compute_facts(inputs, outputs, feature_names, dependent_name,
         "identifiability": _identifiability(names, correlations),
     }
     return facts
+
+
+def _monotonicity(names: list[str], X: np.ndarray, y: np.ndarray) -> list[dict]:
+    """逐个自变量检查因变量是否单调；非单调时给出第一处反转的具体数据点。
+
+    为什么必须由代码判定：实测分析文本把 λ23 说成"Monotone increase with lambda23"，
+    而它自己列出的数字里 σ(λ23=3.9174)=306.577 > σ(λ23=4.8446)=296.651 就是一处反转
+    ——相关系数高（0.83）不等于单调。这类断言会被注入每条采样提示，必须在源头拦住。
+    """
+    report = []
+    for j, name in enumerate(names):
+        order = np.argsort(X[:, j], kind="mergesort")
+        xs, ys = X[order, j], y[order]
+        direction = 0
+        reversals = 0
+        first = None
+        for i in range(len(ys) - 1):
+            delta = np.sign(ys[i + 1] - ys[i])
+            if delta == 0:
+                continue
+            if direction == 0:
+                direction = delta
+            elif delta != direction:
+                reversals += 1
+                if first is None:
+                    first = {"from": {name: _round(xs[i]), "dependent": _round(ys[i])},
+                             "to": {name: _round(xs[i + 1]), "dependent": _round(ys[i + 1])}}
+        entry = {
+            "feature": name,
+            "monotone": reversals == 0,
+            "direction": ("increasing" if direction > 0 else
+                          "decreasing" if direction < 0 else "flat"),
+            "reversals": reversals,
+        }
+        if first is not None:
+            entry["first_reversal"] = first
+        report.append(entry)
+    return report
 
 
 def _identifiability(names: list[str], correlations: list[dict]) -> list[dict]:
@@ -308,6 +347,21 @@ def render_facts(facts: dict) -> str:
     dep = facts.get("dependent", "y")
     lines.append(f"rows: {facts.get('n_rows')} | features: {', '.join(facts.get('features', []))} "
                  f"| dependent: {dep}")
+    # 单调性判定放在最前面：实测模型会写"Monotone increase with lambda23"，而数据里
+    # 明明有一处反转。相关系数高不等于单调，这条必须由代码给出结论。
+    for m in facts.get("monotonicity") or []:
+        if m.get("monotone"):
+            lines.append(f"monotonicity: {dep} is monotone {m.get('direction')} in "
+                         f"{m.get('feature')} on this dataset")
+            continue
+        rev = m.get("first_reversal") or {}
+        frm, to = rev.get("from", {}), rev.get("to", {})
+        lines.append(
+            f"monotonicity: {dep} is NOT monotone in {m.get('feature')} "
+            f"({m.get('reversals')} reversal(s); first at {m.get('feature')}="
+            f"{frm.get(m.get('feature'))}->{to.get(m.get('feature'))}: "
+            f"{frm.get('dependent')}->{to.get('dependent')}). Do not describe it as "
+            "a monotone/saturating trend without acknowledging this.")
     lines.append("column stats:")
     for name, st in (facts.get("columns") or {}).items():
         lines.append(f"  {name}: min={st['min']} max={st['max']} mean={st['mean']} std={st['std']}")

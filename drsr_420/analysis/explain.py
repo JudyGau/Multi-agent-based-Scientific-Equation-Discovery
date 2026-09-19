@@ -580,6 +580,17 @@ def _format_facts_block(facts: dict | None) -> str:
     if ex:
         at = ", ".join(f"{k}={v}" for k, v in ex["at"].items())
         lines.append(f"- 全局 {facts.get('dependent')} 最大：{ex['value']} 在 ({at})")
+    for m in facts.get("monotonicity") or []:
+        if m.get("monotone"):
+            lines.append(f"- {facts.get('dependent')} 对 {m.get('feature')} 单调{m.get('direction')}")
+            continue
+        rev = m.get("first_reversal") or {}
+        frm, to = rev.get("from", {}), rev.get("to", {})
+        lines.append(f"- {facts.get('dependent')} 对 {m.get('feature')} **不单调**"
+                     f"（{m.get('reversals')} 处反转；首个反转在 {m.get('feature')}="
+                     f"{frm.get(m.get('feature'))}->{to.get(m.get('feature'))}："
+                     f"{frm.get('dependent')}->{to.get('dependent')}）——"
+                     "不得写成单调/饱和趋势而不提这一点")
     for c in facts.get("correlations") or []:
         if c.get("b") != facts.get("dependent"):
             continue
