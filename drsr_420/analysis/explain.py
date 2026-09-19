@@ -39,7 +39,7 @@ from drsr_420.core import prompt_config as pc
 import drsr_420.llm as llm
 from drsr_420.analysis.prune_report import format_fit_summary
 from drsr_420.knowledge.tool_runner import mcp_call_tool
-from drsr_420.analysis.holdout import (render_holdout_section,
+from drsr_420.analysis.holdout import (in_sample_metrics, render_holdout_section,
                                        strip_holdout_section)
 
 #: 单个表达式/被移除项在提示词里的最大字符数（剪枝后的表达式有时很长，
@@ -430,7 +430,11 @@ _REQUIRED_STRUCTURE = (
     "判定为\"未实际剪枝/仅形式变化\"时，最终公式就是剪枝前的公式，"
     "simplify 的通分/展开形式**不是**剪枝结果，不得据此编造\"被移除的项\"；"
     "判定为\"退化剪枝被拒\"时，那次剪枝已被否决，最终公式仍是剪枝前的公式，"
-    "不得把被剪掉的那几项写成\"已经简化掉的项\"。\n\n"
+    "不得把被剪掉的那几项写成\"已经简化掉的项\"。\n"
+    "最终口径（用户给定）：对外发布、并被样本外验证所评估的公式就是**剪枝后表达式**"
+    "（判定为未实际剪枝/退化被拒时，剪枝后等于剪枝前），第 3、7 节与全部结论都以它为基准；"
+    "第 5 节的合理性论证只用来说明这次剪枝是否站得住，不改变最终表达式，"
+    "也不得把样本内指标换成剪枝前的数值来配合论证。\n\n"
     "引用规范：正文引用文献处用 [n] 标注（n 为下方文献清单的编号）；只允许引用该清单"
     "内的文献，不得编造文献；文末的参考文献列表由系统自动附加，你不需要自己编写。"
 )
@@ -533,7 +537,7 @@ def _format_holdout_block(holdout: dict | None, fit: dict | None = None) -> str:
                 "本次没有可用的 held-out 数据，因此没有任何样本外指标。"
                 "正文里出现的 MSE/NMSE 一律是样本内指标（评估器在同一批点上拟合参数并打分），"
                 "不得把它们说成泛化能力或预测精度。")
-    in_nmse = (fit or {}).get("nmse_before")
+    in_nmse = in_sample_metrics(fit)["nmse"]
     lines = ["\n\n### 样本外（held-out）验证 ###\n",
              f"held-out 数据：{_clip(holdout.get('path'), 300)}"
              f"（{holdout['n_points']} 个点，未参与参数拟合、打分与样本选择）",

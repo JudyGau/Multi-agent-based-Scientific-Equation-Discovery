@@ -322,6 +322,27 @@ class HoldoutSectionTest(unittest.TestCase):
         self.assertIn("2.5e+06 倍", text)      # 0.25 / 1e-7
         self.assertIn("不参与采样、打分、早停与样本选择", text)
 
+    def test_section_prefers_pruned_metrics_over_before(self):
+        """回归：表格曾把剪枝前的样本内 MSE（0.0523）与剪枝后的样本外 MSE 并列，
+        而对外发布、样本外评估用的都是剪枝后表达式——样本内对照必须同口径。
+        """
+        text = ho.render_holdout_section(self._holdout(),
+                                         {"n_points": 5, "mse_before": 1e-6,
+                                          "nmse_before": 1e-7, "max_abs_err_before": 1e-3,
+                                          "max_rel_err_before": 0.001,
+                                          "mse_after": 6305.33, "nmse_after": 3.13,
+                                          "max_abs_err_after": 158.819,
+                                          "max_rel_err_after": 0.45})
+        self.assertIn("6305.33", text)          # 用剪枝后
+        self.assertNotIn("1e-06", text)         # 不再用剪枝前
+        self.assertIn("最终发布的表达式", text)
+
+    def test_in_sample_metrics_falls_back_to_before_without_pruning(self):
+        metrics = ho.in_sample_metrics({"mse_before": 1e-6, "nmse_before": 1e-7})
+        self.assertEqual(metrics["mse"], 1e-6)
+        self.assertEqual(metrics["nmse"], 1e-7)
+        self.assertFalse(metrics["pruned"])
+
     def test_section_without_holdout_warns_in_sample_is_not_generalization(self):
         text = ho.render_holdout_section(None)
         self.assertIn(ho.HOLDOUT_HEADING, text)

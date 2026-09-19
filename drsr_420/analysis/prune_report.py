@@ -207,8 +207,9 @@ def compare_fits(dependent: str, sym_names: list[str], data: np.ndarray,
 
     Returns:
         dict，可能包含 ``n_points`` / ``mse_before`` / ``nmse_before`` /
-        ``mse_after`` / ``nmse_after`` / ``max_abs_diff`` / ``identical``，
-        以及失败时的 ``error``（缺字段即该项无法计算）。
+        ``max_abs_err_before`` / ``max_rel_err_before`` 与（给了 ``pruned`` 时）
+        ``mse_after`` / ``nmse_after`` / ``max_abs_err_after`` / ``max_rel_err_after`` /
+        ``max_abs_diff`` / ``identical``，以及失败时的 ``error``（缺字段即该项无法计算）。
     """
     out: dict = {}
     if data is None:
@@ -247,6 +248,11 @@ def compare_fits(dependent: str, sym_names: list[str], data: np.ndarray,
     mse_after = float(np.mean(np.square(pred_after - y)))
     out["mse_after"] = mse_after
     out["nmse_after"] = mse_after / var_y if var_y > 0 else None
+    # 剪枝后的最大误差：对外发布的是剪枝后表达式，样本内对照必须与它同口径
+    # （见 holdout.in_sample_metrics，缺这两项就只能回退剪枝前的值）
+    err_after = np.abs(pred_after - y)
+    out["max_abs_err_after"] = float(np.max(err_after))
+    out["max_rel_err_after"] = float(np.max(err_after / np.maximum(np.abs(y), 1e-12)))
     diff = np.abs(pred_after - pred_before)
     finite = np.isfinite(diff)
     out["max_abs_diff"] = float(diff[finite].max()) if finite.any() else float("inf")

@@ -32,7 +32,7 @@ from drsr_420.analysis.prune_report import (_warn_once, infer_data_csv,
                                             resolve_columns, resolve_csv)
 
 __all__ = [
-    "resolve_test_csv", "load_test_data", "evaluate_holdout",
+    "resolve_test_csv", "load_test_data", "evaluate_holdout", "in_sample_metrics",
     "format_holdout_summary", "HOLDOUT_HEADING", "render_holdout_section",
     "strip_holdout_section",
 ]
@@ -231,6 +231,33 @@ def evaluate_holdout(dependent: str, sym_names: list[str], expr, test_data: np.n
     return out
 
 
+def in_sample_metrics(fit: dict | None) -> dict:
+    """样本内指标，**以最终发布的表达式（剪枝后）为准**，缺剪枝后值时才回退剪枝前。
+
+    held-out 侧评的是发布版表达式（``find_best_eq`` 传 ``published``，即未剪枝时等于
+    原式），因此样本内对照必须取自同一表达式。实测 explain.md 曾把两种口径并列：
+    样本内 MSE=0.0523（剪枝前）对样本外 MSE=869（剪枝后）—— 剪枝明明把模型从
+    MSE 0.05 削弱到 6305，表格却显示样本内仍"很准"，属于口径不一致造成的误导。
+
+    ``pruned`` 标记本次样本内值是否来自剪枝后表达式，供渲染时写清口径。
+    """
+    fit = fit or {}
+
+    def pick(after_key: str, before_key: str):
+        value = fit.get(after_key)
+        return fit.get(before_key) if value is None else value
+
+    after_mse = fit.get("mse_after")
+    return {
+        "n_points": fit.get("n_points"),
+        "mse": pick("mse_after", "mse_before"),
+        "nmse": pick("nmse_after", "nmse_before"),
+        "max_abs_err": pick("max_abs_err_after", "max_abs_err_before"),
+        "max_rel_err": pick("max_rel_err_after", "max_rel_err_before"),
+        "pruned": after_mse is not None,
+    }
+
+
 def format_holdout_summary(holdout: dict | None, fit: dict | None = None) -> str:
     """把样本外指标渲染成一行控制台文本（无数据时给出原因）。"""
     if not holdout:
@@ -246,7 +273,7 @@ def format_holdout_summary(holdout: dict | None, fit: dict | None = None) -> str
     parts.append(f"最大绝对误差={holdout['max_abs_err']:.6g}")
     parts.append(f"最大相对误差={holdout['max_rel_err']:.2%}")
     line = "，".join(parts) + "。"
-    in_nmse = (fit or {}).get("nmse_before")
+    in_nmse = in_sample_metrics(fit)["nmse"]
     if in_nmse and holdout.get("nmse") is not None:
         line += (f"（样本内 NMSE={in_nmse:.6g}，样本外/样本内="
                  f"{holdout['nmse'] / in_nmse:.3g} 倍）")
@@ -275,10 +302,11 @@ def render_holdout_section(holdout: dict | None, fit: dict | None = None) -> str
                      f"不能用来论证泛化能力。需要真正的样本外验证时，请另取未参与"
                      f"拟合与选择的数据点。")
     lines.append("")
-    in_mse = (fit or {}).get("mse_before")
-    in_n = (fit or {}).get("n_points")
-    in_max_abs = (fit or {}).get("max_abs_err_before")
-    in_max_rel = (fit or {}).get("max_rel_err_before")
+    in_sample = in_sample_metrics(fit)
+    in_mse = in_sample["mse"]
+    in_n = in_sample["n_points"]
+    in_max_abs = in_sample["max_abs_err"]
+    in_max_rel = in_sample["max_rel_err"]
 
     def _fmt(value, spec="{:.6g}"):
         return "本次不可用" if value is None else spec.format(value)
@@ -287,12 +315,12 @@ def render_holdout_section(holdout: dict | None, fit: dict | None = None) -> str
     lines.append("|---|---|---|")
     lines.append(f"| 点数 | {in_n if in_n else '未知'} | {holdout['n_points']} |")
     lines.append(f"| MSE | {_fmt(in_mse)} | {holdout['mse']:.6g} |")
-    lines.append(f"| NMSE（分母为训练集方差） | {_fmt((fit or {}).get('nmse_before'))} "
+    lines.append(f"| NMSE（分母为训练集方差） | {_fmt(in_sample['nmse'])} "
                  f"| {_fmt(holdout.get('nmse'))} |")
     lines.append(f"| 最大绝对误差 | {_fmt(in_max_abs)} | {holdout['max_abs_err']:.6g} |")
     lines.append(f"| 最大相对误差 | {_fmt(in_max_rel, '{:.2%}')} "
                  f"| {holdout['max_rel_err']:.2%} |")
-    in_nmse = (fit or {}).get("nmse_before")
+    in_nmse = in_sample["nmse"]
     if in_nmse and holdout.get("nmse") is not None:
         lines.append("")
         lines.append(f"样本外 NMSE 是样本内的 **{holdout['nmse'] / in_nmse:.3g} 倍**"
@@ -310,8 +338,11 @@ def render_holdout_section(holdout: dict | None, fit: dict | None = None) -> str
         lines.append(f"| {i} | {vals} | {row['observed']:.6g} | {row['predicted']:.6g} "
                      f"| {row['abs_err']:.6g} | {row['rel_err']:.2%} |")
     lines.append("")
-    lines.append("> 口径说明：样本内指标由评估器在同一批训练点上拟合参数并打分得到；"
+    lines.append("> 口径说明：样本内指标对应**最终发布的表达式**（发生剪枝时即剪枝后表达式，"
+                 "与样本外所用表达式相同），由评估器在同一批训练点上拟合参数并打分得到；"
                  "样本外 NMSE 用训练集方差作分母（与样本内同口径）。")
+    if not in_sample["pruned"]:
+        lines.append("> 本次没有剪枝后指标（未发生实质剪枝），样本内列即原表达式的指标。")
     lines.append("> 样本外指标只用于报告，不参与采样、打分、早停与样本选择——"
                  "参与选择后它就不再是 held-out。")
     return "\n".join(lines)
