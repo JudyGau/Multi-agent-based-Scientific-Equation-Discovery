@@ -101,6 +101,12 @@ class SamplingSystemPromptTest(unittest.TestCase):
         text = pc.sampling_system_prompt
         self.assertIn("verbatim", text)
         self.assertIn("Never invent, guess, complete, or recall a DOI", text)
+        # 回归：规则原先只承认 search_paper 作为 DOI 来源，而 search_kb 同样返回真实的
+        # (title, DOI)（实测唯一一次 read_paper 用的就是 search_kb 的返回）。来源必须
+        # 同时覆盖两个检索工具，否则按字面把合法调用判成违规。
+        self.assertIn("search_paper OR search_kb result", text)
+        self.assertIn("never pair a title with a DOI unless that exact pair appears in a tool "
+                      "result", text)
 
     def test_irrelevant_tool_output_must_not_be_cited(self):
         self.assertIn("unrelated to the question, ignore it", pc.sampling_system_prompt)

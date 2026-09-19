@@ -34,8 +34,9 @@ tools = [
             "name": "read_paper",
             "description": (
                 "Download the paper by its DOI link and extract its content. "
-                "The DOI must be copied verbatim from a search_paper result returned earlier in "
-                "this conversation; do not invent or guess a DOI. The tool verifies the "
+                "The DOI must be copied verbatim from a search_paper or search_kb result "
+                "returned earlier in this conversation; do not invent or guess a DOI. The tool "
+                "verifies the "
                 "downloaded PDF's title against the requested title and returns a "
                 "'title mismatch' notice instead of a summary when they disagree."
             ),
