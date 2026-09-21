@@ -353,7 +353,29 @@ def _normalize_statements(func: str, params: list) -> str:
     """
     name_map: dict[str, str] = {}
     out_lines: list[str] = []
-    lines = func.splitlines()
+    # ③ **反斜杠续行**（Python 语义：行尾 ``\`` 后接换行等于一行）：
+    #    ``p0, p1, p2 = params[0], params[1], \\n    params[2]`` 的第一行以
+    #    ``\`` 结尾，_TUPLE_UNPACK_RE 的 ``\\s*$`` 永远匹配失败（``\`` 不是空白），
+    #    第二行又是裸参数行——实测 MRFCompress-Cuboid_20260921-161549 的最优样本
+    #    正是这种写法，p0..p7 全部沦为自由符号，剪枝与 held-out 被整体跳过。
+    #    逐项/元组解包处理之前先把续行拼回单行；注释与 docstring 已在上游被
+    #    移除，此处残留的行尾 ``\`` 只可能是续行符。
+    joined: list[str] = []
+    pending = ""
+    for raw in func.splitlines():
+        if pending:
+            pending = pending + " " + raw.strip()
+        else:
+            pending = raw
+        stripped = pending.rstrip()
+        if stripped.endswith("\\"):
+            pending = stripped[:-1]
+            continue
+        joined.append(pending)
+        pending = ""
+    if pending:
+        joined.append(pending)
+    lines = joined
     i = 0
     while i < len(lines):
         line = lines[i]

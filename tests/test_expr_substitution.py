@@ -142,6 +142,26 @@ class ExprSubstitutionTest(_ExprTestCase):
         self.assertIsNotNone(expr)
         self.assertEqual(sp.simplify(expr - (20 * X1 + 10)), 0)
 
+    def test_tuple_unpacking_with_backslash_continuation(self):
+        """回归（20260921-161549 最优样本）：逐项解包写成反斜杠续行——
+
+        ``p0, p1, p2 = params[0], params[1], \\n    params[2]`` 第一行以 ``\\``
+        结尾，旧实现按单行匹配，``\\s*$`` 撞上行尾续行符必然失败，第二行又
+        是裸参数行——p0..p7 全部沦为自由符号 → 解析返回 None → 剪枝与
+        held-out 验证被整体跳过。续行必须先拼回单行再走逐项映射。
+        """
+        func = _spec([
+            "p0, p1, p2 = params[0], params[1], \\",
+            "            params[2]",
+            "product = x1 * p1",
+            "return p0 + product**p2",
+        ])
+        expr = expr_substitution(func, [2.0, 3.0, 2.0])
+        self.assertIsNotNone(expr, "反斜杠续行的逐项解包未能解析")
+        self.assertEqual(expr.free_symbols, {X1})
+        self.assertAlmostEqual(float(expr.subs(X1, 1.5)), 2.0 + (1.5 * 3.0) ** 2,
+                               places=9)
+
     def test_numpy_prefix_removed(self):
         func = _spec(["return np.sin(params[0]*x1)"])
         expr = expr_substitution(func, [2.0])
