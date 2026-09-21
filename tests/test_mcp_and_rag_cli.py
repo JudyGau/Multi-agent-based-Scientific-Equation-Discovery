@@ -610,5 +610,94 @@ class KnowledgeMetadataInferenceTest(unittest.TestCase):
         self.assertEqual(rag_kb._resolve_title("Given", "meta", "page", "stem"), "Given")
 
 
+class RepairMetadataTest(unittest.TestCase):
+    """repair_metadata：就地修 doi/title，不重嵌入；PDF 缺失跳过；dry_run 不写库。"""
+
+    class _FakeCollection:
+        def __init__(self, ids, metas):
+            self._ids, self._metas = list(ids), [dict(m) for m in metas]
+            self.updates = []
+
+        def get(self, include=None):
+            return {"ids": self._ids, "metadatas": [dict(m) for m in self._metas]}
+
+        def update(self, ids, metadatas):
+            self.updates.append((list(ids), [dict(m) for m in metadatas]))
+            by_id = dict(zip(ids, metadatas))
+            self._metas = [dict(by_id.get(i, m)) for i, m in zip(self._ids, self._metas)]
+
+        def count(self):
+            return len(self._ids)
+
+    @staticmethod
+    def _make_pdf(path, lines):
+        """pymupdf 造一个真实小 PDF：首行按标题字号（最大），其余行按正文字号——
+        与真实论文一致，首页最大字号启发式据此取标题。"""
+        import pymupdf
+        doc = pymupdf.open()
+        page = doc.new_page()
+        y = 72.0
+        for i, line in enumerate(lines):
+            page.insert_text((72, y), line, fontsize=16 if i == 0 else 10,
+                             fontname="helv")
+            y += 24
+        doc.save(path)
+        doc.close()
+
+    def _kb_with(self, tmp, files):
+        kb = rag_kb.RagKB.__new__(rag_kb.RagKB)      # 跳过 chroma 初始化
+        kb.cfg = dict(DEFAULT_CONFIG)
+        kb._collection = self._FakeCollection(
+            [f"{sf}::{i}" for sf, _, n in files for i in range(n)],
+            [{"doi": doi, "title": title, "source_file": sf, "chunk_index": i}
+             for sf, (doi, title), n in files for i in range(n)])
+        return kb
+
+    def test_printed_doi_and_page_title_repair_bad_metadata(self):
+        """回归：旧入库规则把 10.11221.3479045.pdf 猜成 10.11221/.3479045、标题退化为
+        文件名。论文正文印了真 DOI 时必须以印刷值修复；标题取首页最大字号。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            sf = "10.11221.3479045.pdf"
+            self._make_pdf(os.path.join(tmp, sf),
+                           ["Effect of particle aspect ratio in magnetorheology",
+                            "doi: 10.1122/1.3479045"])
+            kb = self._kb_with(tmp, [(sf, ("10.11221/.3479045", "10.11221.3479045.pdf"), 3)])
+            summary = kb.repair_metadata(tmp)
+            self.assertEqual(summary["repaired"], 1)
+            self.assertEqual(summary["changes"][0]["doi"], ["10.11221/.3479045", "10.1122/1.3479045"])
+            self.assertEqual(summary["changes"][0]["title"][1],
+                             "Effect of particle aspect ratio in magnetorheology")
+            (ids, metas), = kb._collection.updates
+            self.assertEqual(len(ids), 3)
+            self.assertTrue(all(m["doi"] == "10.1122/1.3479045" and m["chunk_index"] == i
+                                for i, m in enumerate(metas)))
+
+    def test_missing_pdf_is_skipped_and_dry_run_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sf = "10.1016j.jmmm.2020.166652.pdf"
+            kb = self._kb_with(tmp, [(sf, ("10.1016/j.jmmm.2020.166652", "10.1016j.jmmm.2020.166652.pdf"), 2)])
+            # PDF 缺失：跳过
+            summary = kb.repair_metadata(tmp)
+            self.assertEqual(summary["skipped"], 1)
+            self.assertEqual(summary["repaired"], 0)
+            # dry_run：报告修复但不写
+            self._make_pdf(os.path.join(tmp, sf), ["Some Real Title", "10.1016/j.jmmm.2020.166652"])
+            kb2 = self._kb_with(tmp, [(sf, ("10.1016/j.jmmm.2020.166652", "10.1016j.jmmm.2020.166652.pdf"), 2)])
+            summary = kb2.repair_metadata(tmp, dry_run=True)
+            self.assertEqual(summary["repaired"], 1)
+            self.assertEqual(kb2._collection.updates, [])
+
+    def test_ambiguous_filename_doi_is_dropped_when_no_printed_doi(self):
+        """正文没印 DOI、文件名恢复又有 '-' 歧义时：假 DOI 置空，不再保留猜测。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            sf = "10.216561000-0887.380021.pdf"
+            self._make_pdf(os.path.join(tmp, sf), ["A Paper Without Printed DOI"])
+            kb = self._kb_with(tmp, [(sf, ("10.216561000/-0887.380021", "10.216561000-0887.380021.pdf"), 1)])
+            summary = kb.repair_metadata(tmp)
+            self.assertEqual(summary["repaired"], 1)
+            self.assertEqual(summary["changes"][0]["doi"], ["10.216561000/-0887.380021", ""])
+            self.assertTrue(summary["changes"][0]["title"][1])   # 首页字号给出真标题
+
+
 if __name__ == "__main__":
     unittest.main()

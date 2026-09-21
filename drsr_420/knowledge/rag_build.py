@@ -3,6 +3,7 @@
 用法：
     python -m drsr_420.knowledge.rag_build --ingest [--dir pdf_downloads] [--limit N] [--rebuild]
     python -m drsr_420.knowledge.rag_build --query "磁流变 屈服应力 压缩" [--k 5]
+    python -m drsr_420.knowledge.rag_build --repair-metadata [--dry-run]
 """
 import argparse
 import json
@@ -29,11 +30,21 @@ def main():
     parser.add_argument("--rebuild", action="store_true", help="重建 collection（删除后重新入库）")
     parser.add_argument("--query", default=None, help="检索关键词")
     parser.add_argument("--k", type=int, default=5, help="检索返回条数")
+    parser.add_argument("--repair-metadata", action="store_true",
+                        help="就地修复已入库条目的 doi/title 元数据（不重嵌入）")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="与 --repair-metadata 连用：只报告将做的修改，不写库")
     parser.add_argument("--config", default=None,
                         help="RAG 档案路径（默认 config/rag.config）")
     args = parser.parse_args()
 
     kb = RagKB(load_config(args.config))
+
+    if args.repair_metadata:
+        summary = kb.repair_metadata(_resolve_dir(args.dir), dry_run=args.dry_run)
+        print(json.dumps(summary, ensure_ascii=False, indent=1))
+        print(f"[RAG] 元数据修复完成：修复 {summary['repaired']} / 不变 "
+              f"{summary['unchanged']} / 跳过 {summary['skipped']}（dry_run={args.dry_run}）")
 
     if args.ingest:
         if args.rebuild:
@@ -51,7 +62,7 @@ def main():
             print(h["text"])
             print()
 
-    if not args.ingest and not args.query:
+    if not args.ingest and not args.query and not args.repair_metadata:
         parser.print_help()
 
 

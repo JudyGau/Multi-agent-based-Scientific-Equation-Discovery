@@ -552,6 +552,109 @@ class RagKB:
                 print(f"[RAG] 入库失败 {fname}: {e}")
         return results
 
+    # 元数据修复
+    def repair_metadata(self, pdf_dir: str = "pdf_downloads",
+                        dry_run: bool = False) -> dict:
+        """就地修复已入库文献的 doi/title 元数据（**不重嵌入、不改 chunk 文本**）。
+
+        历史入库用"从去斜杠文件名恢复 DOI + ``title or doi or stem``"的兜底，给
+        知识库留下两类坏元数据（实测 explain.md 参考文献显示成
+        ``10.216561000-0887.380021.pdf`` 这类"标题"）：
+        1. **假 DOI**——文件名抹掉的是哪个 ``/`` 无从判断，旧恢复规则猜出的
+           DOI 指向错误文章（``10.11221/.3479045`` 实为 ``10.1122/1.3479045``）；
+        2. **假标题**——元数据为空时退化成 doi/stem。
+
+        修复判据与 :meth:`add_pdf` 现行推断链一致（权威度从高到低）：
+        - DOI：论文正文印刷的 DOI（:func:`doi_from_pdf_text`）→ 无歧义文件名
+          恢复（:func:`_recover_doi`，后缀含 ``-`` 一律拒绝）→ 原值保留，
+          但原值恰是旧规则从文件名猜的（去斜杠后 == 主干）时按新规则重判。
+        - 标题：PDF 元数据 → 首页最大字号（:func:`_first_page_title`）→
+          非 DOI 形态的文件名 → 空串；新链给不出且旧值非占位物时保留旧值。
+
+        PDF 缺失的条目无法复核，原样跳过；修复按 source_file 幂等，重复执行
+        第二次应为 0 修复。
+
+        Args:
+            pdf_dir: 原始 PDF 所在目录（按 source_file 对名）。
+            dry_run: True 时只报告将做的修改，不写库。
+
+        Returns:
+            dict：``files``（库内文献数）/ ``repaired`` / ``unchanged`` /
+            ``skipped``（PDF 缺失）/ ``changes``（逐文件的新旧值对照）。
+        """
+        col = self._get_collection()
+        data = col.get(include=["metadatas"])
+        ids = data.get("ids") or []
+        metas = data.get("metadatas") or []
+        by_file: dict[str, dict] = {}
+        for cid, meta in zip(ids, metas):
+            meta = meta or {}
+            sf = str(meta.get("source_file") or "")
+            if not sf:
+                continue
+            entry = by_file.setdefault(sf, {"ids": [], "doi": "", "title": "",
+                                            "chunk_index": {}})
+            entry["ids"].append(cid)
+            entry["doi"] = entry["doi"] or str(meta.get("doi") or "")
+            entry["title"] = entry["title"] or str(meta.get("title") or "")
+            entry["chunk_index"][cid] = meta.get("chunk_index")
+
+        summary = {"files": len(by_file), "repaired": 0, "unchanged": 0,
+                   "skipped": 0, "changes": []}
+        for sf, entry in sorted(by_file.items()):
+            pdf_path = os.path.join(pdf_dir, sf)
+            if not os.path.isfile(pdf_path):
+                summary["skipped"] += 1
+                continue
+            stem = os.path.splitext(sf)[0]
+            text = extract_pdf_text(pdf_path)
+
+            # DOI：印刷值权威；否则保留原值，除非原值是旧规则从文件名猜的
+            new_doi = doi_from_pdf_text(text) or ""
+            if not new_doi:
+                old = entry["doi"]
+                if old and old.replace("/", "") == stem:
+                    new_doi = _recover_doi(stem) or ""
+                else:
+                    new_doi = old
+
+            # 标题：现行推断链重算
+            meta_title, page_title = "", ""
+            try:
+                import pymupdf
+                doc = pymupdf.open(pdf_path)
+                try:
+                    meta_title = ((doc.metadata or {}).get("title") or "").strip()
+                finally:
+                    doc.close()
+            except Exception:
+                meta_title = ""
+            if _is_placeholder_title(meta_title):
+                page_title = _first_page_title(pdf_path)
+            new_title = _resolve_title("", meta_title, page_title, stem)
+            if new_title == "" and not _is_placeholder_title(entry["title"]):
+                new_title = entry["title"]
+
+            if new_doi == entry["doi"] and new_title == entry["title"]:
+                summary["unchanged"] += 1
+                continue
+            summary["changes"].append({
+                "source_file": sf,
+                "doi": [entry["doi"], new_doi],
+                "title": [entry["title"], new_title],
+                "chunks": len(entry["ids"]),
+            })
+            if not dry_run:
+                col.update(
+                    ids=entry["ids"],
+                    metadatas=[{"doi": new_doi, "title": new_title,
+                                "source_file": sf,
+                                "chunk_index": entry["chunk_index"][cid]}
+                               for cid in entry["ids"]],
+                )
+            summary["repaired"] += 1
+        return summary
+
     # 检索
     def search(self, query: str, k: int = 5) -> list[dict]:
         if self.count() == 0:
