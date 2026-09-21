@@ -162,6 +162,27 @@ class ExprSubstitutionTest(_ExprTestCase):
         self.assertAlmostEqual(float(expr.subs(X1, 1.5)), 2.0 + (1.5 * 3.0) ** 2,
                                places=9)
 
+    def test_tuple_unpacking_parenthesized_multiline(self):
+        """回归（20260921-161549 order75 最优样本）：RHS 是跨行括号元组——
+
+        ``p0, ..., p3 = (params[0], params[1], params[2],\\n params[3])``
+        首行括号未闭合，旧流程既不在合并后的行上重试逐项解包，也没有
+        "剥掉 RHS 包裹括号"的兜底——p0..p6 成为自由符号 → 剪枝与
+        held-out 再次被跳过。"""
+        func = _spec([
+            "p0, p1, p2, p3 = (params[0], params[1], params[2],",
+            "                  params[3])",
+            "aspect = x1 * params[4]",
+            "return (p0",
+            "        + p1 * aspect ** p2",
+            "        + p3)",
+        ])
+        expr = expr_substitution(func, [2.0, 3.0, 2.0, 10.0, 1.5])
+        self.assertIsNotNone(expr, "跨行括号元组解包未能解析")
+        self.assertEqual(expr.free_symbols, {X1})
+        self.assertAlmostEqual(float(expr.subs(X1, 2.0)),
+                               2.0 + 3.0 * (1.5 * 2.0) ** 2 + 10.0, places=9)
+
     def test_numpy_prefix_removed(self):
         func = _spec(["return np.sin(params[0]*x1)"])
         expr = expr_substitution(func, [2.0])

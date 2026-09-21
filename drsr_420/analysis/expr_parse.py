@@ -323,6 +323,9 @@ _TUPLE_UNPACK_RE = re.compile(
 _TUPLE_ITEM_INDEX_RE = re.compile(r"^params\[(\d+)\]$")
 _TUPLE_ITEM_NUMBER_RE = re.compile(
     r"^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$")
+#: 通用多目标赋值（LHS 至少两个名字）：用于兜底识别 RHS 带包裹括号的逐项解包。
+_TUPLE_ASSIGN_RE = re.compile(
+    r"^\s*([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)+)\s*=\s*(.+)$")
 _PAREN_OPEN = re.compile(r"[(\[{]")
 _PAREN_CLOSE = re.compile(r"[)\]}]")
 
@@ -330,6 +333,49 @@ _PAREN_CLOSE = re.compile(r"[)\]}]")
 def _paren_delta(line: str) -> int:
     """一行内未闭合的括号数（正 = 还有括号没关上）。"""
     return len(_PAREN_OPEN.findall(line)) - len(_PAREN_CLOSE.findall(line))
+
+
+def _resolve_tuple_items(names: list[str], items: list[str],
+                         params: list) -> dict[str, str] | None:
+    """逐项解包映射：params[整数] 按下标取值、数值字面量原样代入。
+
+    元组解包按 Python 语义要求两侧数目一致；出现识别不了的项或数目不齐时
+    返回 None（安全失败，孤儿符号由函数尾部的自由符号护栏拒绝），不带病求值。
+    """
+    if len(names) != len(items):
+        return None
+    mapping: dict[str, str] = {}
+    for name, item in zip(names, items):
+        im = _TUPLE_ITEM_INDEX_RE.match(item)
+        if im:
+            k = int(im.group(1))
+            if k >= len(params):
+                return None
+            mapping[name] = str(params[k])
+        elif _TUPLE_ITEM_NUMBER_RE.match(item):
+            mapping[name] = item
+        else:
+            return None
+    return mapping
+
+
+def _resolve_tuple_assignment(lhs: str, rhs: str, params: list) -> dict[str, str] | None:
+    """兜底解析 RHS 带包裹括号的逐项解包 ``p0, p1 = (params[0], params[1])``。
+
+    与 :data:`_TUPLE_UNPACK_RE` 的差异：RHS 允许整体包一层（或多层）括号——
+    跨行括号元组（实测 MRFCompress-Cuboid_20260921-161549 order75 最优样本）
+    合并成单行后旧正则依然不认（RHS 以 ``(`` 开头）。LHS 至少两个名字，
+    普通单变量赋值（``sigma = (...)``）不会进入本函数。
+    """
+    rhs = rhs.strip()
+    while rhs.startswith("("):
+        close = find_matching_paren(rhs, 0)
+        if close != len(rhs) - 1:
+            break
+        rhs = rhs[1:close].strip()
+    names = [n.strip() for n in lhs.split(",")]
+    items = [s.strip() for s in split_top_level(rhs, ",")]
+    return _resolve_tuple_items(names, items, params)
 
 
 def _normalize_statements(func: str, params: list) -> str:
@@ -379,7 +425,14 @@ def _normalize_statements(func: str, params: list) -> str:
     i = 0
     while i < len(lines):
         line = lines[i]
+        merged = line.strip()
+        # 括号续行合并（见②），且每合并一行就重试一次解包匹配——④ 的跨行
+        # 括号元组只有合并成单行才可能识别。
         m = _TUPLE_UNPACK_RE.match(line)
+        while m is None and _paren_delta(merged) > 0 and i + 1 < len(lines):
+            i += 1
+            merged = merged + " " + lines[i].strip()
+            m = _TUPLE_UNPACK_RE.match(merged)
         if m:
             names = [n.strip() for n in m.group(1).split(",")]
             items = [s.strip() for s in m.group(2).split(",")]
@@ -410,10 +463,16 @@ def _normalize_statements(func: str, params: list) -> str:
                     continue
             i += 1
             continue
-        merged = line.strip()
-        while _paren_delta(merged) > 0 and i + 1 < len(lines):
-            i += 1
-            merged = merged + " " + lines[i].strip()
+        # ④ **括号包裹的逐项解包**（可跨行）``p0, p1 = (params[0], params[1])``：
+        #    RHS 以 ``(`` 开头，_TUPLE_UNPACK_RE 一律不认；合并成单行后走兜底。
+        assign = _TUPLE_ASSIGN_RE.match(merged)
+        if assign:
+            resolved = _resolve_tuple_assignment(assign.group(1),
+                                                 assign.group(2), params)
+            if resolved is not None:
+                name_map.update(resolved)
+                i += 1
+                continue
         out_lines.append(merged)
         i += 1
     text = "\n".join(out_lines)
