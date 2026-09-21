@@ -118,6 +118,30 @@ class ExprSubstitutionTest(_ExprTestCase):
         v = float(expr.subs(X1, 2.0))
         self.assertAlmostEqual(v, 193.05 + 357.8 - 78.38 + 6.25, places=6)
 
+    def test_tuple_unpacking_with_explicit_indices(self):
+        """回归（20260921-134921）：``a, b, c = params[0], params[1], params[2]``
+        逐项解包曾因 RHS 不是单一 params[...] 而整行漏掉，a..f 成为自由符号 →
+        解析返回 None → 最优样本的剪枝与 held-out 验证被整体跳过。"""
+        func = _spec([
+            "a, b, c = params[0], params[1], params[2]",
+            "return a*x1**b + c",
+        ])
+        expr = expr_substitution(func, [2.0, 3.0, 5.0])
+        self.assertIsNotNone(expr)
+        self.assertEqual(expr.free_symbols, {X1})
+        self.assertAlmostEqual(float(expr.subs(X1, 2.0)), 2 * 8 + 5, places=9)
+
+    def test_tuple_unpacking_itemwise_is_positional_not_index_bound(self):
+        """逐项解包按位置对应（Python 语义）：即使项的书写顺序与下标交错也以
+        位置为准——``a, b = params[1], params[0]`` 给 a=params[1]、b=params[0]。"""
+        func = _spec([
+            "a, b = params[1], params[0]",
+            "return a*x1 + b",
+        ])
+        expr = expr_substitution(func, [10.0, 20.0])
+        self.assertIsNotNone(expr)
+        self.assertEqual(sp.simplify(expr - (20 * X1 + 10)), 0)
+
     def test_numpy_prefix_removed(self):
         func = _spec(["return np.sin(params[0]*x1)"])
         expr = expr_substitution(func, [2.0])

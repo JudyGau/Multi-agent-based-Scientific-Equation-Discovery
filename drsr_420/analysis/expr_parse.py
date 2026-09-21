@@ -315,7 +315,14 @@ def _unwrap_outer_parens(expr_str: str) -> str:
 
 
 _TUPLE_UNPACK_RE = re.compile(
-    r"^\s*([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s*=\s*params(?:\[[^\]]*\])?\s*$")
+    r"^\s*([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s*=\s*"
+    r"((?:params(?:\[[^\]]*\])?|[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)"
+    r"(?:\s*,\s*(?:params(?:\[[^\]]*\])?|[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?))*)"
+    r"\s*$")
+#: 逐项解包的单项：params[整数] 或已数值化的字面量（标量替换先于本预处理执行）。
+_TUPLE_ITEM_INDEX_RE = re.compile(r"^params\[(\d+)\]$")
+_TUPLE_ITEM_NUMBER_RE = re.compile(
+    r"^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$")
 _PAREN_OPEN = re.compile(r"[(\[{]")
 _PAREN_CLOSE = re.compile(r"[)\]}]")
 
@@ -326,7 +333,7 @@ def _paren_delta(line: str) -> int:
 
 
 def _normalize_statements(func: str, params: list) -> str:
-    """语句级预处理，替 return 的符号消解扫清两种 LLM 常见写法：
+    """语句级预处理，替 return 的符号消解扫清三种 LLM 常见写法：
 
     ① **元组解包** ``p0, p1, ..., p9 = params[:10]``：旧流程只会替换
        ``params[i]`` 形式，解包出来的名字全部留在表达式里成为自由符号，
@@ -334,6 +341,12 @@ def _normalize_statements(func: str, params: list) -> str:
        剪枝率恒 0、曲线报 Cannot convert expression to float
        （实测 MRFCompress-Cuboid_20260917-194203）。按位置把每个名字
        替换为数值后，后续流程照常工作。
+       **逐项形式** ``a, b, c = params[0], params[1], params[2]`` 同理必须
+       处理（实测 MRFCompress-Cuboid_20260921-134921 的最优样本用的正是
+       这种写法）：标量替换先执行，本函数看到的是 ``a, b, c = 0.048, 3.19,
+       288.1``；元组解包按位置对应，逐项映射即可。旧正则只认 RHS 为单一
+       ``params[...]``，逐项形式整行漏掉 → a..f 成为自由符号 → 解析返回
+       None → **剪枝与 held-out 验证被整体跳过**（explain 退化为无剪枝版）。
     ② **多行赋值** ``sigma = (\\n  p0\\n  + p1 ...)``：赋值正则按单行匹配，
        只能看到 ``sigma = (`` 就 EOF 报错被跳过，同样退化为裸符号。
        按括号配对把续行合并回单行（对多行 ``return (`` 同样生效）。
@@ -347,9 +360,32 @@ def _normalize_statements(func: str, params: list) -> str:
         m = _TUPLE_UNPACK_RE.match(line)
         if m:
             names = [n.strip() for n in m.group(1).split(",")]
-            for j, name in enumerate(names):
-                if j < len(params):
-                    name_map[name] = str(params[j])
+            items = [s.strip() for s in m.group(2).split(",")]
+            if len(items) == 1 and not _TUPLE_ITEM_NUMBER_RE.match(items[0]):
+                # 单一 params / params[slice]：名字按位置对应 params 列表
+                for j, name in enumerate(names):
+                    if j < len(params):
+                        name_map[name] = str(params[j])
+            else:
+                # 逐项形式（``a, b = params[0], params[1]``，或标量替换后
+                # ``a, b = 10.0, 20.0``）：元组解包本就按位置，逐项对应。
+                # 出现无法识别的项时整行放弃替换——孤儿符号由函数尾部的
+                # 自由符号护栏拒绝（安全失败），不带病求值。
+                ok = True
+                for name, item in zip(names, items):
+                    im = _TUPLE_ITEM_INDEX_RE.match(item)
+                    if im:
+                        k = int(im.group(1))
+                        if k < len(params):
+                            name_map[name] = str(params[k])
+                    elif _TUPLE_ITEM_NUMBER_RE.match(item):
+                        name_map[name] = item
+                    else:
+                        ok = False
+                        break
+                if not ok:
+                    i += 1
+                    continue
             i += 1
             continue
         merged = line.strip()
