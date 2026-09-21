@@ -18,6 +18,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+import numpy as np
 import sympy as sp
 
 from drsr_420.analysis import prune_report as pr
@@ -437,6 +438,64 @@ class ArtifactSuppressionTest(unittest.TestCase):
 
         self.assertEqual(rendered, [f"{tmp}/original_expr_tree",
                                     f"{tmp}/pruned_expr_tree"])
+
+
+class DataPointSensitivityTest(unittest.TestCase):
+    """训练数据点并入敏感度采样（回归 20260921-161549 order75）。
+
+    最优公式含 (1,1) 角点锚项 ``2989.9/(λ12λ23)^126.082``——只在训练点 (1,1)
+    非零（其余点乘积 ≥ 3.92，浮点下溢为 0）。均匀随机撒点命中 product≈1 的
+    概率为零 → 敏感度≈0 被剪 → 训练 MSE 0.25 → 1.1e6（+4.5e8%）。数据点
+    并入采样后该项敏感度≈15，必须保留。"""
+
+    SPIKE = 2989.9 / (L12 * L23) ** 126.082
+    EXPR = (23.1034 * L12 + 70.1043 * L23 + 1029.51 * sp.log(L12)
+            + 841.785 * sp.log(L23) - 2890.05 + SPIKE)
+    # train.csv 的 8 个自变量点（λ12/λ23 反相关的一维山脊，含角点 (1,1)）
+    DATA = ([1.0, 1.0, 2.0, 2.5, 3.0, 3.5, 4.0, 5.0],
+            [1.0, 14.1245, 8.9331, 7.4185, 6.3166, 5.4875, 4.8446, 3.9174])
+
+    def test_spike_pruned_without_data_points(self):
+        pruner = SensitivityPruner([L12, L23], threshold=0.1, sample_range=(1, 14))
+        pruned = pruner.prune(self.EXPR)
+        self.assertGreaterEqual(pruner.stats.nodes_pruned, 1,
+                                "随机撒点应当测不出角点锚的敏感度（回归前提）")
+        self.assertNotIn("126.08", str(pruned), "无数据点时角点锚被剪掉（旧行为）")
+
+    def test_spike_kept_when_data_points_in_sampling(self):
+        pruner = SensitivityPruner([L12, L23], threshold=0.1, sample_range=(1, 14),
+                                   extra_points=list(self.DATA))
+        pruned = pruner.prune(self.EXPR)
+        self.assertEqual(pruner.stats.nodes_pruned, 0,
+                         "数据点参与采样后，角点锚在 (1,1) 敏感度≈15，不得剪")
+        self.assertIn("126.08", str(pruned), "角点锚必须保留在发布公式里")
+
+    def test_extra_points_shapes_and_eval_length(self):
+        from drsr_420.analysis.expr_evaluation import ExpressionEvaluator
+        # 列数组列表
+        ev = ExpressionEvaluator([L12, L23], num_samples=10, seed=1,
+                                 extra_points=list(self.DATA))
+        self.assertEqual(ev.samples.shape, (18, 2))
+        self.assertEqual(len(ev.evaluate(sp.Integer(7))), 18)   # 常量广播覆盖数据点
+        # (点数, 变量数) 二维数组
+        ev2 = ExpressionEvaluator([L12, L23], num_samples=10, seed=1,
+                                  extra_points=np.column_stack(self.DATA))
+        self.assertEqual(ev2.samples.shape, (18, 2))
+        # 列数不符必须报错（不能静默错位）
+        with self.assertRaises(ValueError):
+            ExpressionEvaluator([L12, L23], num_samples=10, seed=1,
+                                extra_points=[np.array([1.0, 2.0])])
+
+    def test_max_relative_difference_with_data_points(self):
+        without = self.EXPR - self.SPIKE
+        # 随机网格上的假阴性：剪掉了 2989.9 的项，相对差仍报 ~0
+        rel_random = pr.max_relative_difference(self.EXPR, without, ["lambda12", "lambda23"],
+                                                (1, 14))
+        self.assertLess(rel_random, 1e-9, "随机网格测不出角点锚被剪的影响（假阴性前提）")
+        # 并入数据点后必须显形
+        rel_data = pr.max_relative_difference(self.EXPR, without, ["lambda12", "lambda23"],
+                                              (1, 14), extra_points=list(self.DATA))
+        self.assertGreater(rel_data, 1.0, "数据点上差 2989.9/193≈15.5，必须报告")
 
 
 if __name__ == "__main__":

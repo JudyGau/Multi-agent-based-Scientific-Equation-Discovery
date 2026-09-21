@@ -39,6 +39,12 @@ class ExpressionEvaluator:
 
     采样点在建实例时一次性生成（``samples`` / ``points``），因此同一实例上
     所有求值都在同一组点上进行——这是"改动前后可比"的前提。
+
+    ``extra_points``（训练数据点）会**追加**到随机采样点之后：敏感度判据必须
+    "看得见"公式在真实数据上的行为。只在整个区间上均匀撒点时，会把只在个别
+    数据点承重的项误判为低敏感——实测 20260921-161549 的 (1,1) 角点锚项
+    ``2989.9/(λ12λ23)^126.082``（仅在该点非零）敏感度≈0 被剪，训练 MSE
+    0.25 → 1.1e6；数据点参与采样后该项敏感度≈15，正确保留。
     """
 
     #: 支持的敏感度指标。
@@ -54,6 +60,7 @@ class ExpressionEvaluator:
         metric: str = "relative",
         reduction: str = "max",
         seed: Optional[int] = 42,
+        extra_points=None,
     ) -> None:
         if not symbols:
             raise ValueError("symbols 不能为空")
@@ -75,6 +82,21 @@ class ExpressionEvaluator:
             sample_range[0], sample_range[1],
             size=(num_samples, len(self.symbols)),
         )
+        if extra_points is not None:
+            if isinstance(extra_points, np.ndarray):
+                rows = np.asarray(extra_points, dtype=float)
+                if rows.ndim == 1:
+                    rows = rows.reshape(1, -1)
+            else:
+                # 列数组列表（与 self.points 同构，按 symbols 顺序）
+                cols = [np.asarray(c, dtype=float).ravel() for c in extra_points]
+                rows = np.column_stack(cols)
+            if rows.ndim != 2 or rows.shape[1] != len(self.symbols):
+                raise ValueError(
+                    f"extra_points 形状须为 (点数, 变量数={len(self.symbols)})，"
+                    f"实际 {rows.shape}")
+            if len(rows):
+                self.samples = np.vstack([self.samples, rows])
         # 各列单独切片，供 lambdify 调用
         self.points: List[np.ndarray] = [
             self.samples[:, i] for i in range(len(self.symbols))
@@ -107,7 +129,7 @@ class ExpressionEvaluator:
                 warnings.simplefilter("ignore")
                 out = f(*self.points)
             if np.ndim(out) == 0:
-                return np.full(self.num_samples, float(out))
+                return np.full(len(self.samples), float(out))
             return np.asarray(out, dtype=float)
         except Exception:
             return self._eval_slow(expr)

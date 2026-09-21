@@ -292,7 +292,7 @@ def sample_points(sym_names: list[str], sample_range, num_samples: int = VERIFY_
 
 def max_relative_difference(expr_a, expr_b, sym_names: list[str],
                             sample_range=(1.0, 14.0), num_samples: int = VERIFY_SAMPLES,
-                            seed: int = VERIFY_SEED) -> float | None:
+                            seed: int = VERIFY_SEED, extra_points=None) -> float | None:
     """两条表达式在采样网格上的最大相对差；无有效采样点（全非有限）时返回 None。
 
     **这是"公式到底变没变"的权威判据。** ``sp.simplify(a - b) == 0`` 与 ``a.equals(b)``
@@ -300,10 +300,25 @@ def max_relative_difference(expr_a, expr_b, sym_names: list[str],
     ``simplify(差) == 0`` 与 ``equals()`` 都是 False，而它在 8 个训练数据点与 100 个
     采样点上的相对差恰为 0（``equals`` 会在负实数/复数域上取样，浮点指数的分支不同）。
     本函数只在与剪枝决策**同一个有效定义域**（``sample_range``）上比较。
+
+    ``extra_points``（训练数据点）并入比较网格：均匀随机撒点对"只在个别数据点
+    承重"的项是盲的——实测 (1,1) 角点锚项被剪后随机网格相对差仍报 0.0e+00，
+    而训练点上差 2989.9；数据点必须参与，否则"剪枝没改变模型"的结论是假阴性。
     """
     if not sym_names:
         return None
     args = sample_points(list(sym_names), sample_range, num_samples, seed)
+    if extra_points is not None:
+        if isinstance(extra_points, np.ndarray):
+            rows = np.asarray(extra_points, dtype=float)
+            if rows.ndim == 1:
+                rows = rows.reshape(1, -1)
+        else:
+            rows = np.column_stack(
+                [np.asarray(c, dtype=float).ravel() for c in extra_points])
+        if rows.ndim == 2 and rows.shape[1] == len(sym_names) and len(rows):
+            args = [np.concatenate([a, rows[:, j]])
+                    for j, a in enumerate(args)]
     va = _evaluate(expr_a, list(sym_names), args)
     vb = _evaluate(expr_b, list(sym_names), args)
     if va is None or vb is None:
@@ -322,7 +337,7 @@ def _rel_note(out: dict) -> str:
 
 
 def classify_pruning(expr, published, stats, sym_names: list[str] | None = None,
-                     sample_range=(1.0, 14.0)) -> dict:
+                     sample_range=(1.0, 14.0), extra_points=None) -> dict:
     """判定本次"剪枝"的实质，返回可直接写进日志/解释提示词的证据字典。
 
     判定分层（``nodes_pruned`` 是唯一硬判据，数值比较只用来论证"形式变化"）::
@@ -346,6 +361,8 @@ def classify_pruning(expr, published, stats, sym_names: list[str] | None = None,
         published: ``SensitivityPruner.prune`` 返回、即将对外发布的表达式。
         stats: 同一次剪枝的 ``PruneStats``。
         sym_names / sample_range: 形式等价校验的变量与采样区间，应与剪枝参数一致。
+        extra_points: 训练数据点，并入比较网格防止"只在个别数据点承重"的项漏判
+            （见 :func:`max_relative_difference` 与实测 20260921-161549）。
     """
     actually = bool(getattr(stats, "actually_pruned", False))
     simplified = getattr(stats, "simplified_expr", None)
@@ -376,7 +393,7 @@ def classify_pruning(expr, published, stats, sym_names: list[str] | None = None,
         # 不能拿发布的表达式去比——0 项剪枝时它就是原式，比出来恒为 0，什么也证明不了。
         compared = simplified if (not actually and out["form_rewritten"]) else published
         out["max_rel_diff"] = max_relative_difference(
-            expr, compared, list(sym_names), sample_range)
+            expr, compared, list(sym_names), sample_range, extra_points=extra_points)
     if out["max_rel_diff"] is not None:
         out["numerically_equivalent"] = bool(out["max_rel_diff"] <= FORM_ONLY_RTOL)
 

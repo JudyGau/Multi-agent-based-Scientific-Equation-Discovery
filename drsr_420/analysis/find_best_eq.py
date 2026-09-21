@@ -80,6 +80,22 @@ def _parse_symbols(func: str) -> tuple[str, list[str]] | None:
     return dependent_match.group(1), sym_names
 
 
+def _training_points(data, dependent: str, sym_names: list[str]) -> list | None:
+    """取训练数据的自变量列作为敏感度采样的补充点；取不到返回 None。
+
+    返回与 ``sym_names`` 顺序一致的列数组列表（与 ``ExpressionEvaluator.points``
+    同构）；数据缺失或列名对不上（``KeyError``）时返回 None，由调用方告警降级。
+    """
+    if data is None:
+        return None
+    try:
+        _dep, ind_cols, _note = resolve_columns(data, dependent, sym_names)
+        return [np.asarray(data[c], dtype=float) for c in ind_cols]
+    except KeyError as e:
+        print(f"[WARN] 训练数据列对不上，敏感度采样不含数据点: {e}")
+        return None
+
+
 def prune_and_visualize(results_root: str, func: str, params,
                         threshold: float, sample_range: tuple,
                         test_csv: str | None = None) -> dict | None:
@@ -100,7 +116,18 @@ def prune_and_visualize(results_root: str, func: str, params,
     dependent, sym_names = parsed
     symbols = sp.symbols(sym_names)
 
-    pruner = SensitivityPruner(symbols=symbols, threshold=threshold, sample_range=sample_range)
+    # 训练数据点并入敏感度采样（必须在剪枝判定之前加载）：均匀随机撒点对"只在
+    # 个别数据点承重"的项是盲的——实测 20260921-161549 最优样本的 (1,1) 角点锚
+    # 2989.9/(λ12λ23)^126.082 仅在该训练点非零，随机点敏感度≈0 被剪，训练 MSE
+    # 0.25 → 1.1e6；数据点参与采样后该项敏感度≈15，正确保留。
+    data = load_training_data(results_root)
+    data_points = _training_points(data, dependent, sym_names)
+    if data_points is None:
+        print("[WARN] 敏感度采样不含训练数据点（数据缺失或列对不上），"
+              "仅用随机采样点做敏感度判据。")
+
+    pruner = SensitivityPruner(symbols=symbols, threshold=threshold,
+                               sample_range=sample_range, extra_points=data_points)
     expr = expr_substitution(func, params)
     if expr is None:
         print("[WARN] 表达式解析失败，跳过剪枝。")
@@ -122,7 +149,8 @@ def prune_and_visualize(results_root: str, func: str, params,
     verdict = None
     if pruned_expr is not None:
         verdict = classify_pruning(expr, pruned_expr, pruner.stats,
-                                   sym_names=sym_names, sample_range=sample_range)
+                                   sym_names=sym_names, sample_range=sample_range,
+                                   extra_points=data_points)
         print(f"[PRUNE] {verdict['summary']}")
     actually_pruned = bool(verdict and verdict["actually_pruned"])
     # 对外发布的表达式：真剪枝才用剪枝结果，否则一律是剪枝前的原式
@@ -147,7 +175,7 @@ def prune_and_visualize(results_root: str, func: str, params,
 
     # 剪枝前后在训练数据上的拟合对比：解释 LLM 要靠它论证"剪掉这些项是否合理"。
     # 未实际剪枝时 published == expr，对比结果自然是"逐点完全相同（剪枝未改变模型）"。
-    data = load_training_data(results_root)
+    # （data 已在剪枝前加载并用于敏感度采样，此处直接复用。）
     fit = compare_fits(dependent, sym_names, data, expr, published)
     print(f"[PRUNE] {format_fit_summary(fit)}")
 

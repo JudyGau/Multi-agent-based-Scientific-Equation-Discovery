@@ -53,6 +53,9 @@ class SensitivityPruner:
     threshold    : 敏感度阈值，≤ 该值时执行剪枝（默认 0.05）。
     num_samples  : 随机采样点数（默认 100）。
     sample_range : 各变量的均匀采样区间（默认 [-3, 3]）。
+    extra_points : 训练数据点（列数组列表或 (点数, 变量数) 数组），追加到随机
+                   采样点之后——敏感度判据必须覆盖真实数据点，否则"只在个别
+                   数据点承重"的项（如角点锚）会被随机撒点漏判为低敏感。
     metric       : 敏感度指标，'relative'（相对）或 'absolute'（绝对）。
     reduction    : 采样点上的聚合方式，'max'/'mean'/'median'/'p95'。
     seed         : 随机种子，保证可复现性。
@@ -74,6 +77,7 @@ class SensitivityPruner:
         metric: str = "relative",
         reduction: str = "max",
         seed: Optional[int] = 42,
+        extra_points=None,
     ) -> None:
         # 参数校验与采样网格都在求值器里（metric/reduction 只在这里被使用）
         self.evaluator = ExpressionEvaluator(
@@ -83,6 +87,7 @@ class SensitivityPruner:
             metric=metric,
             reduction=reduction,
             seed=seed,
+            extra_points=extra_points,
         )
         self.symbols = list(symbols)
         self.threshold = threshold
@@ -322,6 +327,7 @@ def sensitivity_prune(
     reduction: str = "max",
     seed: Optional[int] = 42,
     verbose: bool = False,
+    extra_points=None,
 ) -> Tuple[sp.Expr, PruneStats]:
     """
     对 SymPy 表达式执行敏感度剪枝（顶层便捷函数）。
@@ -337,6 +343,8 @@ def sensitivity_prune(
     reduction    : 采样点聚合方式 'max'/'mean'/'median'/'p95'（默认 'max'）。
     seed         : 随机种子（默认 42）。
     verbose      : 是否打印详细过程（默认 False）。
+    extra_points : 训练数据点（列数组列表或 (点数, 变量数) 数组），追加到随机
+                   采样点之后——保证敏感度判据覆盖真实数据点。
 
     Returns
     -------
@@ -360,6 +368,7 @@ def sensitivity_prune(
         metric=metric,
         reduction=reduction,
         seed=seed,
+        extra_points=extra_points,
     )
     pruned = pruner.prune(expr, verbose=verbose)
     return pruned, pruner.stats
