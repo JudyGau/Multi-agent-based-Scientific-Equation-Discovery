@@ -179,6 +179,30 @@ def prune_and_visualize(results_root: str, func: str, params,
     fit = compare_fits(dependent, sym_names, data, expr, published)
     print(f"[PRUNE] {format_fit_summary(fit)}")
 
+    # 动态范围体检（对**最终发布**的表达式）：检测角点钉扎/下溢尖峰类病理解。
+    # 训练点 MSE 看不见点与点之间的行为——体检在包围盒网格（含角点壳层）上评估，
+    # 与评分器（evaluation/problems.evaluate）同一判据（内核在 core.range_check，
+    # 两层共用），结果进 explain 提示词与 explain.md 权威小节。
+    range_info = None
+    try:
+        from drsr_420.core.range_check import dynamic_range_check
+        _dep_col, ind_cols, _note = resolve_columns(data, dependent, sym_names)
+        _X = np.column_stack([np.asarray(data[c], dtype=float) for c in ind_cols])
+        _y = np.asarray(data[_dep_col], dtype=float)
+        f_pub = sp.lambdify(sym_names, published, modules="numpy")
+        range_info = dynamic_range_check(_X, _y, f_pub)
+        if range_info["penalty"] > 0:
+            print(f"[RANGE] 动态范围体检：**病理性** span_ratio="
+                  f"{range_info['span_ratio']:.4g} (limit={range_info['limit']})，"
+                  f"grid∈[{range_info['grid_min']:.4g}, {range_info['grid_max']:.4g}]"
+                  f"——发布公式携带角点钉扎/尖峰类器件，详见 explain.md")
+        else:
+            print(f"[RANGE] 动态范围体检：正常（span_ratio="
+                  f"{range_info['span_ratio']:.3g} ≤ {range_info['limit']}）")
+    except Exception as e:
+        print(f"[WARN] 动态范围体检失败（跳过，不阻塞收尾）: {e}")
+        range_info = None
+
     # 剪枝完成 → 剪枝前后表达式曲线 + 数据点（每个自变量一幅，人工检查贴合度）。
     # 与 expr.png 同级别的"给人看"产物：失败只告警，不拖垮收尾流程。
     try:
@@ -235,6 +259,8 @@ def prune_and_visualize(results_root: str, func: str, params,
             for r in pruner.stats.records
         ],
         "fit": fit,
+        # 动态范围体检（对发布式）：检测角点钉扎/下溢尖峰类病理解；None=体检失败
+        "range_check": range_info,
         # 样本外验证（held-out）：只报告，不参与任何选择
         "holdout": holdout,
     }

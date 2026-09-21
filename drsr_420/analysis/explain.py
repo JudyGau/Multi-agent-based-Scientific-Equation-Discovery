@@ -403,6 +403,25 @@ def _format_pruning_block(pruning: dict) -> str:
         lines.append("被移除的项：无 —— 本次剪枝没有移除任何项。")
 
     lines.append(format_fit_summary(pruning.get("fit")))
+
+    # 动态范围体检结果（find_best_eq 对发布式所做，与评分器同一判据）：
+    # 病理时解释 LLM 必须指认器件并划定公式的可信区域，不得把它当正常物理项解释。
+    rc = pruning.get("range_check") or {}
+    if rc:
+        ratio = rc.get("span_ratio")
+        limit = rc.get("limit")
+        if ratio is not None and limit is not None and ratio > limit:
+            lines.append(
+                f"动态范围体检：**病理性**——发布公式在训练数据包围盒网格上的动态范围"
+                f"是数据输出跨度的 {ratio:.4g} 倍（阈值 {limit}，网格极值 "
+                f"[{rc.get('grid_min'):.4g}, {rc.get('grid_max'):.4g}]）。典型成因为"
+                f"角点钉扎/下溢尖峰类局部化器件（例如只在个别数据点非零的大负指数幂项）；"
+                f"解释时必须指认对应的项、说明其数值病理本质，并明确公式在哪些区域不可信，"
+                f"不得把它解释为正常物理行为。")
+        else:
+            lines.append(
+                f"动态范围体检：正常（网格动态范围/输出跨度 = {ratio:.3g} ≤ 阈值 {limit}）"
+                f"——发布公式在数据包围盒上无角点钉扎/溢出类病理。")
     return "\n".join(lines)
 
 
@@ -623,15 +642,79 @@ def _format_facts_block(facts: dict | None) -> str:
     return "\n".join(lines)
 
 
+RANGE_HEADING = "## 动态范围体检"
+
+
+def _strip_range_section(text: str) -> str:
+    """去掉正文里自带的「动态范围体检」小节（清单/数字一律由系统生成，避免两套数字）。"""
+    if not text or RANGE_HEADING not in text:
+        return text
+    kept: list[str] = []
+    skipping = False
+    for line in text.splitlines():
+        if line.strip().startswith(RANGE_HEADING):
+            skipping = True
+            continue
+        if skipping and line.startswith("#"):
+            skipping = False
+        if not skipping:
+            kept.append(line)
+    return "\n".join(kept).rstrip()
+
+
+def render_range_section(range_check: dict | None) -> str:
+    """渲染 explain.md 的「动态范围体检」小节（机器生成，数字不由 LLM 转述）。
+
+    报告最终发布公式在训练数据包围盒网格（含角点对数壳层）上的动态范围，
+    判定其是否携带角点钉扎/下溢尖峰类局部化器件（判定与评分罚分同一判据，
+    见 ``evaluation/problems.dynamic_range_check``）。
+    """
+    lines = [RANGE_HEADING, ""]
+    if not range_check:
+        lines.append("本次没有可用的体检结果（体检未执行或失败）。")
+        return "\n".join(lines)
+    ratio = range_check.get("span_ratio")
+    limit = range_check.get("limit")
+    lines.append(f"评估网格：训练数据包围盒均匀网格 + 各角点向域内的对数壳层，"
+                 f"共 {range_check.get('n_points', '?')} 个点。")
+    if ratio is None:
+        lines.append("体检无有效结果。")
+        return "\n".join(lines)
+    # limit 缺失（异常输入）时按病理论处：不能在未验证的情况下宣称"正常"
+    if limit is None or ratio > limit:
+        gmin, gmax = range_check.get("grid_min"), range_check.get("grid_max")
+        lines.append(f"**判定：病理性**——网格动态范围是数据输出跨度的 "
+                     f"{ratio:.6g} 倍（阈值 {limit}）"
+                     + (f"，网格极值 [{gmin:.6g}, {gmax:.6g}]。" if gmin is not None else "。"))
+        lines.append("")
+        lines.append("典型成因为**角点钉扎/下溢尖峰类局部化器件**：某个项只在个别"
+                     "数据点（常见于自变量取值下限角点）非零、在其余区域数值下溢/上溢"
+                     "到无意义，用于把该点的残差单独清零。这类公式在训练点上的 MSE "
+                     "很好看，但点与点之间的行为是数值病理——正文如把它当作正常物理"
+                     "项解释，以本节为准。")
+        lines.append("")
+        lines.append("> 可信范围声明：该公式仅在训练数据点附近可靠；跨过器件起作用"
+                     "的狭窄邻域后（如角点与山脊主体之间）外推无意义。评分已按超出"
+                     "阈值的幅度罚分，采样阶段会因此更偏好无病理的结构。")
+    else:
+        lines.append(f"**判定：正常**——网格动态范围是数据输出跨度的 {ratio:.3g} 倍，"
+                     f"未超阈值 {limit}，无角点钉扎/溢出类病理。")
+    return "\n".join(lines)
+
+
 def _assemble_explain(answer: str | None, refs: list[dict],
-                      holdout: dict | None = None, fit: dict | None = None) -> str:
-    """正文 + 权威「样本外验证」小节 + 权威参考文献小节。
+                      holdout: dict | None = None, fit: dict | None = None,
+                      range_check: dict | None = None) -> str:
+    """正文 + 权威「样本外验证」「动态范围体检」小节 + 权威参考文献小节。
 
     正文自带的同名小节会被替换（数字一律由系统算，避免 LLM 转述出两套数字）。
     """
     body = strip_holdout_section(answer or "")
+    body = _strip_range_section(body)
     body = _strip_reference_section(body).rstrip()
-    sections = [render_holdout_section(holdout, fit), render_reference_section(refs)]
+    sections = [render_holdout_section(holdout, fit),
+                render_range_section(range_check),
+                render_reference_section(refs)]
     tail = "\n\n".join(s for s in sections if s)
     return f"{body}\n\n{tail}" if body else tail
 
@@ -729,7 +812,8 @@ def explain_best_sample(results_root: str, func: str, sample_order: str,
     refs = merge_references(references, tool_refs)
     holdout_result = holdout if holdout is not None else (pruning or {}).get("holdout")
     final_text = _assemble_explain(explain, refs, holdout=holdout_result,
-                                   fit=(pruning or {}).get("fit"))
+                                   fit=(pruning or {}).get("fit"),
+                                   range_check=(pruning or {}).get("range_check"))
     print_block(final_text)
     print(f"[INFO] 参考文献 {len(refs)} 条"
           + ("" if refs else "（本次未检索到可引用文献）"))

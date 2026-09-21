@@ -22,8 +22,27 @@ MAX_NPARAMS = 10                    # 方程参数个数
 DECIMAL_PLACES = 3                  # 结果矩阵保留的小数位数（仅展示，不影响评分）
 N_STARTS = 5                        # 多起点优化的起点数
 MAX_ITER = 300                      # 每个起点的最大函数评估次数
-PARAMS_BOUNDS = (-10000.0, 10000.0) # 参数边界，防止无界优化导致溢出/NaN；据历史最优参数分布(最大|p|≈738)定
+# 参数边界，防止无界优化导致溢出/NaN。注释里的"历史 |p|≈738"已过时：实测
+# MRFCompress-Cuboid_20260921-161549 的最优参数 |p| 达 2990（±10000 界内的角点
+# 钉扎器件），故边界不能据历史分布收窄——病理输出由动态范围体检（下见
+# dynamic_range_check）在评分层治理，这里保持宽界不干扰正常拟合。
+PARAMS_BOUNDS = (-10000.0, 10000.0)
 SAMPLE_SIZE = 100                   # 残差采样点数上限
+
+# ── 拟合后动态范围体检（角点钉扎/下溢尖峰类病理解治理，20260921-161549）──
+# 数值内核在 core 层（drsr_420.core.range_check）：analysis 收尾也要用同一判据，
+# 而分层规则不允许 analysis 依赖 evaluation，故下沉到两层都合法的 core。
+# 这里再导出保持"评分器即体检宿主"的可读性。
+from drsr_420.core.range_check import (  # noqa: E402
+    RANGE_GRID_PER_AXIS,
+    RANGE_GRID_TOTAL,
+    RANGE_PENALTY_CAP,
+    RANGE_SHELL_EPS,
+    RANGE_SHELL_STEPS,
+    RANGE_SPAN_RATIO_LIMIT,
+    dynamic_range_check,
+    range_check_points,
+)
 
 #: 残差幅值上限（清洗阈值），见 _sanitize_residual。
 #:
@@ -166,6 +185,7 @@ def evaluate(
         x0: np.ndarray | None = None,
         seed: int | None = None,
         verbose: bool = False,
+        range_check: bool = True,
 ) -> tuple[float | None, np.ndarray | None, np.ndarray | None]:
     """对 `equation(*X.T, params)` 做参数优化并评分。
 
@@ -173,6 +193,9 @@ def evaluate(
         data: 含 'inputs' 与 'outputs' 的数据字典。
         equation: 可调用对象，签名 equation(*feature_arrays, params)。
         x0: 热启动参数（例如上一轮评估得到的最优参数），作为首个优化起点。
+        range_check: 拟合后是否做动态范围体检并对病理解罚分（见
+            :func:`dynamic_range_check`；默认开。关掉它就回到"只看训练点 MSE"
+            的旧口径——角点钉扎/下溢尖峰类病理解将不受惩罚）。
 
     Returns:
         (score, result_matrix, optimized_params)；优化失败时为 (None, None, None)。
@@ -241,6 +264,21 @@ def evaluate(
         # verbose 路径会直接 UnicodeEncodeError 拖垮一次评估。
         print(f'R2 指标: {1.0 - nmse:.6f}  NMSE 指标: {nmse:.6f}')
 
+    # 拟合后动态范围体检：训练点 MSE 完全看不见"点与点之间"的行为，而 LLM 骨架
+    # 恰恰爱用角点钉扎/下溢尖峰这类局部化器件去消化个别难拟合的数据点（实测 45 次
+    # 历史实验约 40 次的最优解携带，最极端 grid_min=-1.5e6、grid_max=3.9e28）。
+    # 罚分只加在**评分**上（加性、无量纲、随严重度增长），不改残差——least_squares
+    # 仍忠实于训练数据，残差分析回路看到的也是真实残差。
+    penalty = 0.0
+    if range_check:
+        info = dynamic_range_check(
+            inputs, outputs, lambda *cols: equation(*cols, np.asarray(best_x)))
+        penalty = float(info.get("penalty") or 0.0)
+        if penalty > 0:
+            print(f"[RANGE] 动态范围体检：span_ratio={info['span_ratio']:.3g} "
+                  f"(limit={info['limit']})，grid∈[{info['grid_min']:.4g}, "
+                  f"{info['grid_max']:.4g}]，评分罚分 {penalty:.4g}")
+
     # 输入/输出列按 decimal_places 取整仅供展示；残差列必须保持完整精度：
     # 它就是 ResidualAnalyzerAgent 的唯一输入（residual[:, -1]），按绝对
     # 3 位小数取整会把拟合越好的样本变成全 0 残差——恰好毁掉残差分析
@@ -250,4 +288,4 @@ def evaluate(
         np.round(outputs, decimal_places),
         res,
     ))
-    return -best_loss, result_data, np.asarray(best_x)
+    return -(best_loss + penalty), result_data, np.asarray(best_x)
