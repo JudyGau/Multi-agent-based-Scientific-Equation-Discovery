@@ -1,4 +1,6 @@
 """evaluation/problems.py 单元测试：least_squares 优化、统一返回契约、配置项。"""
+import contextlib
+import io
 import unittest
 import warnings
 from unittest import mock
@@ -23,9 +25,9 @@ class SpecTemplateMatchesEvaluatorTest(unittest.TestCase):
     """动态 spec 写给 LLM 的拟合口径必须与真实评估器一致。
 
     旧模板写的是 ``minimize(loss, [1.0]*MAX_NPARAMS, method='BFGS')``——无界、单起点、
-    初值全 1，而实际评估器是**多起点有界** ``least_squares``（``N_STARTS`` 个 U(-1,1)
-    起点 + 热启动，``bounds=PARAMS_BOUNDS``）。模型据此判断"这个骨架能不能被拟合出来"，
-    文档漂移会让它按错误的初值/收敛假设设计骨架。
+    初值全 1，而实际评估器是**多起点有界** ``least_squares``（``N_STARTS`` 个随机起点：
+    首个 U(-1,1)、其余对数均匀铺量级，+ 热启动，``bounds=PARAMS_BOUNDS``）。模型据此
+    判断"这个骨架能不能被拟合出来"，文档漂移会让它按错误的初值/收敛假设设计骨架。
     """
 
     def setUp(self):
@@ -249,6 +251,103 @@ class ResidualSanitizeTest(unittest.TestCase):
                 capped_residual, eop.MAX_NPARAMS, n_starts=2, seed=0)
         self.assertIsNotNone(best_x)
         self.assertTrue(np.isfinite(best_loss))
+
+
+class LogUniformStartTest(unittest.TestCase):
+    """第 12 轮：随机起点混合口径——首个 U(-1,1)、其余对数均匀铺量级。
+
+    旧口径全部起点挤在 O(1)，合法的 1e2~1e4 大尺度系数（骨架形式决定）只能靠
+    信任域在 max_nfev 步内"走"上去，经常半途而废；对数均匀让起点直接覆盖各量级。
+    """
+
+    def test_magnitudes_cover_decades_within_bounds(self):
+        rng = np.random.default_rng(0)
+        logs = []
+        signs = []
+        for _ in range(100):
+            s = eop._log_uniform_start(rng, 4, eop.PARAMS_BOUNDS)
+            self.assertTrue((np.abs(s) <= eop.PARAMS_BOUNDS[1] + 1e-9).all())
+            self.assertTrue((np.abs(s) >= 1e-3 - 1e-15).all())
+            logs.extend(np.log10(np.abs(s)))
+            signs.extend(np.sign(s))
+        logs = np.asarray(logs)
+        self.assertLess(logs.min(), -2.0)   # 覆盖 1e-2 以下量级
+        self.assertGreater(logs.max(), 3.0)  # 覆盖 1e3 以上量级
+        # 符号应基本对称（200 个样本，单侧占比应在 35%~65%）
+        frac_pos = np.mean(np.asarray(signs) > 0)
+        self.assertGreater(frac_pos, 0.35)
+        self.assertLess(frac_pos, 0.65)
+
+    def test_tiny_bounds_degenerate_to_bound_magnitude(self):
+        """max|bound| ≤ 1e-3 时退化为在边界幅值处取值（仍被 _clamp_params 兜底）。"""
+        rng = np.random.default_rng(0)
+        s = eop._log_uniform_start(rng, 3, (-1e-5, 1e-5))
+        self.assertTrue((np.abs(s) <= 1e-5 + 1e-12).all())
+
+    def test_start_layout_first_dense_rest_log_uniform(self):
+        """起点布局：首个随机起点仍在 [-1,1]，其余对数铺开。
+
+        mock least_squares 只记录 x0（起点本身），隔离优化器行为。"""
+        seen = []
+
+        def fake_least_squares(fun, x0, **kwargs):
+            seen.append(np.array(x0, dtype=float))
+            return mock.Mock(fun=np.zeros(4), x=np.array(x0, dtype=float))
+
+        with mock.patch('scipy.optimize.least_squares', side_effect=fake_least_squares):
+            best_x, best_loss = eop._multi_start_least_squares(
+                lambda p: np.zeros(4), 4, n_starts=5, seed=0)
+        self.assertIsNotNone(best_x)
+        self.assertEqual(len(seen), 5)
+        self.assertTrue((np.abs(seen[0]) <= 1.0).all())  # 首个随机起点仍是 U(-1,1)
+        rest = np.abs(np.array(seen[1:]))
+        self.assertLess(rest.min(), 1e-1)   # 其余起点覆盖小量级
+        self.assertGreater(rest.max(), 1e1)  # 且覆盖大数量级
+
+
+class BoundContactTest(unittest.TestCase):
+    """第 12 轮：贴边监控——只记日志（stderr），不改变评分/优化行为。
+
+    输出走 stderr 而非 stdout：采样评估跑在常驻 worker 子进程里，只有 stderr
+    被旁路进实验的 run.err，stdout 落不进实验产物（与 [RANGE] 输出同理）。
+    """
+
+    def test_reports_components_at_bound(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            eop._report_bound_contact(
+                np.array([9999.5, 1.0, -9999.9, 0.5]), eop.PARAMS_BOUNDS)
+        text = err.getvalue()
+        self.assertIn('[BOUND]', text)
+        self.assertIn('p[0]', text)
+        self.assertIn('U)', text)
+        self.assertIn('p[2]', text)
+        self.assertIn('L)', text)
+        self.assertNotIn('p[1]', text)
+        self.assertNotIn('p[3]', text)
+
+    def test_quiet_when_interior(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            eop._report_bound_contact(np.array([3.0, -2.0, 0.5]), eop.PARAMS_BOUNDS)
+        self.assertEqual(err.getvalue(), '')
+
+    def test_evaluate_emits_bound_log_when_fit_lands_on_bound(self):
+        """集成：真实斜率 9999.5（界内但距上界不足 0.1%）→ 评估触发 [BOUND]。"""
+        rng = np.random.default_rng(3)
+        X = rng.uniform(0.0, 1.0, size=(50, 2))
+        data = {'inputs': X, 'outputs': 9999.5 * X[:, 0] - 2.0 * X[:, 1]}
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            score, _, params = eop.evaluate(data, linear_equation, range_check=False)
+        self.assertIn('[BOUND]', err.getvalue())
+        self.assertLess(abs(params[0] - 9999.5), 1.0)
+
+    def test_evaluate_quiet_for_interior_fit(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            eop.evaluate(make_dataset(), linear_equation, seed=1)
+        self.assertNotIn('[BOUND]', err.getvalue())
 
 
 if __name__ == '__main__':

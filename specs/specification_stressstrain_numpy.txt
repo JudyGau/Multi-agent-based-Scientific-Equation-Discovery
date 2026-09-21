@@ -26,7 +26,7 @@ def evaluate(data: dict) -> float:
         return y_pred - outputs        # least_squares 的残差向量
 
     # 参数以**多起点有界最小二乘**求解（与项目评估器 evaluation/problems.py 一致）：
-    # 5 个起点取自 U(-1, 1)（逐个裁剪进边界）+ 可选热启动，逐起点取残差平方均值最小者；
+    # 5 个起点：首个取自 U(-1, 1)，其余按对数量级在 [1e-3, max|bound|] 十进位上均匀（符号随机，逐个裁剪进边界）+ 可选热启动，逐起点取残差平方均值最小者；
     # bounds 防止无界优化让参数发散（NaN/inf），对应 problems.PARAMS_BOUNDS。
     result = least_squares(residual, [1.0]*MAX_NPARAMS, bounds=(-10000.0, 10000.0))
     

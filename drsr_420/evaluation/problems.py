@@ -15,6 +15,8 @@
 """
 from __future__ import annotations
 
+import sys
+
 import numpy as np
 
 # 模块级默认配置，可通过 evaluate() 关键字参数覆盖
@@ -25,7 +27,9 @@ MAX_ITER = 300                      # 每个起点的最大函数评估次数
 # 参数边界，防止无界优化导致溢出/NaN。注释里的"历史 |p|≈738"已过时：实测
 # MRFCompress-Cuboid_20260921-161549 的最优参数 |p| 达 2990（±10000 界内的角点
 # 钉扎器件），故边界不能据历史分布收窄——病理输出由动态范围体检（下见
-# dynamic_range_check）在评分层治理，这里保持宽界不干扰正常拟合。
+# dynamic_range_check）在评分层治理，这里保持宽界不干扰正常拟合。边界是否
+# 真的在起作用由贴边监控（[BOUND] 日志，见 _report_bound_contact）持续积累
+# 实证，为将来调整提供依据；起点量级覆盖见 _log_uniform_start。
 PARAMS_BOUNDS = (-10000.0, 10000.0)
 SAMPLE_SIZE = 100                   # 残差采样点数上限
 
@@ -101,6 +105,25 @@ def _sanitize_residual(res: np.ndarray, cap: float = RESIDUAL_CAP) -> np.ndarray
     return np.clip(np.nan_to_num(res, nan=cap, posinf=cap, neginf=-cap), -cap, cap)
 
 
+def _log_uniform_start(rng: np.random.Generator, n_params: int, bounds) -> np.ndarray:
+    """对数均匀随机起点：每个分量的量级在 [1e-3, max|bound|] 十进位指数上均匀、符号随机。
+
+    为什么不用 U(-1,1)：随机起点全挤在 O(1)，而合法系数的量级由骨架形式决定
+    （如 ``y = p0*exp(p1*x)`` 里的 p0），可以是 1e2~1e4——旧口径下这些系数要靠
+    信任域在 max_nfev 步内逐步"走"上去，拟合经常半途而废。对数均匀让起点直接
+    覆盖各量级。代价：部分起点的大参数会把方程推入溢出区（指数用法 p>709/|x|
+    时 exp 溢出），这些起点会被"起点预检"整体跳过——用少量起点换量级覆盖；
+    大参数撞出的病理尖峰本就由动态范围体检罚分在评分层治理，不在起点层设防。
+    """
+    lower, upper = bounds
+    mag_max = max(abs(float(lower)), abs(float(upper)))
+    hi = float(np.log10(mag_max)) if mag_max > 0 else -3.0
+    lo = min(-3.0, hi)  # 极小边界（max|bound| ≤ 1e-3）时退化为在边界幅值处取值
+    mags = 10.0 ** rng.uniform(lo, hi, size=n_params)
+    signs = rng.integers(0, 2, size=n_params) * 2.0 - 1.0
+    return mags * signs
+
+
 def _multi_start_least_squares(
         residual_func,
         n_params: int,
@@ -129,7 +152,14 @@ def _multi_start_least_squares(
     starts: list[np.ndarray] = []
     if x0 is not None:  # 热启动：把上一轮最优参数作为额外首起点（在 n_starts 随机起点之外）
         starts.append(np.asarray(x0, dtype=float))
-    starts.extend(rng.uniform(-1.0, 1.0, size=n_params) for _ in range(n_starts))
+    # 随机起点混合口径：首个保持 U(-1,1)——对系数 O(1) 的多数骨架仍是最稳的起点，
+    # 也保证至少一个起点不因大参数溢出被起点预检整体浪费；其余对数均匀铺量级
+    # （见 _log_uniform_start），让合法的大尺度系数不用靠信任域"走"过去。
+    for i in range(n_starts):
+        if i == 0:
+            starts.append(rng.uniform(-1.0, 1.0, size=n_params))
+        else:
+            starts.append(_log_uniform_start(rng, n_params, bounds))
 
     probe_func = initial_residual_func or residual_func
     best_x, best_loss = None, np.inf
@@ -171,6 +201,30 @@ def _multi_start_least_squares(
     if best_x is None and first_exc is not None:
         raise first_exc
     return best_x, best_loss
+
+
+def _report_bound_contact(best_x: np.ndarray, bounds) -> None:
+    """贴边监控（只记日志，不影响评分与优化）：最优参数分量触及边界 ±0.1% 时打标。
+
+    长期积累"边界是否真的在起作用"的实证，为将来调整 PARAMS_BOUNDS 提供依据：
+    合法拟合频繁贴边 = 边界过窄的信号；只有病理解贴边 = 宽界在放大病理（治理
+    靠动态范围体检罚分，不靠收窄边界）。
+
+    输出走 stderr 而非 stdout：采样评估跑在常驻 worker 子进程里，只有 stderr
+    会被旁路进实验的 run.err（sandbox.attach_worker_stderr），stdout 的 print
+    只上控制台、落不进实验产物。下面的 [RANGE] 输出同理。
+    """
+    x = np.asarray(best_x, dtype=float)
+    lower, upper = bounds
+    tol = 1e-3  # 距边界 0.1%（相对边界幅值）以内视为贴边
+    at_lower = x <= lower + tol * abs(lower)
+    at_upper = x >= upper - tol * abs(upper)
+    hit = np.flatnonzero(at_lower | at_upper)
+    if not hit.size:
+        return
+    detail = ", ".join(
+        f"p[{i}]={x[i]:+.4g}({'L' if at_lower[i] else 'U'})" for i in hit)
+    print(f"[BOUND] 最优参数贴边 {hit.size}/{x.size}：{detail}", file=sys.stderr)
 
 
 def evaluate(
@@ -249,6 +303,9 @@ def evaluate(
     if best_x is None:
         return None, None, None
 
+    # 贴边监控：只记日志（stderr → worker 旁路进 run.err），不改变评分/优化行为
+    _report_bound_contact(best_x, bounds)
+
     # 残差列与 score 用同一口径（同一个清洗后残差函数取反）：一方面避免把 inf/NaN
     # 写进 ResidualAnalyzerAgent 的唯一输入（residual[:, -1] —— "nan" 喂进提示词
     # 只会让分析回路说废话），另一方面保证矩阵里的残差与 best_loss 严格一致。
@@ -277,7 +334,8 @@ def evaluate(
         if penalty > 0:
             print(f"[RANGE] 动态范围体检：span_ratio={info['span_ratio']:.3g} "
                   f"(limit={info['limit']})，grid∈[{info['grid_min']:.4g}, "
-                  f"{info['grid_max']:.4g}]，评分罚分 {penalty:.4g}")
+                  f"{info['grid_max']:.4g}]，评分罚分 {penalty:.4g}",
+                  file=sys.stderr)
 
     # 输入/输出列按 decimal_places 取整仅供展示；残差列必须保持完整精度：
     # 它就是 ResidualAnalyzerAgent 的唯一输入（residual[:, -1]），按绝对
