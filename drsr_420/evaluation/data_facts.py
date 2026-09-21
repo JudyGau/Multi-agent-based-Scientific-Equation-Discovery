@@ -285,6 +285,7 @@ def _monotonicity(names: list[str], X: np.ndarray, y: np.ndarray) -> list[dict]:
                 direction = delta
             elif delta != direction:
                 reversals += 1
+                direction = delta   # 必须锁存新方向：否则一段持续下行/上行会被逐增量重复计数
                 if first is None:
                     first = {"from": {name: _round(xs[i]), "dependent": _round(ys[i])},
                              "to": {name: _round(xs[i + 1]), "dependent": _round(ys[i + 1])}}

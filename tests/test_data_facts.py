@@ -100,12 +100,26 @@ class MonotonicityTest(_MRFFixtureTest):
         by_feature = {m["feature"]: m for m in facts["monotonicity"]}
         lam23 = by_feature["lambda23"]
         self.assertFalse(lam23["monotone"])
-        self.assertEqual(lam23["reversals"], 1)
+        # 排序后符号序列为 +,-,+,+,+,+,+：先升、在 4.8446 处回落、再升——方向翻转 2 次。
+        self.assertEqual(lam23["reversals"], 2)
         rev = lam23["first_reversal"]
         self.assertAlmostEqual(rev["from"]["lambda23"], 3.9174, places=3)
         self.assertAlmostEqual(rev["from"]["dependent"], 306.577, places=3)
         self.assertAlmostEqual(rev["to"]["lambda23"], 4.8446, places=3)
         self.assertAlmostEqual(rev["to"]["dependent"], 296.651, places=3)
+
+    def test_reversals_count_direction_flips_not_opposite_deltas(self):
+        """回归：反转计数曾不锁存新方向，一段持续下行被逐增量重复计数——
+        实测本数据 lambda12 报 5 次，实际方向翻转只有 2 次（升->降->升）。"""
+        X, names, y, dep = _load_mrf()
+        facts = df.compute_facts(X, y, names, dep, with_skeletons=False)
+        by_feature = {m["feature"]: m for m in facts["monotonicity"]}
+        lam12 = by_feature["lambda12"]
+        # 排序后符号序列为 +,-,-,-,-,-,+：升(1.0 两行)->沿脊下行(2.0..4.0)->5.0 回升
+        self.assertEqual(lam12["reversals"], 2)
+        self.assertAlmostEqual(lam12["first_reversal"]["from"]["lambda12"], 1.0, places=6)
+        self.assertAlmostEqual(lam12["first_reversal"]["from"]["dependent"], 352.1991, places=3)
+        self.assertAlmostEqual(lam12["first_reversal"]["to"]["lambda12"], 2.0, places=6)
 
     def test_monotone_relation_is_reported_as_monotone(self):
         x = np.array([1.0, 2.0, 3.0, 4.0])
