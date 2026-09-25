@@ -277,7 +277,7 @@ drsr_420/                     # 单一顶层包（8 层，依赖方向自底向�
   analysis/                   # 收尾分析
     find_best_eq.py           #   收尾编排：最佳样本 → 解释 → 剪枝与可视化
     expr_parse.py             #   骨架字符串 → SymPy 表达式（where/Eq/中间变量）
-    explain.py                #   物理解释（ReAct + RAG）→ explain.txt
+    explain.py                #   物理解释（ReAct + RAG）→ report.md
     sensitivity_prune.py      #   敏感度剪枝（遍历与决策；没真剪掉项就返回原式）
     expr_evaluation.py        #     └ 采样网格 / 求值 / 敏感度度量
     prune_stats.py            #     └ 剪枝记录与统计（真剪枝 / 仅形式重排）
@@ -285,6 +285,7 @@ drsr_420/                     # 单一顶层包（8 层，依赖方向自底向�
     holdout.py                #   样本外验证（test.csv 上只报告，不参与选择）
     expr_viz.py               #   预览图与表达式树（可选依赖，失败仅告警）
     expr_curves.py            #   剪枝前后曲线 + 数据点（每个自变量一幅）
+    progress_curve.py         #   训练进度：MSE 随 sample_order 的历史最优曲线 + report.md 小节
     prune_demo.py             #   剪枝行为演示（python -m …prune_demo）
   runtime/
     pipeline.py               #   实验主流程编排

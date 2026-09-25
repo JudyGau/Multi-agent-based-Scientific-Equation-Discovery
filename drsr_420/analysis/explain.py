@@ -13,7 +13,8 @@
 * LLM：通过 ReAct 循环（``explain_re_act``）调用，模型可自行发起 MCP 检索工具；
 * 增强：RAG 知识库注入相关文献摘要（库为空或检索失败则静默跳过）；
 * 产物：``<results_root>/report.md`` = LLM 正文（含剪枝分析）+ **由本模块附加的
-  权威参考文献清单** + 机器生成的「样本外验证」「动态范围体检」小节。
+  权威参考文献清单** + 机器生成的「样本外验证」「动态范围体检」「训练进度」小节
+  （后三者只有拿到对应数据时才出现）。
 
 两条硬性要求（用户明确指定，见下面对应的实现与测试）
 ----------------------------------------------------
@@ -42,6 +43,7 @@ from drsr_420.analysis.prune_report import format_fit_summary
 from drsr_420.knowledge.tool_runner import mcp_call_tool
 from drsr_420.analysis.holdout import (in_sample_metrics, render_holdout_section,
                                        strip_holdout_section)
+from drsr_420.analysis.progress_curve import render_progress_section
 # 体检判据的参数：小节里要写明探针偏移口径（数字必须与机器判定同一来源，
 # 不能在文本里另写一份——那正是"两处各判一次"的翻版）。
 from drsr_420.core.range_check import RANGE_PROBE_REL
@@ -780,16 +782,20 @@ def render_range_section(range_check: dict | None) -> str:
 
 def _assemble_explain(answer: str | None, refs: list[dict],
                       holdout: dict | None = None, fit: dict | None = None,
-                      range_check: dict | None = None) -> str:
-    """正文 + 权威「样本外验证」「动态范围体检」小节 + 权威参考文献小节。
+                      range_check: dict | None = None,
+                      progress: dict | None = None) -> str:
+    """正文 + 权威「样本外验证」「动态范围体检」「训练进度」小节 + 权威参考文献小节。
 
     正文自带的同名小节会被替换（数字一律由系统算，避免 LLM 转述出两套数字）。
+    没有训练进度记录（``best_history`` 为空）时该小节整节不出现，而不是写一句
+    "本次无数据"。
     """
     body = strip_holdout_section(answer or "")
     body = _strip_range_section(body)
     body = _strip_reference_section(body).rstrip()
     sections = [render_holdout_section(holdout, fit),
                 render_range_section(range_check),
+                render_progress_section(progress),
                 render_reference_section(refs)]
     tail = "\n\n".join(s for s in sections if s)
     return f"{body}\n\n{tail}" if body else tail
@@ -797,7 +803,8 @@ def _assemble_explain(answer: str | None, refs: list[dict],
 
 def explain_best_sample(results_root: str, func: str, sample_order: str,
                         role_clients=None, pruning: dict | None = None,
-                        holdout: dict | None = None) -> None:
+                        holdout: dict | None = None,
+                        progress: dict | None = None) -> None:
     """按 sample_order 匹配 Good 经验，调用 LLM 生成物理解释并落盘 report.md。
 
     任意环节失败（无经验文件 / 无匹配条目 / 提示词构造失败 / LLM 初始化失败）
@@ -809,6 +816,10 @@ def explain_best_sample(results_root: str, func: str, sample_order: str,
         holdout: 同一次收尾里的样本外验证结果（``holdout.evaluate_holdout``）；
             省略时从 ``pruning["holdout"]`` 取。给定时 report.md 会附加机器生成的
             「样本外验证」小节（样本外指标只报告，不参与任何选择）。
+        progress: 训练进度摘要（``progress_curve.plot_progress_curve``）；省略时从
+            ``pruning["progress"]`` 取。给定时 report.md 会附加机器生成的
+            「训练进度」小节（MSE 随 sample_order 的历史最优曲线）；为 ``None``
+            时该小节整节不出现。
         role_clients: ``llm.roles.RoleClients``；取其中的 ``explain`` 角色客户端。
             省略时按 ``config/agents.config.json`` 自行解析——**不再硬编码档案
             文件名**。旧实现在这里写死了 ``deepseek_deepseek-v4-flash.config``，
@@ -887,9 +898,11 @@ def explain_best_sample(results_root: str, func: str, sample_order: str,
     #        + 权威「样本外验证」小节（数字由系统算，不经过 LLM 转述）
     refs = merge_references(references, tool_refs)
     holdout_result = holdout if holdout is not None else (pruning or {}).get("holdout")
+    progress_result = progress if progress is not None else (pruning or {}).get("progress")
     final_text = _assemble_explain(explain, refs, holdout=holdout_result,
                                    fit=(pruning or {}).get("fit"),
-                                   range_check=(pruning or {}).get("range_check"))
+                                   range_check=(pruning or {}).get("range_check"),
+                                   progress=progress_result)
     print_block(final_text)
     print(f"[INFO] 参考文献 {len(refs)} 条"
           + ("" if refs else "（本次未检索到可引用文献）"))

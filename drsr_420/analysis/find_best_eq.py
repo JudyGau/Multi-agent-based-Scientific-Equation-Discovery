@@ -242,6 +242,16 @@ def prune_and_visualize(results_root: str, func: str, params,
     except Exception as e:
         print(f"[WARN] 剪枝前后曲线图生成失败（跳过）: {e}")
 
+    # 训练进度：MSE 随 sample_order 的变化（历史最优刷新点）。同样是"给人看"的产物，
+    # 数据只取自 best_history/*.json（不解析 run.out——.bat/.sh 并不重定向 stdout，
+    # run.out 不是每条启动路径都有的产物）；没有记录时返回 None，报告侧跳过该小节。
+    try:
+        from drsr_420.analysis.progress_curve import plot_progress_curve
+        progress = plot_progress_curve(results_root)
+    except Exception as e:
+        print(f"[WARN] 训练进度图生成失败（跳过）: {e}")
+        progress = None
+
     # 样本外验证：在没参与拟合/打分/选择的 held-out 点上评估**最终发布的**公式。
     # 只报告，不回灌评分——一旦参与选择，它就不再是 held-out（见 holdout 模块说明）。
     holdout = load_test_data(results_root, test_csv)
@@ -292,6 +302,8 @@ def prune_and_visualize(results_root: str, func: str, params,
         "range_check": range_info,
         # 样本外验证（held-out）：只报告，不参与任何选择
         "holdout": holdout,
+        # 训练进度（历史最优刷新点）：只报告；None=没有 best_history 记录
+        "progress": progress,
     }
 
 
