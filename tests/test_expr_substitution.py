@@ -58,7 +58,7 @@ class ExprSubstitutionTest(_ExprTestCase):
         """回归：参数按**有效数字**舍入，而不是小数点后 2 位。
 
         实测 20260918-195057：params[3]=0.0074 被舍成 0.01，乘上量级 1e4 的项后
-        MSE 从 2.9e-4 变成 186——收尾产物（剪枝/曲线/explain.md）解释的将是另一个
+        MSE 从 2.9e-4 变成 186——收尾产物（剪枝/曲线/report.md）解释的将是另一个
         模型。定点 2 位小数对"小系数 × 巨量项"的骨架必须废弃。
         """
         func = _spec(["return params[0]*x1"])

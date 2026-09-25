@@ -154,7 +154,7 @@ def build_parser() -> ArgumentParser:
     parser.add_argument('--test_csv', type=str, default=None,
                         help='held-out 数据 CSV（可选的样本外验证）：缺省时自动探测'
                              '训练数据同目录的 test.csv；给 none 关闭。'
-                             '样本外指标只写进 run.out 与 explain.md，'
+                             '样本外指标只写进 run.out 与 report.md，'
                              '不参与采样、打分、早停与样本选择')
     parser.add_argument('--experiment_dir', type=str, default=None,
                         help='实验目录（可为绝对/相对路径）。如提供，将直接使用此目录')

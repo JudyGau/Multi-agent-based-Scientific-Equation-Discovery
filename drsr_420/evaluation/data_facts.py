@@ -384,7 +384,7 @@ def _identifiability(names: list[str], correlations: list[dict], X=None) -> list
 
     数据设计常把自变量沿一条一维曲线采样（实测 MRFCompress-Cuboid 的 7 个点
     在 ln 空间 r=-0.9996）。此时两个指数的**分配**在数学上不可辨识，最终公式里
-    谁大谁小不该被解释成独立发现——必须在提示词里说清楚，否则 explain.md 会把
+    谁大谁小不该被解释成独立发现——必须在提示词里说清楚，否则 report.md 会把
     拟合出来的一对指数当成物理结论。
 
     判据分两层：全样本相关（线性/对数空间）命中即告警；全样本不命中时再看

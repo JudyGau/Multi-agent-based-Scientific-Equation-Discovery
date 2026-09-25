@@ -369,7 +369,7 @@ class ArtifactSuppressionTest(unittest.TestCase):
             self.assertEqual(summary["verdict"]["kind"], "form_only")
             self.assertEqual(summary["pruned_expr"], summary["substituted_expr"])
             self.assertEqual(summary["nodes_pruned"], 0)
-            # 诊断字段：simplify 会给出什么形式（未采用），供 explain.md 说明"只是通分"
+            # 诊断字段：simplify 会给出什么形式（未采用），供 report.md 说明"只是通分"
             self.assertIsNotNone(summary["simplify_expr"])
             self.assertNotEqual(summary["simplify_expr"], summary["substituted_expr"])
             # 不再产出与 expr.png 重复的"剪枝后"图件

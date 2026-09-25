@@ -11,7 +11,7 @@
 ``score = -MSE``、``NMSE = MSE / var(outputs)``，都是样本内指标，选最佳样本用的也是这个
 分。MRF 这类小样本问题里这尤其危险——实测某次运行 8 个训练点、10 个自由参数，样本内
 NMSE 1.45e-7，而两个同分布 held-out 点上最大相对误差 **7.95%**（NMSE 放大 1.3e6 倍）。
-因此这里的指标只写进 run.out / explain.md，**绝不**回灌进评分、早停或样本选择：一旦
+因此这里的指标只写进 run.out / report.md，**绝不**回灌进评分、早停或样本选择：一旦
 参与选择，它就不再是 held-out，实验之间也不再可比。
 
 数据来源
@@ -37,7 +37,7 @@ __all__ = [
     "strip_holdout_section",
 ]
 
-#: explain.md 里样本外验证小节的标题（机器生成，正文若自带同名小节会被替换）。
+#: report.md 里样本外验证小节的标题（机器生成，正文若自带同名小节会被替换）。
 HOLDOUT_HEADING = "## 样本外验证"
 
 #: 关闭自动探测的取值：``--test_csv none``。
@@ -235,7 +235,7 @@ def in_sample_metrics(fit: dict | None) -> dict:
     """样本内指标，**以最终发布的表达式（剪枝后）为准**，缺剪枝后值时才回退剪枝前。
 
     held-out 侧评的是发布版表达式（``find_best_eq`` 传 ``published``，即未剪枝时等于
-    原式），因此样本内对照必须取自同一表达式。实测 explain.md 曾把两种口径并列：
+    原式），因此样本内对照必须取自同一表达式。实测 report.md 曾把两种口径并列：
     样本内 MSE=0.0523（剪枝前）对样本外 MSE=869（剪枝后）—— 剪枝明明把模型从
     MSE 0.05 削弱到 6305，表格却显示样本内仍"很准"，属于口径不一致造成的误导。
 
@@ -282,7 +282,7 @@ def format_holdout_summary(holdout: dict | None, fit: dict | None = None) -> str
 
 
 def render_holdout_section(holdout: dict | None, fit: dict | None = None) -> str:
-    """渲染 explain.md 的「样本外验证」小节（机器生成，数字不由 LLM 转述）。"""
+    """渲染 report.md 的「样本外验证」小节（机器生成，数字不由 LLM 转述）。"""
     lines = [HOLDOUT_HEADING, ""]
     if not holdout:
         lines.append("本次没有可用的 held-out 数据（未指定 `--test_csv`，也未在数据目录"

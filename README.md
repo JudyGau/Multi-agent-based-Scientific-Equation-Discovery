@@ -54,7 +54,7 @@ python -m drsr_420.cli.main --problem_name oscillator1 --data_csv ./data/oscilla
 
 **样本外验证（可选）**：`--test_csv <路径>` 指定 held-out 数据；缺省时自动探测训练数据
 同目录的 `test.csv`，`--test_csv none` 关闭。收尾阶段会在**没有参与参数拟合、打分与
-样本选择**的点上算 MSE/NMSE/最大误差，写进 `run.out` 与 `explain.md` 的「样本外验证」
+样本选择**的点上算 MSE/NMSE/最大误差，写进 `run.out` 与 `report.md` 的「样本外验证」
 小节，并把 held-out 点用另一种标记画进曲线图。
 
 > 它是**报告**而非训练/选择信号：样本内 NMSE 由评估器在同一批训练点上拟合并打分得到，

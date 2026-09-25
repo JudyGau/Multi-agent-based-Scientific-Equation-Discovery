@@ -383,7 +383,7 @@ def _resolve_title(explicit: str, meta_title: str, page_title: str, stem: str) -
     """标题回退链：显式传入 → PDF 元数据 → 首页最大字号 → 文件名（不像 DOI 时）→ 空串。
 
     **绝不用 DOI 冒充标题**：历史实现在两者都取不到时退化成 ``doi or stem``，于是
-    explain.md 的参考文献出现 ``10.216561000-0887.380021.pdf`` 这种"标题"（实测），
+    report.md 的参考文献出现 ``10.216561000-0887.380021.pdf`` 这种"标题"（实测），
     读者无从判断是哪篇文献，模型也无法据此判断相关性。
     """
     for cand in (explicit, meta_title, page_title):
@@ -605,7 +605,7 @@ class RagKB:
         DOI 与标题只在调用方没显式给出时才推断，推断链见 :func:`_resolve_doi`
         （论文自己印的 DOI，权威 → 无歧义的文件名恢复 → 空串）与
         :func:`_resolve_title`（元数据 → 首页最大字号 → 文件名 → 空串）。列表页
-        不能再出现"用文件名/DOI 冒充标题"的元数据——实测 explain.md 的参考文献
+        不能再出现"用文件名/DOI 冒充标题"的元数据——实测 report.md 的参考文献
         因此显示成 ``10.216561000-0887.380021.pdf``。
         """
         if not os.path.exists(pdf_path):
@@ -672,7 +672,7 @@ class RagKB:
         """就地修复已入库文献的 doi/title 元数据（**不重嵌入、不改 chunk 文本**）。
 
         历史入库用"从去斜杠文件名恢复 DOI + ``title or doi or stem``"的兜底，给
-        知识库留下两类坏元数据（实测 explain.md 参考文献显示成
+        知识库留下两类坏元数据（实测 report.md 参考文献显示成
         ``10.216561000-0887.380021.pdf`` 这类"标题"）：
         1. **假 DOI**——文件名抹掉的是哪个 ``/`` 无从判断，旧恢复规则猜出的
            DOI 指向错误文章（``10.11221/.3479045`` 实为 ``10.1122/1.3479045``）；

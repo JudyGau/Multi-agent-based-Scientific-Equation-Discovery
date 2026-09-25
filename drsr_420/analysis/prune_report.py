@@ -7,11 +7,11 @@
 * ``find_best_eq.prune_and_visualize``：把对比结果放进剪枝摘要（控制台 + explain 提示词）；
 * ``explain``：解释 LLM 要论证"剪枝合理"，必须有实测数值支撑（剪枝前后 MSE 变化、
   最大逐点偏差）。只凭公式长相论证"这些项可以去掉"是不可验证的空话——而用户明确
-  要求 explain.md 解释剪枝过程与合理性。
+  要求 report.md 解释剪枝过程与合理性。
 
 除了拟合对比，本模块还提供"剪枝到底做了什么"的判定（``classify_pruning``）：
 ``nodes_pruned`` 是"是否真剪枝"的唯一硬判据，而 ``simplify`` 只做通分/展开时公式
-**数学上没变**——这种情况必须如实说明并沿用原式，否则 explain.md 会被逼着解释一次
+**数学上没变**——这种情况必须如实说明并沿用原式，否则 report.md 会被逼着解释一次
 并不存在的剪枝（见 ``max_relative_difference`` 关于假阴性的说明）。
 
 为什么单独成模块
@@ -234,7 +234,7 @@ def compare_fits(dependent: str, sym_names: list[str], data: np.ndarray,
     out["mse_before"] = mse_before
     var_y = float(np.var(y))
     out["nmse_before"] = mse_before / var_y if var_y > 0 else None
-    # 样本内的最大误差：explain.md 的「样本外验证」小节要用它与 held-out 同口径对比
+    # 样本内的最大误差：report.md 的「样本外验证」小节要用它与 held-out 同口径对比
     err_before = np.abs(pred_before - y)
     out["max_abs_err_before"] = float(np.max(err_before))
     out["max_rel_err_before"] = float(np.max(err_before / np.maximum(np.abs(y), 1e-12)))
@@ -349,7 +349,7 @@ def classify_pruning(expr, published, stats, sym_names: list[str] | None = None,
         同上但数值等价性无法确认/不成立           → 'form_only_unverified'（同样回退，需人工看一眼）
 
     为什么需要它：``SensitivityPruner.prune`` 在 0 项剪枝时会返回原表达式，但**日志与
-    explain.md 仍要如实说明**"simplify 本来会把它改写成什么形式、那只是通分"，
+    report.md 仍要如实说明**"simplify 本来会把它改写成什么形式、那只是通分"，
     否则读者会以为公式被剪枝改变了（也可能反过来怀疑剪枝没生效）。
 
     返回的 ``max_rel_diff`` 是**判定所依据的那一次比较**：真剪枝时是"剪枝结果 vs 原式"

@@ -21,7 +21,7 @@
 
 > 采样、参数拟合、打分与最佳样本选择**只用 `train.csv`**；`test.csv` 由收尾分析读取
 > （`--test_csv` 显式指定，缺省自动探测训练数据同目录的同名文件，`none` 关闭），
-> 只把样本外指标写进 `run.out` 与 `explain.md`，不参与任何选择。
+> 只把样本外指标写进 `run.out` 与 `report.md`，不参与任何选择。
 > 注意 `MRFShear-3` 与 `MRFCompress-3` 的 `test.csv` 与 `train.csv` **逐行相同**，
 > 它们不是独立的 held-out 集——工具会标出这种重合，不要拿它论证泛化能力。
 

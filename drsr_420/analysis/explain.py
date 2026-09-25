@@ -1,4 +1,4 @@
-"""物理解释：让 LLM 对最优公式做逐项力学解释，并落盘 ``explain.md``。
+"""物理解释：让 LLM 对最优公式做逐项力学解释，并落盘 ``report.md``。
 
 角色归属
 --------
@@ -12,8 +12,8 @@
   在训练数据上的拟合对比）；
 * LLM：通过 ReAct 循环（``explain_re_act``）调用，模型可自行发起 MCP 检索工具；
 * 增强：RAG 知识库注入相关文献摘要（库为空或检索失败则静默跳过）；
-* 产物：``<results_root>/explain.md`` = LLM 正文（含剪枝分析）+ **由本模块附加的
-  权威参考文献清单**。
+* 产物：``<results_root>/report.md`` = LLM 正文（含剪枝分析）+ **由本模块附加的
+  权威参考文献清单** + 机器生成的「样本外验证」「动态范围体检」小节。
 
 两条硬性要求（用户明确指定，见下面对应的实现与测试）
 ----------------------------------------------------
@@ -50,7 +50,11 @@ from drsr_420.core.range_check import RANGE_PROBE_REL
 #: 无节制地塞进提示词只会挤掉真正需要模型读的推导过程）。
 _EXPR_CHAR_LIMIT = 2000
 
-#: 文末参考文献小节的标题。整份 explain.md 只有这一处清单（正文若自己写了，
+#: 收尾报告的产物文件名。用户明确要求把原来的 ``explain.md`` 统一改名为
+#: ``report.md``（"最终报告文件命名准确无误"），所有落盘/引用都走这个常量。
+REPORT_FILENAME = "report.md"
+
+#: 文末参考文献小节的标题。整份 report.md 只有这一处清单（正文若自己写了，
 #: 会被 :func:`_strip_reference_section` 去掉后替换成机器生成的权威清单）。
 REFERENCE_HEADING = "## 参考文献"
 
@@ -477,8 +481,8 @@ def build_explain_content(func: str, exp: dict, background: str | None = None,
     ``background`` 是问题的领域背景（来自 config_snapshot.json 的 ``background``
     字段，即 --background / --background_file 的最终文本）。解释 LLM 只看公式与
     经验推导时，会凭先验把自变量脑补成变形/拉伸量、把材料脑补成磁流变弹性体
-    （MRE）——实测 experiments/MRFCompress-Cuboid/MRFCompress-Cuboid_20260917-134427/explain.md 即
-    如此，而该问题的材料是磁流变液（MRF）、自变量是颗粒轴长比。背景必须显式
+    （MRE）——实测 experiments/MRFCompress-Cuboid/MRFCompress-Cuboid_20260917-134427/
+    的收尾报告即如此，而该问题的材料是磁流变液（MRF）、自变量是颗粒轴长比。背景必须显式
     进入提示词，并声明其优先级高于文献摘要与先验直觉。
 
     ``pruning`` 是 ``find_best_eq.prune_and_visualize`` 的剪枝摘要；``references``
@@ -546,7 +550,7 @@ def build_explain_content(func: str, exp: dict, background: str | None = None,
 def _format_holdout_block(holdout: dict | None, fit: dict | None = None) -> str:
     """渲染样本外验证块：只给数字与口径，禁止把样本内 NMSE 当泛化误差来谈。
 
-    数字由 :mod:`drsr_420.analysis.holdout` 算出并会**另行**写成 explain.md 的
+    数字由 :mod:`drsr_420.analysis.holdout` 算出并会**另行**写成 report.md 的
     「样本外验证」小节；这里进提示词是为了让模型在谈泛化时只能依据这些量，
     而不是拿样本内 NMSE 说事。模型自己写的小节会被 ``strip_holdout_section`` 去掉。
     """
@@ -746,7 +750,7 @@ def _range_check_lines(rc: dict) -> list[str]:
 
 
 def render_range_section(range_check: dict | None) -> str:
-    """渲染 explain.md 的「动态范围体检」小节（机器生成，数字不由 LLM 转述）。
+    """渲染 report.md 的「动态范围体检」小节（机器生成，数字不由 LLM 转述）。
 
     报告最终发布公式在训练数据包围盒网格（含角点对数壳层）上的**输出跨度**与
     **局部斜率**两条判据，判定其是否携带角点钉扎/下溢尖峰类局部化器件
@@ -794,7 +798,7 @@ def _assemble_explain(answer: str | None, refs: list[dict],
 def explain_best_sample(results_root: str, func: str, sample_order: str,
                         role_clients=None, pruning: dict | None = None,
                         holdout: dict | None = None) -> None:
-    """按 sample_order 匹配 Good 经验，调用 LLM 生成物理解释并落盘 explain.md。
+    """按 sample_order 匹配 Good 经验，调用 LLM 生成物理解释并落盘 report.md。
 
     任意环节失败（无经验文件 / 无匹配条目 / 提示词构造失败 / LLM 初始化失败）
     均只告警并返回，不抛出，避免影响后续剪枝流程。
@@ -803,13 +807,13 @@ def explain_best_sample(results_root: str, func: str, sample_order: str,
         pruning: ``find_best_eq.prune_and_visualize`` 的剪枝摘要；给定时解释会覆盖
             剪枝后的表达式、被移除项与剪枝前后拟合对比。
         holdout: 同一次收尾里的样本外验证结果（``holdout.evaluate_holdout``）；
-            省略时从 ``pruning["holdout"]`` 取。给定时 explain.md 会附加机器生成的
+            省略时从 ``pruning["holdout"]`` 取。给定时 report.md 会附加机器生成的
             「样本外验证」小节（样本外指标只报告，不参与任何选择）。
         role_clients: ``llm.roles.RoleClients``；取其中的 ``explain`` 角色客户端。
             省略时按 ``config/agents.config.json`` 自行解析——**不再硬编码档案
             文件名**。旧实现在这里写死了 ``deepseek_deepseek-v4-flash.config``，
             该文件在仓库中并不存在，异常被下面的 ``except`` 吞掉后静默写出空的
-            ``explain.md``（物理解释长期失效且无人发现）。
+            ``report.md``（物理解释长期失效且无人发现）。
     """
     exp_path = os.path.join(results_root, "experiences.json")
     try:
@@ -874,9 +878,9 @@ def explain_best_sample(results_root: str, func: str, sample_order: str,
     explain = explain_re_act(client, content, tool_refs=tool_refs)
 
     if not (explain or "").strip():
-        # 失败时**不写文件**：把既有 explain.md 覆盖成"只剩参考文献"的残件会掩盖
+        # 失败时**不写文件**：把既有 report.md 覆盖成"只剩参考文献"的残件会掩盖
         # 真实故障——旧实现写出空文件，结果物理解释长期失效却没人发现。
-        print("[WARN] 物理解释为空（LLM 调用失败或返回空），保留既有 explain.md 不覆盖。")
+        print(f"[WARN] 物理解释为空（LLM 调用失败或返回空），保留既有 {REPORT_FILENAME} 不覆盖。")
         return
 
     # 正文 + 权威参考文献清单（知识库检索命中 ∪ 解释过程中工具检索命中）
@@ -891,9 +895,9 @@ def explain_best_sample(results_root: str, func: str, sample_order: str,
           + ("" if refs else "（本次未检索到可引用文献）"))
 
     try:
-        explain_out_path = os.path.join(results_root, "explain.md")
+        explain_out_path = os.path.join(results_root, REPORT_FILENAME)
         with open(explain_out_path, "w", encoding="utf-8") as f:
             f.write(final_text)
-        print(f"[INFO] Saved explain to: {explain_out_path}")
+        print(f"[INFO] Saved report to: {explain_out_path}")
     except Exception as e:
         print(f"[WARN] Failed to save explain: {e}")

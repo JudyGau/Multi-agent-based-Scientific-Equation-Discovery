@@ -1,4 +1,4 @@
-"""explain.md 的两条硬性要求（用户指定）与剪枝量化评估的回归测试。
+"""report.md 的两条硬性要求（用户指定）与剪枝量化评估的回归测试。
 
 要求一：**必须列出参考文献**
     - 正文用 [n] 标注、文末清单由系统从"知识库命中 ∪ 解释过程中的工具命中"生成；
@@ -249,7 +249,7 @@ class ReferenceSectionTest(unittest.TestCase):
                  mock.patch("builtins.print"):
                 explain_mod.explain_best_sample(
                     str(root), _FUNC, "1", role_clients=_role_clients())
-            written = (root / "explain.md").read_text(encoding="utf-8")
+            written = (root / "report.md").read_text(encoding="utf-8")
 
         self.assertIn("正文……", written)
         self.assertNotIn("LLM 编造的条目", written, "LLM 自编的参考文献必须被替换")
@@ -271,12 +271,12 @@ class ReferenceSectionTest(unittest.TestCase):
                  mock.patch("builtins.print"):
                 explain_mod.explain_best_sample(
                     str(root), _FUNC, "1", role_clients=_role_clients())
-            written = (root / "explain.md").read_text(encoding="utf-8")
+            written = (root / "report.md").read_text(encoding="utf-8")
 
         self.assertIn("本次未获取到可引用的文献", written)
 
     def test_llm_failure_does_not_overwrite_existing_explain_md(self):
-        """LLM 调用失败时保留既有 explain.md：覆盖成"只剩参考文献"的残件会掩盖故障。"""
+        """LLM 调用失败时保留既有 report.md：覆盖成"只剩参考文献"的残件会掩盖故障。"""
         from drsr_420.analysis import explain as explain_mod
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -284,18 +284,18 @@ class ReferenceSectionTest(unittest.TestCase):
             _make_experiment(root)
             (root / "experiences.json").write_text(
                 json.dumps({"Good": [_EXP]}), encoding="utf-8")
-            (root / "explain.md").write_text("上一版解释", encoding="utf-8")
+            (root / "report.md").write_text("上一版解释", encoding="utf-8")
             with mock.patch.object(explain_mod, "retrieve_rag", return_value=_RAG_REFS), \
                  mock.patch.object(explain_mod, "explain_re_act",
                                    lambda client, content, tool_refs=None: None), \
                  mock.patch("builtins.print") as printer:
                 explain_mod.explain_best_sample(
                     str(root), _FUNC, "1", role_clients=_role_clients())
-            written = (root / "explain.md").read_text(encoding="utf-8")
+            written = (root / "report.md").read_text(encoding="utf-8")
             printed = "\n".join(str(c.args[0]) for c in printer.call_args_list if c.args)
 
         self.assertEqual(written, "上一版解释")
-        self.assertIn("保留既有 explain.md 不覆盖", printed)
+        self.assertIn("保留既有 report.md 不覆盖", printed)
 
 
 class PruneReportTest(unittest.TestCase):

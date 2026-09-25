@@ -244,7 +244,7 @@ class SubsetRidgeTest(_MRFFixtureTest):
 
     实测本数据 8 行里两个 lambda12=1 的点把 lambda23 从 1 扫到 14.12，整样本
     log_pearson 只有 0.0924；剔除这两行后其余 6 个点在 ln 空间 |r|=0.9996，是
-    一条一维脊。旧判据只看全样本，于是不告警——而 explain.md 里那条"lambda12 的
+    一条一维脊。旧判据只看全样本，于是不告警——而 report.md 里那条"lambda12 的
     指数不可辨识"的结论就只能靠模型自己发现，没有代码兜底。
     """
 

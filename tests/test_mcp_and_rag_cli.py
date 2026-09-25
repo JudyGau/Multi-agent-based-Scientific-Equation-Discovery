@@ -575,7 +575,7 @@ class RagConfigNamingTest(unittest.TestCase):
 class KnowledgeMetadataInferenceTest(unittest.TestCase):
     """入库元数据的推断链：不得把文件名或 DOI 冒充标题。
 
-    实测 explain.md 的参考文献标题显示成 ``10.216561000-0887.380021.pdf``、
+    实测 report.md 的参考文献标题显示成 ``10.216561000-0887.380021.pdf``、
     ``10.11221.3005402.pdf``——那是历史实现 ``title = title or doi or stem`` 与
     "把去斜杠文件名当 DOI 恢复"共同造成的：文件名抹掉的是哪个 ``/`` 无从判断，
     恢复出来的是假 DOI。

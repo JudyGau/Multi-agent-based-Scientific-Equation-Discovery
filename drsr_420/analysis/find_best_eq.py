@@ -21,10 +21,10 @@
       │     └── expr_curves.plot_data_curves()  剪枝前后曲线 + 数据点（可失败，仅告警）
       │     └── 返回剪枝摘要 dict（剪掉了哪些项 + 敏感度 + 拟合变化 + 判定结论）
       └── explain.explain_best_sample(pruning=摘要)
-            把剪枝前/后表达式、被移除项与拟合数值一起交给解释 LLM → explain.md
+            把剪枝前/后表达式、被移除项与拟合数值一起交给解释 LLM → report.md
             （含参考文献清单：知识库检索结果 + 解释过程中的工具检索结果）
 
-**顺序不能反过来**：explain.md 必须解释"剪枝后的表达式"并讲清"剪掉了哪些项、为什么
+**顺序不能反过来**：report.md 必须解释"剪枝后的表达式"并讲清"剪掉了哪些项、为什么
 合理"，这两件事都要求剪枝结果先算出来。
 
 本模块只做"取样本 + 步骤编排 + 兜底告警"，具体逻辑见上表各自的模块。
@@ -182,7 +182,7 @@ def prune_and_visualize(results_root: str, func: str, params,
     # 动态范围体检（对**最终发布**的表达式）：检测角点钉扎/下溢尖峰类病理解。
     # 训练点 MSE 看不见点与点之间的行为——体检在包围盒网格（含角点壳层）上评估，
     # 与评分器（evaluation/problems.evaluate）同一判据（内核在 core.range_check，
-    # 两层共用），结果进 explain 提示词与 explain.md 权威小节。
+    # 两层共用），结果进 explain 提示词与 report.md 权威小节。
     range_info = None
     try:
         from drsr_420.core.range_check import dynamic_range_check
@@ -219,7 +219,7 @@ def prune_and_visualize(results_root: str, func: str, params,
                 hits.append(f"系数抵消={range_info['coef_ratio']:.4g}"
                             f"(上限{range_info['coef_limit']})")
             print(f"[RANGE] 动态范围体检：**病理性** 命中 {'；'.join(hits)}"
-                  f"——发布公式携带角点钉扎/尖峰/大系数抵消类器件，详见 explain.md")
+                  f"——发布公式携带角点钉扎/尖峰/大系数抵消类器件，详见 report.md")
         else:
             coef = range_info.get("coef_ratio")
             coef_txt = ("未评估" if coef is None
@@ -309,7 +309,7 @@ def find_best_eq(results_root: str, threshold: float = 0.1,
             本函数也能拿到正确档案，不再依赖硬编码文件名）。
         test_csv: held-out 数据路径；``None`` 表示自动探测（见
             ``holdout.resolve_test_csv``），``"none"`` 表示关闭。样本外指标只写进
-            run.out 与 explain.md，不参与采样/打分/选择。
+            run.out 与 report.md，不参与采样/打分/选择。
     """
     best = find_best_sample(results_root)
     if best is None:
@@ -319,7 +319,7 @@ def find_best_eq(results_root: str, threshold: float = 0.1,
     score, path, func, params = best
     print(f"[BEST] score={score} file={path}")
 
-    # 先剪枝：explain.md 要解释"剪枝后的表达式"与"剪掉了哪些项、为什么合理"，
+    # 先剪枝：report.md 要解释"剪枝后的表达式"与"剪掉了哪些项、为什么合理"，
     # 剪枝摘要（含剪枝前后在训练数据上的拟合对比）必须先算出来。
     pruning = prune_and_visualize(results_root, func, params, threshold, sample_range,
                                   test_csv=test_csv)
