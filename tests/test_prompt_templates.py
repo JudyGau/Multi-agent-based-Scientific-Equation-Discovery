@@ -126,6 +126,63 @@ class AnalysisPromptConstraintsTest(unittest.TestCase):
         self.assertIn("ONLY the structured result below", pc.residual_analysis_prompt)
 
 
+class ResidualIncrementPromptTest(unittest.TestCase):
+    """残差通道必须做"增量"分析：不得复述上一轮结论，且必须给出由残差列派生的字段。
+
+    背景（实测本实验的 residual_analyze.json）：残差提示词与初次分析共用同一份 schema，
+    而提示词里唯一符合该 schema 的范例就是上一轮分析文本，模型于是逐字复述——21 轮里
+    8 轮与上一轮**完全相同**（最长公共前缀 = 全文长度，相似度 1.000）。复述还会挤掉
+    真正有用的内容：注入采样提示时按段落截断到固定字符数。
+    """
+
+    def _ctx(self):
+        return pc.PromptContext(
+            n_features=2, feature_names=["lambda12", "lambda23"], dependent_name="sigma",
+            background=("compress-mode MRF: lambda12 = L1/L2, lambda23 = L2/L3, "
+                        "sigma = compressive stress."))
+
+    def test_residual_prompt_forbids_restating_previous_conclusions(self):
+        text = self._ctx().render_residual_analysis_prompt("prev", "residual", "sample")
+        self.assertIn("Do NOT restate", text)
+        # 上一轮结论必须标成未经校验的假设（旧措辞 "previous conclusions:" 像既定事实）
+        self.assertIn("UNVERIFIED HYPOTHESIS", text)
+
+    def test_residual_prompt_requires_residual_derived_fields(self):
+        text = self._ctx().render_residual_analysis_prompt("prev", "residual", "sample")
+        for key in ("residual_sign_pattern", "worst_fit_rows", "suggested_structural_change"):
+            self.assertIn(key, text)
+
+    def test_rendered_residual_format_block_is_valid_json(self):
+        """格式块必须仍是合法 JSON（新增字段的逗号/中括号要拼对）。
+
+        示例块是"外层花括号省略"的片段（模型历史回复也只写 ``"output_format": {...}``），
+        故补一对花括号后解析。
+        """
+        import json
+        text = self._ctx().render_residual_analysis_prompt("prev", "residual", "sample")
+        block = text[text.index('  "output_format": {'):]
+        parsed = json.loads("{" + block + "}")
+        analysis = parsed["output_format"]["analysis"]
+        self.assertIn("independent_to_dependent_relationships", analysis)
+        self.assertIn("inter_relationships_between_independents", analysis)
+        self.assertIn("lambda12 ", analysis["residual_sign_pattern"])
+
+    def test_initial_analysis_keeps_its_own_schema(self):
+        """初次分析没有残差列，不能带残差专有要求/字段（否则模型要凭空编残差）。"""
+        text = self._ctx().render_initial_analysis_prompt()
+        self.assertNotIn("residual_sign_pattern", text)
+        self.assertNotIn("Do NOT restate", text)
+
+    def test_task_numbering_follows_extra_requirements(self):
+        self.assertIn("4.##Output Format##", self._ctx().render_initial_analysis_prompt())
+        self.assertIn("6.##Output Format##",
+                      self._ctx().render_residual_analysis_prompt("prev", "res", "sample"))
+
+    def test_fallback_residual_template_carries_the_same_requirements(self):
+        self.assertIn("Do NOT restate", pc.residual_analysis_prompt)
+        self.assertIn("residual_sign_pattern", pc.residual_analysis_prompt)
+
+
 class SamplingSystemPromptTest(unittest.TestCase):
     """采样系统提示里的文献约束：必须是"选用文献时的约束"，不是"必须检索"。"""
 

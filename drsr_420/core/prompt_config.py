@@ -163,9 +163,10 @@ head_template = (
 # ``KeyError: '\n    "analysis"'``——即"无 prompt_ctx 兜底模板"这条分支从未可用。
 residual_analysis_prompt = (
     "You are a data analysis expert.\n"
-    "previous conclusions:{last_analysis}\n"
+    "previous conclusions (an UNVERIFIED HYPOTHESIS written by the same model in the previous "
+    "round -- it may be wrong, check it against the numbers below):{last_analysis}\n"
     "dataset:{residual}\n"
-    "The equation corresponding to the residuals:{sample}\n\n"
+    "The equation whose residuals are listed above:{sample}\n\n"
     "The independent variables are x0 and x1.\n"
     "The dependent variable is y.\n"
     "The fourth column contains residuals (calculated as observed value - predicted value from the equation).\n"
@@ -178,7 +179,17 @@ residual_analysis_prompt = (
     "2. Use ONLY the variable meanings given in the task description. Never reinterpret a variable as a "
     "different physical quantity (e.g. a geometric ratio is not a rate ratio, and a compressive stress is "
     "not a shear stress), and do not import mechanisms from another mode, geometry, or material system.\n\n"
-    "3.##Output Format##:\n"
+    # 残差通道专有要求：不得复述上一轮结论，且必须给出由残差列派生的字段
+    # （实测 21 轮残差分析里 8 轮与上一轮逐字相同，最长公共前缀 = 全文长度）。
+    "3. This round analyzes ONLY the residuals of the equation given above. Do NOT restate, paraphrase "
+    "or summarize the previous conclusions: a statement that merely repeats them is a failed answer; "
+    "re-derive from these numbers instead, and mark contradicted claims as contradicted.\n\n"
+    "4. Derive `residual_sign_pattern` (per independent variable: intervals whose residuals keep the "
+    "same sign = systematic misfit; intervals with alternating signs = noise/overfitting), "
+    "`worst_fit_rows` (rows with the largest |residual|, with sign and magnitude) and "
+    "`suggested_structural_change` (ONE concrete skeleton change justified by the pattern). Quote only "
+    "numbers that appear in the dataset above.\n\n"
+    "5.##Output Format##:\n"
     "STRICTLY deliver results in the following structured format:\n\n"
     "  \"output_format\": {{\n"
     "    \"analysis\": {{\n"
@@ -194,7 +205,18 @@ residual_analysis_prompt = (
     "        \"x0 vs x1\": [\n"
     "          \"Hint: analyze the possible functional relationship between x0 and x1 in different intervals. If not, leave blank.\"\n"
     "        ]\n"
-    "      }}\n"
+    "      }},\n"
+    "      \"residual_sign_pattern\": {{\n"
+    "        \"x0 \": [\n"
+    "          \"Hint: intervals of x0 whose residuals keep the same sign, and those whose signs alternate\"\n"
+    "        ]\n"
+    "      }},\n"
+    "      \"worst_fit_rows\": [\n"
+    "        \"Hint: rows with the largest |residual|, with sign and magnitude\"\n"
+    "      ],\n"
+    "      \"suggested_structural_change\": [\n"
+    "        \"Hint: ONE concrete skeleton change justified by the residual pattern\"\n"
+    "      ]\n"
     "    }}\n"
     "  }}\n"
 )
@@ -399,20 +421,30 @@ class PromptContext:
     def render_residual_block_title(self):
         return residual_block_title.format(problem=self.problem)
 
-    def _output_format_block(self) -> str:
-        """构建输出格式块（变量名、因变量、两两组合均动态生成）。"""
+    def _output_format_block(self, residual: bool = False) -> str:
+        """构建输出格式块（变量名、因变量、两两组合均动态生成）。
+
+        ``residual=True`` 时追加三个**只能由残差列派生**的字段：残差通道此前与初次
+        分析共用同一份"自变量→因变量关系"schema，而提示词里唯一符合该 schema 的范例
+        就是上一轮分析文本，模型因此逐字复述（实测 21 轮里 8 轮与上一轮完全相同，
+        最长公共前缀 = 全文长度）。schema 本身要求"从残差算出来"的内容，复述旧文本
+        就不再是格式正确的答案。
+        """
         inds = self.features
         dep = self.dependent
 
-        ind_to_dep = "\n".join([
+        # 条目之间用逗号连接、末尾不加逗号：旧写法给每项都缀了 ','
+        # （最后一项因此多一个尾逗号），示例本身不是合法 JSON，而提示词却要求模型
+        # "STRICTLY deliver results in the following structured format"。
+        ind_to_dep = ",\n".join([
             f'        "{name} ": [\n'
             f'          "Hint: analyze the functional relationship between {name} and {dep} in different intervals"\n'
-            f"        ],"
+            f"        ]"
             for name in inds
         ])
 
         pairs = _pairwise(inds)
-        inter_lines = "\n".join([
+        inter_lines = ",\n".join([
             f'        "{a} vs {b}": [\n'
             f'          "Hint: analyze possible functional relationship between {a} and {b} in different intervals. If not, leave blank."\n'
             f"        ]"
@@ -421,21 +453,78 @@ class PromptContext:
         if not inter_lines:
             inter_lines = '        "": []'
 
+        residual_blocks: list[str] = []
+        if residual:
+            sign_lines = ",\n".join([
+                f'        "{name} ": [\n'
+                f'          "Hint: for {name}, list the intervals of {name} whose residuals keep the SAME sign '
+                f'(systematic misfit there) and the intervals whose residual signs alternate (noise/overfitting)"\n'
+                f"        ]"
+                for name in inds
+            ])
+            residual_blocks = [
+                '      "residual_sign_pattern": {\n'
+                f"{sign_lines}\n"
+                '      }',
+                '      "worst_fit_rows": [\n'
+                '        "Hint: the specific dataset rows with the largest |residual|, each with its '
+                'sign and magnitude (numbers copied from the dataset above)"\n'
+                '      ]',
+                '      "suggested_structural_change": [\n'
+                '        "Hint: ONE concrete change to the equation skeleton that the residual pattern '
+                'justifies (which term to add, drop or re-shape), with the rows that support it"\n'
+                '      ]',
+            ]
+
+        fields = [
+            '      "independent_to_dependent_relationships": {\n'
+            f"{ind_to_dep}\n"
+            '      }',
+            '      "inter_relationships_between_independents": {\n'
+            f"{inter_lines}\n"
+            '      }',
+            *residual_blocks,
+        ]
         return (
             '  "output_format": {\n'
             '    "analysis": {\n'
-            '      "independent_to_dependent_relationships": {\n'
-            f"{ind_to_dep}\n"
-            '      },\n'
-            '      "inter_relationships_between_independents": {\n'
-            f"{inter_lines}\n"
-            '      }\n'
+            f"{',\n'.join(fields)}\n"
             '    }\n'
             '  }\n'
         )
 
-    def _task_section(self, role_text: str) -> str:
-        """构建“任务要求 + 输出格式引导”段落（初次分析与残差分析共用）。"""
+    def _residual_requirements(self) -> tuple[str, ...]:
+        """残差通道**独占**的要求（初次分析没有残差列，不能带这些要求）。
+
+        两条实测缺陷的护栏：
+        * 复述——上一轮结论是提示词里唯一符合 schema 的范例，模型把它抄一遍就当答案
+          （实测本实验 21 轮残差分析里 8 轮与上一轮逐字相同，最长公共前缀 = 全文长度）；
+        * 空转——分析只说"某一轮的趋势"，对当前方程哪里错、该怎么改只字未提，注入
+          采样提示后不提供任何新信息。故要求必须给出由残差列派生的字段。
+        """
+        return (
+            "This round analyzes ONLY the residuals of the equation given above. Do NOT restate, "
+            "paraphrase or summarize the previous conclusions: a statement that merely repeats them "
+            "(or repeats your own earlier wording) is a failed answer. If the numbers support an "
+            "earlier claim, re-derive it from these numbers; if the residuals contradict it, say so "
+            "explicitly and mark that claim as contradicted.",
+            "Derive the residual-specific fields from the residual column itself: "
+            "`residual_sign_pattern` (for each independent variable, which intervals keep the same "
+            "residual sign -- the equation's shape is systematically wrong there -- and which "
+            "intervals alternate in sign -- noise or overfitting), `worst_fit_rows` (the specific "
+            "rows with the largest |residual|, with sign and magnitude), and "
+            "`suggested_structural_change` (ONE concrete change to the skeleton justified by the "
+            "pattern). Quote only numbers that appear in the dataset or the code-measured facts.",
+        )
+
+    def _task_section(self, role_text: str, extra_requirements: tuple[str, ...] = ()) -> str:
+        """构建“任务要求 + 输出格式引导”段落（初次分析与残差分析共用）。
+
+        ``extra_requirements`` 是残差通道特有的编号要求（见 :meth:`_residual_requirements`），
+        插在 "##Output Format##" 之前；编号顺延，初次分析不传它 → 编号与旧版一致。
+        """
+        extra = "".join(f"{4 + i}. {req}\n\n" for i, req in enumerate(extra_requirements))
+        format_index = 4 + len(extra_requirements)
         return (
             f"{role_text}\n\n"
             "Task Requirements:\n\n"
@@ -464,7 +553,8 @@ class PromptContext:
             "axis-length ratio is NOT a shear-rate ratio, and a compressive (squeeze-mode) stress is "
             "NOT a shear stress. Do not import mechanisms, regimes, or terminology from another mode, "
             "geometry, or material system that the background does not mention.\n\n"
-            '4.##Output Format##:\n'
+            f"{extra}"
+            f'{format_index}.##Output Format##:\n'
             'STRICTLY deliver results in the following structured format:\n\n'
         )
 
@@ -496,6 +586,18 @@ class PromptContext:
         )
 
     def render_residual_analysis_prompt(self, last_analysis, residual, sample):
+        """渲染“残差分析”提示模板。
+
+        与初次分析的区别（都是实测缺陷的护栏）：
+
+        * 上一轮结论**显式标注为未经校验的假设**——它由同一个模型在上一轮自由生成，
+          实测含事实错误（把全局极值说错、把常数乘积脊线写成 ``≈19–19.6``），旧措辞
+          ``previous conclusions:`` 读起来像既定事实，会一路传到采样提示；
+        * 追加残差专有要求（:meth:`_residual_requirements`）与三个只能由残差列派生的
+          输出字段（:meth:`_output_format_block`）——旧版与初次分析共用同一份 schema，
+          提示词里唯一符合该 schema 的范例就是上一轮分析文本，模型于是逐字复述
+          （实测 21 轮里 8 轮与上一轮完全相同）。
+        """
         role_lines = [
             "The independent variables are:",
             *[
@@ -512,9 +614,11 @@ class PromptContext:
         return (
             "You are a data analysis expert.\n"
             f"Background: {self.background_text}\n"
-            f"previous conclusions:{last_analysis}\n"
+            f"previous conclusions (an UNVERIFIED HYPOTHESIS written by the same model in the "
+            f"previous round -- it may be wrong, check it against the numbers below):"
+            f"{last_analysis}\n"
             f"dataset:{residual}\n"
-            f"The equation corresponding to the residuals:{sample}\n\n"
-            f"{self._task_section(role_text)}\n"
-            f"{self._output_format_block()}"
+            f"The equation whose residuals are listed above:{sample}\n\n"
+            f"{self._task_section(role_text, self._residual_requirements())}\n"
+            f"{self._output_format_block(residual=True)}"
         )
