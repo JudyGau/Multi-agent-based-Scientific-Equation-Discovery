@@ -438,6 +438,9 @@ _REQUIRED_STRUCTURE = (
     "6. **公式形状/物理先验与实测基线的对照**：把上方的候选骨架基线（NMSE 越小越好）"
     "与你引用的物理机理逐条对照；若某个先验（例如\"响应由整体长细比 lambda12*lambda23 支配\"）"
     "与基线排名冲突，必须显式报告这一冲突，不得把先验写成已被数据证实的事实；"
+    "对照时注意标记：若某条基线带 FLAGGED，它的 NMSE 是靠角点门控/尖峰类"
+    "**数值器件**取得的，只能当作该形式的上限，**不得用来论证该形式有能力，"
+    "也不得反过来把它当作该先验已被数据否证的证据**；"
     "若给出了可辨识性告警（自变量近似共线），必须写明哪些指数在本次数据上不可单独辨识，"
     "不得把它们的相对大小解释成独立的物理发现；\n"
     "7. 结论。\n\n"
@@ -627,10 +630,13 @@ def _format_facts_block(facts: dict | None) -> str:
         lines.append(f"- {c['a']} vs {c['b']}：pearson={c['pearson']}、spearman={c['spearman']}、"
                      f"对数空间 pearson={c['log_pearson']}")
     if facts.get("skeletons"):
-        lines.append("- 候选骨架基线（NMSE 越小越好）：")
+        lines.append("- 候选骨架基线（NMSE 是拟合本身的口径，不含选择罚分；越小越好。"
+                     "带 FLAGGED 标记的行其 NMSE 是靠局部化器件（角点门控/尖峰）取得的"
+                     "上限，不能用来论证该形式有能力）：")
         for s in facts["skeletons"]:
             shown = "拟合失败" if s.get("nmse") is None else f"NMSE={s['nmse']} R2={s.get('r2')}"
-            lines.append(f"  - {s['expression']} -> {shown}")
+            note = f"  [{s['note']}]" if s.get("note") else ""
+            lines.append(f"  - {s['expression']} -> {shown}{note}")
     for w in facts.get("identifiability") or []:
         lines.append(f"- 可辨识性告警：{w['message']}")
     lines.append("以上数字是唯一依据：不要把物理先验、文献结论或经验说法当作已被数据证实的事实；"

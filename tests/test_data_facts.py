@@ -164,6 +164,59 @@ class SkeletonBaselineTest(_MRFFixtureTest):
         self.assertTrue(any(label.startswith("a*lambda23^b") for label in labels))
 
 
+class SkeletonBaselineCaliberTest(_MRFFixtureTest):
+    """基线 NMSE 的口径：拟合质量与选择罚分必须分开，器件的上限必须打标。
+
+    实测（MRFCompress-Cuboid）两条基线的**最小二乘最优本身是角点器件**：
+    ``a*λ12^b+c`` 的最优指数 b≈-2739、``a*(λ12λ23)^b+c`` 的 b≈-877（都把输出
+    钉在 λ12=1 的尖峰）。它们的 NMSE 是数值器件的上限，而这两条恰好是
+    "乘积支配先验"论证所依赖的行——不打标就会被当成形式的能力。
+    """
+
+    def _rows(self):
+        X, names, y, dep = _load_mrf()
+        return {r["expression"]: r for r in df.skeleton_baselines(X, y, names, dep, seed=0)}
+
+    def test_gate_type_baselines_are_flagged_with_reason(self):
+        from drsr_420.core.range_check import RANGE_SLOPE_LIMIT
+        rows = self._rows()
+        for label in ("a*(lambda12*lambda23)^b + c", "a*lambda12^b + c"):
+            with self.subTest(label=label):
+                entry = rows[label]
+                self.assertTrue(entry["flagged"], "角点器件型基线必须打标")
+                self.assertGreater(entry["pathology"]["slope_max"], RANGE_SLOPE_LIMIT)
+                self.assertIn("FLAGGED", entry["note"])
+                self.assertIn("local slope", entry["note"])
+
+    def test_healthy_baselines_are_not_flagged(self):
+        rows = self._rows()
+        for label in ("a*lambda12 + b*lambda23 + const",
+                      "a*lambda12^b*lambda23^c + d",
+                      "a*lambda23^b + c",
+                      "a*(lambda12*lambda23) + b*(lambda12+lambda23) + c"):
+            with self.subTest(label=label):
+                entry = rows[label]
+                self.assertFalse(entry["flagged"])
+                self.assertNotIn("note", entry)
+
+    def test_nmse_is_the_fit_caliber_only(self):
+        """``nmse`` 只反映拟合质量：不含选择罚分，也不留含罚分的旧口径字段。"""
+        rows = self._rows()
+        product = rows["a*(lambda12*lambda23)^b + c"]        # 被罚分的行
+        self.assertAlmostEqual(product["nmse"], 0.1698, delta=5e-4)
+        self.assertGreater(product["pathology"]["penalty"], 0.0)
+        self.assertNotIn("score_nmse", product)              # 混合口径不得流入产物
+        self.assertLess(product["nmse"], 0.18)               # 旧口径会显示 ~0.19
+
+    def test_render_marks_flagged_rows_and_forbids_misuse(self):
+        X, names, y, dep = _load_mrf()
+        text = df.render_facts({"n_rows": X.shape[0], "features": names, "dependent": dep,
+                                "skeletons": df.skeleton_baselines(X, y, names, dep, seed=0)})
+        self.assertIn("FLAGGED", text)
+        self.assertIn("must NOT be used to argue that form is capable", text)
+        self.assertIn("lower NMSE is better", text)
+
+
 class IdentifiabilityTest(unittest.TestCase):
     def test_collinear_design_is_flagged(self):
         x1 = np.array([1.0, 2.0, 3.0, 4.0, 5.0])

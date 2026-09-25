@@ -7,7 +7,8 @@
 * 逐列统计（n、min/max/mean/std）与相关结构（线性 / 秩 / 对数空间）；
 * 因变量的极值点（全局最大/最小落在哪一行）——这是"峰在哪"的唯一权威答案；
 * 一组机械生成的候选骨架各自的 NMSE（用与评估器**完全相同**的拟合口径，
-  即 :func:`drsr_420.evaluation.problems.evaluate` 的多起点有界 least_squares）；
+  即 :func:`drsr_420.evaluation.problems.evaluate` 的多起点有界 least_squares）
+  与**体检标记**（该形式的最优拟合本身是否靠角点门控/尖峰取得）；
 * 自变量之间的共线性/可辨识性告警。
 
 为什么需要它
@@ -19,6 +20,17 @@
 不该交给 LLM 自由发挥。本模块产出的文本块注入分析提示词，让模型的每个数值
 断言都有出处，也让"物理先验"必须与实测基线对质。
 
+基线 NMSE 的口径（两类数字不许混）
+----------------------------------
+``nmse`` = **拟合本身**的残差平方均值（残差列直接算），不含任何"选择惩罚"；
+``flagged`` + ``note`` = 该最优拟合是不是靠局部化器件（角点门控/尖峰）取得的。
+两者分开的理由：罚分是**选择用的偏好**，不是**拟合质量**。混在一起会出现
+"某个先验形式看起来能拟合到 X"的假象——实测 ``a*(λ12λ23)^b+c`` 的最小二乘最优
+是 ``b=-877``（把输出钉在 λ12=1 的尖峰），``a*λ12^b+c`` 的最优是 ``b=-2739``：
+它们的 NMSE 是数值器件的上限，不代表该形式的能力。因此拟合调用显式
+``range_check=False``，表中**不保留**含罚分的旧口径数字（那种混合口径正是本表
+此前的缺陷，历史值只在本注释里留档）。
+
 产物只进**分析阶段**（初次分析 + 每轮残差分析），不进每条采样提示——那张表
 约几百字符，进采样提示会按样本数线性放大 token 消耗。
 """
@@ -29,6 +41,7 @@ import os
 
 import numpy as np
 
+from drsr_420.core.range_check import dynamic_range_check
 from drsr_420.evaluation.problems import evaluate
 
 
@@ -41,6 +54,13 @@ COLLINEAR_R = 0.98
 
 #: 子集脊检测要求保留的最少点数：少于它相关系数失去意义。
 _MIN_SUBSET_ROWS = 4
+
+#: 基线拟合的随机起点种子。事实表是"代码实测的权威数字"，必须**可复现**：
+#: 多起点随机起点会让同一条形式在不同实验里给出不同 NMSE——实测
+#: ``a*λ12^b*λ23^c+d`` 偶尔收敛到与乘积形式重合的退化解（b≈c，把乘积当作
+#: 整体长细比），NMSE 由 0.0307 跳到 0.1698，而这张表正是用来对质"乘积支配"
+#: 先验的。数字随实验抖动会让该论证失去意义，故固定种子；调用方仍可显式覆盖。
+BASELINE_SEED = 0
 
 
 # ── 取值与相关 ──────────────────────────────────────────────
@@ -149,34 +169,83 @@ def _skeleton_candidates(names: list[str]):
     return cands
 
 
+def _baseline_note(patho: dict) -> str:
+    """被体检判为病理的基线的提示语（英文，注进提示词的候选骨架表）。
+
+    措辞必须让模型无法把它当成"该形式的能力"：说清 NMSE 是**数值器件**换来的
+    上限，并给出是哪条判据、数值多少——否则模型会拿它去论证先验被数据证实/否证。
+    """
+    why = []
+    if patho.get("span_penalty"):
+        why.append(f"output span {patho['span_ratio']:.4g}× the data range "
+                   f"(limit {patho['limit']})")
+    if patho.get("slope_penalty"):
+        why.append(f"local slope {patho['slope_max']:.4g} (limit "
+                   f"{patho['slope_limit']})")
+    return ("FLAGGED: this NMSE was reached by a localized/gating device ("
+            + "; ".join(why) + "), not by a legitimate instance of the form — "
+            "treat it as an artifact ceiling, not as this form's capability.")
+
+
 def skeleton_baselines(inputs, outputs, feature_names, dependent_name,
                        *, seed: int | None = None) -> list[dict]:
-    """用评估器同口径拟合候选骨架，返回 ``[{expression, nmse, r2}]``（NMSE 升序）。
+    """用评估器同口径拟合候选骨架，返回 ``[{expression, nmse, r2, ...}]``（NMSE 升序）。
 
     口径必须与 :func:`problems.evaluate` 一致：同 bounds、多起点、least_squares、
     同样的残差清洗。这样"骨架基线"与实验里真实打分的分数可比——若另起一套拟合，
     表里的 NMSE 就无法用来质疑模型的先验。
+
+    但 ``nmse`` **取拟合本身的均方误差**（由返回矩阵的残差列直接算），不取
+    ``evaluate`` 的分数：分数自体检接入后含病理罚分，而罚分是"选择偏好"不是
+    "拟合质量"，混进来会把"某形式能拟合到 X"凭空抬高（见模块 docstring 的口径
+    说明）。旧口径留在 ``score_nmse``；最优拟合本身若是局部化器件（角点门控/
+    尖峰），额外给出 ``flagged`` 与 ``note``——那是这张表最容易被误用的一点。
+
+    每条骨架额外做一次体检求值（向量化的网格求值，相对 least_squares 的开销
+    可忽略；``evaluate`` 不返回体检详情，故此处显式复算保持口径自明）。
+
+    Args:
+        seed: 多起点随机种子；``None``（含调用方未给）解析为 :data:`BASELINE_SEED`
+            ——事实表要可复现，随机起点会让同一形式的 NMSE 在不同实验里抖动。
     """
     X = np.asarray(inputs, dtype=float)
     y = np.asarray(outputs, dtype=float).ravel()
     if X.ndim == 1:
         X = X.reshape(-1, 1)
     var_y = float(np.var(y)) if y.size else 0.0
+    seed = BASELINE_SEED if seed is None else int(seed)
 
     rows = []
     for label, fn in _skeleton_candidates(list(feature_names)):
         entry = {"expression": label, "nmse": None, "r2": None}
         try:
-            score, _matrix, _params = evaluate(
-                {"inputs": X, "outputs": y}, fn, seed=seed, verbose=False)
+            # range_check=False：这里只要**拟合**结果，体检由下面显式做一次
+            # （不重复求值、也不把罚分混进这条基线的任何数字）。
+            score, matrix, params = evaluate(
+                {"inputs": X, "outputs": y}, fn, seed=seed, verbose=False,
+                range_check=False)
+            if score is not None and matrix is not None and params is not None:
+                mse = float(np.mean(np.square(np.asarray(matrix[:, -1], dtype=float))))
+                patho = dynamic_range_check(
+                    X, y, lambda *cols: fn(*cols, np.asarray(params)))
+                entry["pathology"] = {
+                    "penalty": _round(patho["penalty"]),
+                    "span_ratio": _round(patho["span_ratio"]),
+                    "limit": patho["limit"],
+                    "slope_max": _round(patho["slope_max"]),
+                    "slope_limit": patho["slope_limit"],
+                }
+                entry["flagged"] = bool(patho["penalty"] > 0)
+                if entry["flagged"]:
+                    entry["note"] = _baseline_note(patho)
+                if var_y > 0:
+                    nmse = mse / var_y
+                    entry["nmse"] = _round(nmse, 4)
+                    entry["r2"] = _round(1.0 - nmse, 4)
         except Exception as exc:            # 单条骨架失败不影响整张表
             entry["error"] = f"{type(exc).__name__}: {exc}"
             rows.append(entry)
             continue
-        if score is not None and var_y > 0:
-            nmse = -float(score) / var_y
-            entry["nmse"] = _round(nmse, 4)
-            entry["r2"] = _round(1.0 - nmse, 4)
         rows.append(entry)
 
     rows.sort(key=lambda r: (r["nmse"] is None, r["nmse"] if r["nmse"] is not None else 0.0))
@@ -196,6 +265,7 @@ def compute_facts(inputs, outputs, feature_names, dependent_name,
         feature_names: 自变量名（长度须与列数一致，用于渲染与相关性对名）。
         dependent_name: 因变量名。
         max_table_rows: 行数不超过它才写完整数据表。
+        seed: 基线拟合的多起点种子；``None`` 解析为 :data:`BASELINE_SEED`（可复现）。
         with_skeletons: 是否跑候选骨架基线（跑一次要 N 次 least_squares，
             大数据集上可按需关掉）。
 
@@ -450,12 +520,16 @@ def render_facts(facts: dict) -> str:
 
     if facts.get("skeletons"):
         lines.append("candidate skeleton baselines (fitted with the evaluator's own optimizer; "
-                     "lower NMSE is better, so a physical prior that contradicts this ranking "
-                     "must be reported as a conflict, not restated as fact):")
+                     "NMSE is the fit's own mean-square error with no selection penalty mixed "
+                     "in, lower NMSE is better, so a physical prior that contradicts this "
+                     "ranking must be reported as a conflict, not restated as fact; a row "
+                     "marked FLAGGED reached its NMSE through a localized/gating device and "
+                     "must NOT be used to argue that form is capable):")
         for s in facts["skeletons"]:
             nmse = s.get("nmse")
             shown = "failed" if nmse is None else f"NMSE={nmse} R2={s.get('r2')}"
-            lines.append(f"  {s['expression']} -> {shown}")
+            note = f" [{s['note']}]" if s.get("note") else ""
+            lines.append(f"  {s['expression']} -> {shown}{note}")
 
     for w in facts.get("identifiability") or []:
         lines.append(f"identifiability warning: {w['message']}")
