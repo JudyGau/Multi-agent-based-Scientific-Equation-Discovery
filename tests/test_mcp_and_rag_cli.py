@@ -586,6 +586,49 @@ class KnowledgeMetadataInferenceTest(unittest.TestCase):
         self.assertIsNone(rag_kb._recover_doi("10.216561000-0887.380021"))
         self.assertIsNone(rag_kb._recover_doi("10.10880964-17262412125005"))
 
+    def test_numeric_suffix_filename_doi_is_refused(self):
+        """后缀以数字开头时切分法无从确定注册号，猜出来的是假 DOI（实测进了知识库）。
+
+        ``10.11429789812771209_0109`` 被猜成 ``10.114297898/12771209_0109``，
+        真值是 ``10.1142/9789812771209_0109``；``10.10631.4907603`` 被猜成
+        ``10.10631/.4907603``（真值形如 ``10.1063/1.4907603``）。宁可留空。
+        """
+        self.assertIsNone(rag_kb._recover_doi("10.11429789812771209_0109"))
+        self.assertIsNone(rag_kb._recover_doi("10.10631.4907603"))
+        self.assertIsNone(rag_kb._recover_doi("10.3583420031503173"))
+
+    def test_printed_doi_wins_even_past_the_old_scan_window(self):
+        """DOI 常印在首页页眉/页脚：实测落在 3748–5612 字符处，旧的 3000 字符窗口漏掉。
+
+        参考文献里的 DOI 属于被引论文，一律不算本文的 DOI。
+        """
+        text = "x" * 4000 + "\ndoi:10.1088/0964-1726/24/12/125005\n"
+        self.assertEqual(rag_kb.doi_from_pdf_text(text),
+                         "10.1088/0964-1726/24/12/125005")
+        ref_only = "Body text without any own doi.\nReferences\n10.1016/j.jmmm.2023.171204\n"
+        self.assertIsNone(rag_kb.doi_from_pdf_text(ref_only))
+
+    def test_placeholder_titles_from_metadata_and_page_scan(self):
+        """实测被当成标题的占位物：排版软件文件名、DOI 标签、出版社编号、arXiv 戳、
+        预印本样板行、版面导航词与其装饰字形。"""
+        for bad in ("05[41-47]-HJ Choi.fm", "jae1371cc.dvi", "full-tpl13.dvi",
+                    "803_1.tif", "doi:10.1016/j.actamat.2006.01.007",
+                    "PII: 0304-8853(93)91037-8", "arXiv:2310.02737v2  [nlin.SI]  7 Feb 2024",
+                    "Preprint not peer reviewed", "Abstract", "标题",
+                    "\ue929 Online \ue92d"):
+            with self.subTest(bad=bad):
+                self.assertTrue(rag_kb._is_placeholder_title(bad))
+        self.assertFalse(rag_kb._is_placeholder_title("Effect of particle shape in magnetorheology"))
+
+    def test_stem_mismatching_printed_doi_is_not_trusted(self):
+        """文件名是 DOI 形态、正文印的却是另一篇的 DOI（IOP 下载包装页）时不信印刷值。"""
+        text = "This content has been downloaded from IOPscience.\ndoi:10.1088/1361-665X/aa549c\n"
+        self.assertEqual(rag_kb._resolve_doi(text, "10.10631.4907603"), "")
+        # 与文件名去分隔符后一致的印刷 DOI 才是本文的
+        self.assertEqual(
+            rag_kb._resolve_doi("doi: 10.1122/1.3479045", "10.11221.3479045"),
+            "10.1122/1.3479045")
+
     def test_unambiguous_filename_doi_is_recovered(self):
         self.assertEqual(rag_kb._recover_doi("10.1016j.jmmm.2020.166652"),
                          "10.1016/j.jmmm.2020.166652")
@@ -652,6 +695,22 @@ class RepairMetadataTest(unittest.TestCase):
             [{"doi": doi, "title": title, "source_file": sf, "chunk_index": i}
              for sf, (doi, title), n in files for i in range(n)])
         return kb
+
+    def test_page_scan_skips_navigation_lines(self):
+        """首页最大字号行是版面导航时，标题要取次大字号那行（实测 AIP 下载页把
+        "View Online / Export Citation" 排成最大字号，取出标题是 ``\\ue929 Online \\ue92d``）。"""
+        import pymupdf
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "10.11221.3479045.pdf")
+            doc = pymupdf.open()
+            page = doc.new_page()
+            page.insert_text((72, 72), "View Online", fontsize=20, fontname="helv")
+            page.insert_text((72, 110), "Effect of particle shape in magnetorheology",
+                             fontsize=14, fontname="helv")
+            doc.save(path)
+            doc.close()
+            self.assertEqual(rag_kb._first_page_title(path),
+                             "Effect of particle shape in magnetorheology")
 
     def test_printed_doi_and_page_title_repair_bad_metadata(self):
         """回归：旧入库规则把 10.11221.3479045.pdf 猜成 10.11221/.3479045、标题退化为
