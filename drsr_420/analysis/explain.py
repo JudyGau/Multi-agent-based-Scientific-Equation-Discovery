@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 
@@ -41,6 +42,9 @@ from drsr_420.analysis.prune_report import format_fit_summary
 from drsr_420.knowledge.tool_runner import mcp_call_tool
 from drsr_420.analysis.holdout import (in_sample_metrics, render_holdout_section,
                                        strip_holdout_section)
+# 体检判据的参数：小节里要写明探针偏移口径（数字必须与机器判定同一来源，
+# 不能在文本里另写一份——那正是"两处各判一次"的翻版）。
+from drsr_420.core.range_check import RANGE_PROBE_REL
 
 #: 单个表达式/被移除项在提示词里的最大字符数（剪枝后的表达式有时很长，
 #: 无节制地塞进提示词只会挤掉真正需要模型读的推导过程）。
@@ -406,22 +410,14 @@ def _format_pruning_block(pruning: dict) -> str:
 
     # 动态范围体检结果（find_best_eq 对发布式所做，与评分器同一判据）：
     # 病理时解释 LLM 必须指认器件并划定公式的可信区域，不得把它当正常物理项解释。
+    # 措辞与「动态范围体检」小节共用 _range_check_lines（同一判据只在一处成文）。
     rc = pruning.get("range_check") or {}
     if rc:
-        ratio = rc.get("span_ratio")
-        limit = rc.get("limit")
-        if ratio is not None and limit is not None and ratio > limit:
-            lines.append(
-                f"动态范围体检：**病理性**——发布公式在训练数据包围盒网格上的动态范围"
-                f"是数据输出跨度的 {ratio:.4g} 倍（阈值 {limit}，网格极值 "
-                f"[{rc.get('grid_min'):.4g}, {rc.get('grid_max'):.4g}]）。典型成因为"
-                f"角点钉扎/下溢尖峰类局部化器件（例如只在个别数据点非零的大负指数幂项）；"
-                f"解释时必须指认对应的项、说明其数值病理本质，并明确公式在哪些区域不可信，"
-                f"不得把它解释为正常物理行为。")
-        else:
-            lines.append(
-                f"动态范围体检：正常（网格动态范围/输出跨度 = {ratio:.3g} ≤ 阈值 {limit}）"
-                f"——发布公式在数据包围盒上无角点钉扎/溢出类病理。")
+        verdict = _range_check_lines(rc)
+        # 剪枝摘要走纯文本：去掉 Markdown 强调标记，只留判定那一行
+        lines.append("动态范围体检：" + verdict[0].replace("**", "").replace("判定：", ""))
+        if _range_check_hit(rc):
+            lines.append(verdict[2])      # 成因 + "不得当作正常物理项解释"的硬约束
     return "\n".join(lines)
 
 
@@ -662,43 +658,97 @@ def _strip_range_section(text: str) -> str:
     return "\n".join(kept).rstrip()
 
 
+def _range_check_hit(rc: dict) -> bool:
+    """体检是否命中任一判据。
+
+    ``limit`` 缺失（异常/旧格式输入）按命中处理：不能在未验证的情况下宣称通过。
+    缺失 ``slope_max`` 则只按输出跨度判（旧摘要没有这一项，不能因此改判病理）。
+    """
+    ratio, limit = rc.get("span_ratio"), rc.get("limit")
+    slope, slimit = rc.get("slope_max"), rc.get("slope_limit")
+    if limit is None:
+        return True
+    if ratio is not None and ratio > limit:
+        return True
+    return slimit is not None and slope is not None and slope > slimit
+
+
+def _range_check_lines(rc: dict) -> list[str]:
+    """把体检结果渲染成结论行（剪枝摘要与权威小节共用同一套措辞与数字）。
+
+    两条判据（输出跨度 / 局部斜率）分别报告，命中时点名是哪一条；通过时只声明
+    **"未检出"**并列出所检范围——体检是有限网格上的有限判据，不能写成
+    "无角点钉扎/溢出类病理"（那是对未检内容的断言）。实测反例：
+    MRFCompress-Cuboid_20260925-112514 的发布解核心器件是 λ12^(−40.153) 门控
+    （自身动态范围 1.16e28），输出跨度只有 2.15 倍（判据一判"正常"），
+    只有局部斜率能认出它。
+    """
+    ratio = rc.get("span_ratio")
+    limit = rc.get("limit")
+    slope = rc.get("slope_max")
+    slimit = rc.get("slope_limit")
+    span_txt = (f"输出跨度 {ratio:.4g} 倍（阈值 {limit}）" if ratio is not None
+                else "输出跨度 无有效结果")
+    slope_txt = (f"局部斜率 {slope:.4g}（阈值 {slimit}）" if slope is not None
+                 else "局部斜率 无有效结果")
+    if not _range_check_hit(rc):
+        return [
+            f"**判定：未检出病理**——两条判据均未超阈值：{span_txt}、{slope_txt}。",
+            "",
+            "该体检只覆盖**有限网格上的两类数值病理**：包围盒内输出跨度异常"
+            "（尖峰/深谷/溢出）与局部斜率异常（门控式局部化器件，即在角点邻域外"
+            "下溢消失的项）。它不证明公式在物理上正确，也不排除网格未采到的行为"
+            "——物理先验、可辨识性与泛化能力只能由正文的基线与样本外对照回答。",
+        ]
+    hits = []
+    if limit is None or (ratio is not None and ratio > limit):
+        hits.append(f"输出跨度 {ratio:.4g} 倍（阈值 {limit}）" if ratio is not None
+                    else "输出跨度：无有效网格点")
+    if slimit is not None and slope is not None and slope > slimit:
+        hits.append(f"局部斜率 {slope:.4g}（阈值 {slimit}）")
+    gmin, gmax = rc.get("grid_min"), rc.get("grid_max")
+    if gmin is not None and gmax is not None:
+        hits.append(f"网格极值 [{gmin:.4g}, {gmax:.4g}]")
+    return [
+        f"**判定：病理性**——{'；'.join(hits)}。",
+        "",
+        "典型成因为**角点钉扎/下溢尖峰类局部化器件**：某个项只在个别数据点"
+        "（常见于自变量取值下限角点）非零、在其余区域数值下溢/上溢到无意义，"
+        "用于把该点的残差单独清零。这类公式在训练点上的 MSE 很好看，但点与点"
+        "之间的行为是数值病理——正文如把它当作正常物理项解释，以本节为准。",
+        "",
+        "> 可信范围声明：该公式仅在训练数据点附近可靠；跨过器件起作用的狭窄"
+        "邻域后（如角点与山脊主体之间）外推无意义。评分已按超出阈值的幅度罚分，"
+        "采样阶段会因此更偏好无病理的结构。",
+    ]
+
+
 def render_range_section(range_check: dict | None) -> str:
     """渲染 explain.md 的「动态范围体检」小节（机器生成，数字不由 LLM 转述）。
 
-    报告最终发布公式在训练数据包围盒网格（含角点对数壳层）上的动态范围，
-    判定其是否携带角点钉扎/下溢尖峰类局部化器件（判定与评分罚分同一判据，
-    见 ``evaluation/problems.dynamic_range_check``）。
+    报告最终发布公式在训练数据包围盒网格（含角点对数壳层）上的**输出跨度**与
+    **局部斜率**两条判据，判定其是否携带角点钉扎/下溢尖峰类局部化器件
+    （判定与评分罚分同一判据，见 ``core.range_check.dynamic_range_check``）。
     """
     lines = [RANGE_HEADING, ""]
     if not range_check:
         lines.append("本次没有可用的体检结果（体检未执行或失败）。")
         return "\n".join(lines)
-    ratio = range_check.get("span_ratio")
-    limit = range_check.get("limit")
     lines.append(f"评估网格：训练数据包围盒均匀网格 + 各角点向域内的对数壳层，"
-                 f"共 {range_check.get('n_points', '?')} 个点。")
-    if ratio is None:
+                 f"共 {range_check.get('n_points', '?')} 个点；"
+                 f"局部斜率按 h = {RANGE_PROBE_REL:g} × 各维 range 朝盒内偏移取差商。")
+    ratio = range_check.get("span_ratio")
+    if ratio is None and range_check.get("slope_max") is None:
         lines.append("体检无有效结果。")
         return "\n".join(lines)
-    # limit 缺失（异常输入）时按病理论处：不能在未验证的情况下宣称"正常"
-    if limit is None or ratio > limit:
+    if ratio is not None and not math.isfinite(float(ratio)):
         gmin, gmax = range_check.get("grid_min"), range_check.get("grid_max")
-        lines.append(f"**判定：病理性**——网格动态范围是数据输出跨度的 "
-                     f"{ratio:.6g} 倍（阈值 {limit}）"
-                     + (f"，网格极值 [{gmin:.6g}, {gmax:.6g}]。" if gmin is not None else "。"))
-        lines.append("")
-        lines.append("典型成因为**角点钉扎/下溢尖峰类局部化器件**：某个项只在个别"
-                     "数据点（常见于自变量取值下限角点）非零、在其余区域数值下溢/上溢"
-                     "到无意义，用于把该点的残差单独清零。这类公式在训练点上的 MSE "
-                     "很好看，但点与点之间的行为是数值病理——正文如把它当作正常物理"
-                     "项解释，以本节为准。")
-        lines.append("")
-        lines.append("> 可信范围声明：该公式仅在训练数据点附近可靠；跨过器件起作用"
-                     "的狭窄邻域后（如角点与山脊主体之间）外推无意义。评分已按超出"
-                     "阈值的幅度罚分，采样阶段会因此更偏好无病理的结构。")
-    else:
-        lines.append(f"**判定：正常**——网格动态范围是数据输出跨度的 {ratio:.3g} 倍，"
-                     f"未超阈值 {limit}，无角点钉扎/溢出类病理。")
+        lines.append("**判定：病理性**——网格点上求值全部非有限"
+                     "（方程在包围盒内处处溢出/NaN）。")
+        if gmin is not None:
+            lines.append(f"网格极值 [{gmin:.6g}, {gmax:.6g}]。")
+        return "\n".join(lines)
+    lines.extend(_range_check_lines(range_check))
     return "\n".join(lines)
 
 

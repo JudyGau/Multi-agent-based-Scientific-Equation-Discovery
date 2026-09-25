@@ -41,10 +41,13 @@ from drsr_420.core.range_check import (  # noqa: E402
     RANGE_GRID_PER_AXIS,
     RANGE_GRID_TOTAL,
     RANGE_PENALTY_CAP,
+    RANGE_PROBE_REL,
     RANGE_SHELL_EPS,
     RANGE_SHELL_STEPS,
+    RANGE_SLOPE_LIMIT,
     RANGE_SPAN_RATIO_LIMIT,
     dynamic_range_check,
+    local_slope_check,
     range_check_points,
 )
 
@@ -332,10 +335,16 @@ def evaluate(
             inputs, outputs, lambda *cols: equation(*cols, np.asarray(best_x)))
         penalty = float(info.get("penalty") or 0.0)
         if penalty > 0:
-            print(f"[RANGE] 动态范围体检：span_ratio={info['span_ratio']:.3g} "
-                  f"(limit={info['limit']})，grid∈[{info['grid_min']:.4g}, "
-                  f"{info['grid_max']:.4g}]，评分罚分 {penalty:.4g}",
-                  file=sys.stderr)
+            # 两条判据分别打标：放大型（输出跨度）与门控型（局部斜率）的处置方式
+            # 不同——前者几乎等于否决（罚分随跨度差指数级增长），后者是排序偏好。
+            hits = []
+            if info.get("span_penalty"):
+                hits.append(f"输出跨度={info['span_ratio']:.3g}(上限{info['limit']})")
+            if info.get("slope_penalty"):
+                hits.append(f"局部斜率={info['slope_max']:.3g}"
+                            f"(上限{info['slope_limit']})")
+            print(f"[RANGE] 动态范围体检：命中 {'；'.join(hits)}，"
+                  f"评分罚分 {penalty:.4g}", file=sys.stderr)
 
     # 输入/输出列按 decimal_places 取整仅供展示；残差列必须保持完整精度：
     # 它就是 ResidualAnalyzerAgent 的唯一输入（residual[:, -1]），按绝对

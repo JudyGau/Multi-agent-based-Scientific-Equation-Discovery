@@ -192,13 +192,21 @@ def prune_and_visualize(results_root: str, func: str, params,
         f_pub = sp.lambdify(sym_names, published, modules="numpy")
         range_info = dynamic_range_check(_X, _y, f_pub)
         if range_info["penalty"] > 0:
-            print(f"[RANGE] 动态范围体检：**病理性** span_ratio="
-                  f"{range_info['span_ratio']:.4g} (limit={range_info['limit']})，"
-                  f"grid∈[{range_info['grid_min']:.4g}, {range_info['grid_max']:.4g}]"
+            # 两条判据分别打标（放大型=输出跨度，门控型=局部斜率），便于事后区分
+            hits = []
+            if range_info.get("span_penalty"):
+                hits.append(f"输出跨度={range_info['span_ratio']:.4g}"
+                            f"(上限{range_info['limit']})")
+            if range_info.get("slope_penalty"):
+                hits.append(f"局部斜率={range_info['slope_max']:.4g}"
+                            f"(上限{range_info['slope_limit']})")
+            print(f"[RANGE] 动态范围体检：**病理性** 命中 {'；'.join(hits)}"
                   f"——发布公式携带角点钉扎/尖峰类器件，详见 explain.md")
         else:
-            print(f"[RANGE] 动态范围体检：正常（span_ratio="
-                  f"{range_info['span_ratio']:.3g} ≤ {range_info['limit']}）")
+            print(f"[RANGE] 动态范围体检：未检出（输出跨度="
+                  f"{range_info['span_ratio']:.3g} ≤ {range_info['limit']}；"
+                  f"局部斜率={range_info['slope_max']:.3g} ≤ "
+                  f"{range_info['slope_limit']}）")
     except Exception as e:
         print(f"[WARN] 动态范围体检失败（跳过，不阻塞收尾）: {e}")
         range_info = None
