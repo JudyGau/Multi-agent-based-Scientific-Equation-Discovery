@@ -55,6 +55,8 @@ def render_expr_trees(results_root: str, expr, pruned_expr) -> None:
             continue
         try:
             src = Source(sp.dotprint(e))
-            src.render(f'{results_root}/{name}', view=True)
+            # view=False：只落盘 PDF，不用系统默认程序打开（收尾分析是无人值守的
+            # 批量步骤，弹窗会打断实验；图件留给人工事后查看）。
+            src.render(f'{results_root}/{name}', view=False)
         except Exception as ex:
             print(f"[WARN] 生成表达式树图失败（{name}，可能缺少 graphviz 环境）: {ex}")
