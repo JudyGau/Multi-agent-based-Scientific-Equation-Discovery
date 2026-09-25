@@ -183,6 +183,33 @@ class ResidualIncrementPromptTest(unittest.TestCase):
         self.assertIn("residual_sign_pattern", pc.residual_analysis_prompt)
 
 
+class DataQuotingInstructionTest(unittest.TestCase):
+    """采样指令必须禁止"重造数据行"。
+
+    实测 MRFCompress-Cuboid_20260925-134149：采样器写下 "Data points (inferred)：
+    (2,4.46655)=339.58; (2.5,3.5733)=317.23; …"，这些 λ23 全部等于 8.9331/λ12
+    （把某一行的 λ23 当成了"恒定乘积"），真值是 8.9331 / 7.4185 / 6.3166 …，真实乘积
+    17.87~19.59 并非常数——它随后基于这些伪造点推导"岭上 U 形"。指令里已有
+    "data availability"，但没有"不得反推/重算数据行"。
+    """
+
+    def _instruction(self):
+        ctx = pc.PromptContext(n_features=2, feature_names=["lambda12", "lambda23"],
+                               dependent_name="sigma", background="bg")
+        return ctx.render_instruction()
+
+    def test_instruction_forbids_reconstructing_data_rows(self):
+        for text in (pc.instruction_prompt, self._instruction()):
+            self.assertIn("Never present a reconstructed or 'inferred' data row", text)
+            self.assertIn("do not replace one independent variable by a product", text)
+            self.assertIn("label them as your own derivation", text)
+
+    def test_existing_rules_are_preserved(self):
+        text = pc.instruction_prompt
+        self.assertIn("Use only params[0], params[1], ... within the available parameter budget", text)
+        self.assertIn("Output nothing but the code block", text)
+
+
 class SamplingSystemPromptTest(unittest.TestCase):
     """采样系统提示里的文献约束：必须是"选用文献时的约束"，不是"必须检索"。"""
 

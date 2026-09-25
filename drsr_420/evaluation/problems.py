@@ -38,6 +38,7 @@ SAMPLE_SIZE = 100                   # 残差采样点数上限
 # 而分层规则不允许 analysis 依赖 evaluation，故下沉到两层都合法的 core。
 # 这里再导出保持"评分器即体检宿主"的可读性。
 from drsr_420.core.range_check import (  # noqa: E402
+    RANGE_COEF_RATIO_LIMIT,
     RANGE_GRID_PER_AXIS,
     RANGE_GRID_TOTAL,
     RANGE_PENALTY_CAP,
@@ -46,6 +47,7 @@ from drsr_420.core.range_check import (  # noqa: E402
     RANGE_SHELL_STEPS,
     RANGE_SLOPE_LIMIT,
     RANGE_SPAN_RATIO_LIMIT,
+    coefficient_cancellation_check,
     dynamic_range_check,
     local_slope_check,
     range_check_points,
@@ -331,18 +333,26 @@ def evaluate(
     # 仍忠实于训练数据，残差分析回路看到的也是真实残差。
     penalty = 0.0
     if range_check:
+        # params/probe_fn 一起传：判据三（大系数抵消）需要"换一组参数再算一次"，
+        # 已绑定参数的 evaluate_fn 做不到（见 core.range_check 的文档）。
         info = dynamic_range_check(
-            inputs, outputs, lambda *cols: equation(*cols, np.asarray(best_x)))
+            inputs, outputs, lambda *cols: equation(*cols, np.asarray(best_x)),
+            params=np.asarray(best_x),
+            probe_fn=lambda *args: equation(*args[:-1], np.asarray(args[-1])))
         penalty = float(info.get("penalty") or 0.0)
         if penalty > 0:
-            # 两条判据分别打标：放大型（输出跨度）与门控型（局部斜率）的处置方式
-            # 不同——前者几乎等于否决（罚分随跨度差指数级增长），后者是排序偏好。
+            # 三条判据分别打标：放大型（输出跨度）与门控型（局部斜率）、大系数抵消型
+            # 的处置方式不同——跨度罚分随幅度指数级增长（几乎等于否决），斜率与系数
+            # 是排序偏好。
             hits = []
             if info.get("span_penalty"):
                 hits.append(f"输出跨度={info['span_ratio']:.3g}(上限{info['limit']})")
             if info.get("slope_penalty"):
                 hits.append(f"局部斜率={info['slope_max']:.3g}"
                             f"(上限{info['slope_limit']})")
+            if info.get("coef_penalty"):
+                hits.append(f"系数抵消={info['coef_ratio']:.3g}"
+                            f"(上限{info['coef_limit']})")
             print(f"[RANGE] 动态范围体检：命中 {'；'.join(hits)}，"
                   f"评分罚分 {penalty:.4g}", file=sys.stderr)
 

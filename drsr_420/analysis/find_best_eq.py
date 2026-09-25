@@ -190,9 +190,24 @@ def prune_and_visualize(results_root: str, func: str, params,
         _X = np.column_stack([np.asarray(data[c], dtype=float) for c in ind_cols])
         _y = np.asarray(data[_dep_col], dtype=float)
         f_pub = sp.lambdify(sym_names, published, modules="numpy")
-        range_info = dynamic_range_check(_X, _y, f_pub)
+        # 判据三（大系数抵消）要"换一组参数再算一次"。**不要**用 SymPy 把参数符号化：
+        # 实测最优样本常用 ``c0, c1, ... = params[:8]`` 这类元组解包，expr_substitution
+        # 解析不了 → 探针建不出来 → 判据三静默弃权（20260925-134149 的 order 83 就是
+        # 这种写法）。直接 exec 样本自带的 def（与评估器调用样本的方式一致）最稳。
+        probe_fn = None
+        try:
+            match_def = re.search(r"^def\s+\w+\s*\(", func, re.M)
+            if match_def:
+                namespace = {"np": np}
+                exec(func[match_def.start():], namespace)   # noqa: S102 - 执行的是实验自己选出的样本
+                _fn = next(v for k, v in namespace.items()
+                           if callable(v) and not k.startswith("__"))
+                probe_fn = (lambda *args: np.asarray(
+                    _fn(*args[:-1], np.asarray(args[-1], dtype=float))))
+        except Exception as e:
+            print(f"[WARN] 判据三的参数探针构造失败（本次跳过该判据）: {e}")
+        range_info = dynamic_range_check(_X, _y, f_pub, params=params, probe_fn=probe_fn)
         if range_info["penalty"] > 0:
-            # 两条判据分别打标（放大型=输出跨度，门控型=局部斜率），便于事后区分
             hits = []
             if range_info.get("span_penalty"):
                 hits.append(f"输出跨度={range_info['span_ratio']:.4g}"
@@ -200,13 +215,19 @@ def prune_and_visualize(results_root: str, func: str, params,
             if range_info.get("slope_penalty"):
                 hits.append(f"局部斜率={range_info['slope_max']:.4g}"
                             f"(上限{range_info['slope_limit']})")
+            if range_info.get("coef_penalty"):
+                hits.append(f"系数抵消={range_info['coef_ratio']:.4g}"
+                            f"(上限{range_info['coef_limit']})")
             print(f"[RANGE] 动态范围体检：**病理性** 命中 {'；'.join(hits)}"
-                  f"——发布公式携带角点钉扎/尖峰类器件，详见 explain.md")
+                  f"——发布公式携带角点钉扎/尖峰/大系数抵消类器件，详见 explain.md")
         else:
+            coef = range_info.get("coef_ratio")
+            coef_txt = ("未评估" if coef is None
+                        else f"{coef:.3g} ≤ {range_info['coef_limit']}")
             print(f"[RANGE] 动态范围体检：未检出（输出跨度="
                   f"{range_info['span_ratio']:.3g} ≤ {range_info['limit']}；"
                   f"局部斜率={range_info['slope_max']:.3g} ≤ "
-                  f"{range_info['slope_limit']}）")
+                  f"{range_info['slope_limit']}；系数抵消={coef_txt}）")
     except Exception as e:
         print(f"[WARN] 动态范围体检失败（跳过，不阻塞收尾）: {e}")
         range_info = None

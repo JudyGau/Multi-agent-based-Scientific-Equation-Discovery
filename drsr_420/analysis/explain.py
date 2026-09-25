@@ -668,43 +668,55 @@ def _range_check_hit(rc: dict) -> bool:
     """体检是否命中任一判据。
 
     ``limit`` 缺失（异常/旧格式输入）按命中处理：不能在未验证的情况下宣称通过。
-    缺失 ``slope_max`` 则只按输出跨度判（旧摘要没有这一项，不能因此改判病理）。
+    缺失 ``slope_max`` / ``coef_ratio`` 则只按现有的判据判（旧摘要没有这两项，
+    不能因此改判病理）。
     """
     ratio, limit = rc.get("span_ratio"), rc.get("limit")
     slope, slimit = rc.get("slope_max"), rc.get("slope_limit")
+    coef, climit = rc.get("coef_ratio"), rc.get("coef_limit")
     if limit is None:
         return True
     if ratio is not None and ratio > limit:
         return True
-    return slimit is not None and slope is not None and slope > slimit
+    if slimit is not None and slope is not None and slope > slimit:
+        return True
+    return climit is not None and coef is not None and coef > climit
 
 
 def _range_check_lines(rc: dict) -> list[str]:
     """把体检结果渲染成结论行（剪枝摘要与权威小节共用同一套措辞与数字）。
 
-    两条判据（输出跨度 / 局部斜率）分别报告，命中时点名是哪一条；通过时只声明
-    **"未检出"**并列出所检范围——体检是有限网格上的有限判据，不能写成
+    三条判据（输出跨度 / 局部斜率 / 系数抵消）分别报告，命中时点名是哪一条；通过时
+    只声明**"未检出"**并列出所检范围——体检是有限网格上的有限判据，不能写成
     "无角点钉扎/溢出类病理"（那是对未检内容的断言）。实测反例：
     MRFCompress-Cuboid_20260925-112514 的发布解核心器件是 λ12^(−40.153) 门控
     （自身动态范围 1.16e28），输出跨度只有 2.15 倍（判据一判"正常"），
-    只有局部斜率能认出它。
+    只有局部斜率能认出它；20260925-134149 的最优族则是"两个 ~7e3 系数相减出 ~300"
+    （跨度/斜率都正常），只有系数抵消判据能认出。
     """
     ratio = rc.get("span_ratio")
     limit = rc.get("limit")
     slope = rc.get("slope_max")
     slimit = rc.get("slope_limit")
+    coef = rc.get("coef_ratio")
+    climit = rc.get("coef_limit")
     span_txt = (f"输出跨度 {ratio:.4g} 倍（阈值 {limit}）" if ratio is not None
                 else "输出跨度 无有效结果")
     slope_txt = (f"局部斜率 {slope:.4g}（阈值 {slimit}）" if slope is not None
                  else "局部斜率 无有效结果")
+    coef_txt = (f"系数抵消 {coef:.4g} 倍（阈值 {climit}）" if coef is not None
+                else "系数抵消 未评估")
     if not _range_check_hit(rc):
         return [
-            f"**判定：未检出病理**——两条判据均未超阈值：{span_txt}、{slope_txt}。",
+            f"**判定：未检出病理**——三条判据均未超阈值：{span_txt}、{slope_txt}、"
+            f"{coef_txt}。",
             "",
-            "该体检只覆盖**有限网格上的两类数值病理**：包围盒内输出跨度异常"
-            "（尖峰/深谷/溢出）与局部斜率异常（门控式局部化器件，即在角点邻域外"
-            "下溢消失的项）。它不证明公式在物理上正确，也不排除网格未采到的行为"
-            "——物理先验、可辨识性与泛化能力只能由正文的基线与样本外对照回答。",
+            "该体检只覆盖**有限网格与参数上的三类数值病理**：包围盒内输出跨度异常"
+            "（尖峰/深谷/溢出）、局部斜率异常（门控式局部化器件，即在角点邻域外"
+            "下溢消失的项）、以及系数数量级远超数据跨度的“大系数抵消”型参数化"
+            "（系数无物理读数、解会被参数边界截断）。它不证明公式在物理上正确，"
+            "也不排除网格未采到的行为——物理先验、可辨识性与泛化能力只能由正文的"
+            "基线与样本外对照回答。",
         ]
     hits = []
     if limit is None or (ratio is not None and ratio > limit):
@@ -712,15 +724,19 @@ def _range_check_lines(rc: dict) -> list[str]:
                     else "输出跨度：无有效网格点")
     if slimit is not None and slope is not None and slope > slimit:
         hits.append(f"局部斜率 {slope:.4g}（阈值 {slimit}）")
+    if climit is not None and coef is not None and coef > climit:
+        hits.append(f"系数抵消 {coef:.4g} 倍（阈值 {climit}）")
     gmin, gmax = rc.get("grid_min"), rc.get("grid_max")
     if gmin is not None and gmax is not None:
         hits.append(f"网格极值 [{gmin:.4g}, {gmax:.4g}]")
     return [
         f"**判定：病理性**——{'；'.join(hits)}。",
         "",
-        "典型成因为**角点钉扎/下溢尖峰类局部化器件**：某个项只在个别数据点"
-        "（常见于自变量取值下限角点）非零、在其余区域数值下溢/上溢到无意义，"
-        "用于把该点的残差单独清零。这类公式在训练点上的 MSE 很好看，但点与点"
+        "典型成因有两类：**角点钉扎/下溢尖峰类局部化器件**（某个项只在个别数据点"
+        "——常见于自变量取值下限角点——非零、在其余区域数值下溢/上溢到无意义，"
+        "用于把该点的残差单独清零）；以及**大系数抵消型参数化**（输出由几个远大于"
+        "输出的系数相减而来，跨度与斜率都正常，但各系数没有物理读数、且解会在近乎"
+        "平坦的方向上漂到参数边界）。这类公式在训练点上的 MSE 很好看，但点与点"
         "之间的行为是数值病理——正文如把它当作正常物理项解释，以本节为准。",
         "",
         "> 可信范围声明：该公式仅在训练数据点附近可靠；跨过器件起作用的狭窄"

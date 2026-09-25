@@ -209,11 +209,15 @@ class SkeletonBaselineCaliberTest(_MRFFixtureTest):
         self.assertLess(product["nmse"], 0.18)               # 旧口径会显示 ~0.19
 
     def test_render_marks_flagged_rows_and_forbids_misuse(self):
+        """FLAGGED 的约束必须是**双向**的：不得用来论证该形式有能力，也不得反过来
+        当作先验证被否证的证据（实测 20260925-134149 的初次分析就引用了 FLAGGED 的
+        ``a*lambda12^b+c``（0.8649）去支撑"σ 不是 λ12 的函数"）。"""
         X, names, y, dep = _load_mrf()
         text = df.render_facts({"n_rows": X.shape[0], "features": names, "dependent": dep,
                                 "skeletons": df.skeleton_baselines(X, y, names, dep, seed=0)})
         self.assertIn("FLAGGED", text)
-        self.assertIn("must NOT be used to argue that form is capable", text)
+        self.assertIn("must NOT be used as evidence in EITHER direction", text)
+        self.assertIn("nor that the prior behind it is refuted", text)
         self.assertIn("lower NMSE is better", text)
 
 

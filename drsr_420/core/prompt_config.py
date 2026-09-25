@@ -27,7 +27,17 @@ instruction_prompt = (
     "   ```\n"
     "2. Use ONLY the independent variable names listed under 'Variables' — never introduce, rename, or abbreviate them.\n"
     "3. Use only params[0], params[1], ... within the available parameter budget; never index params beyond the last one.\n"
-    "4. Output nothing but the code block.\n\n"
+    # 实测（20260925-134149）：采样器把给定数据表"重造"了一遍——它写下
+    # "Data points (inferred): (2,4.46655)=339.58; (2.5,3.5733)=317.23; …"，
+    # 这些 λ23 全部等于 8.9331/λ12（把某一行的 λ23 当成了"恒定乘积"），而真值是
+    # 8.9331 / 7.4185 / 6.3166 …（真实乘积 17.87~19.59，并非常数）。它随后基于
+    # 这些伪造的点推导"岭上 U 形"。数据行只能照抄，派生量必须标明是自己的推导。
+    "4. Quote data values exactly as they appear in this conversation. Never present a "
+    "reconstructed or 'inferred' data row as data — e.g. do not replace one independent "
+    "variable by a product or ratio of the others, and do not claim the dataset has a "
+    "constant product/ratio unless a given table or measured fact says so. Derived "
+    "quantities you compute yourself are allowed, but label them as your own derivation.\n"
+    "5. Output nothing but the code block.\n\n"
 )
 
 # 采样后经验对话整体模板（包含上下文与追问占位）

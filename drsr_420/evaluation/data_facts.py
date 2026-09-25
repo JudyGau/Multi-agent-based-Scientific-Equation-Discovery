@@ -182,6 +182,9 @@ def _baseline_note(patho: dict) -> str:
     if patho.get("slope_penalty"):
         why.append(f"local slope {patho['slope_max']:.4g} (limit "
                    f"{patho['slope_limit']})")
+    if patho.get("coef_penalty"):
+        why.append(f"coefficient scale {patho['coef_ratio']:.4g}× the data range "
+                   f"(limit {patho['coef_limit']})")
     return ("FLAGGED: this NMSE was reached by a localized/gating device ("
             + "; ".join(why) + "), not by a legitimate instance of the form — "
             "treat it as an artifact ceiling, not as this form's capability.")
@@ -227,13 +230,17 @@ def skeleton_baselines(inputs, outputs, feature_names, dependent_name,
             if score is not None and matrix is not None and params is not None:
                 mse = float(np.mean(np.square(np.asarray(matrix[:, -1], dtype=float))))
                 patho = dynamic_range_check(
-                    X, y, lambda *cols: fn(*cols, np.asarray(params)))
+                    X, y, lambda *cols: fn(*cols, np.asarray(params)),
+                    params=np.asarray(params),
+                    probe_fn=lambda *args: fn(*args[:-1], np.asarray(args[-1])))
                 entry["pathology"] = {
                     "penalty": _round(patho["penalty"]),
                     "span_ratio": _round(patho["span_ratio"]),
                     "limit": patho["limit"],
                     "slope_max": _round(patho["slope_max"]),
                     "slope_limit": patho["slope_limit"],
+                    "coef_ratio": _round(patho["coef_ratio"]),
+                    "coef_limit": patho["coef_limit"],
                 }
                 entry["flagged"] = bool(patho["penalty"] > 0)
                 if entry["flagged"]:
@@ -519,12 +526,16 @@ def render_facts(facts: dict) -> str:
             lines.append("  " + ", ".join(str(v) for v in row))
 
     if facts.get("skeletons"):
+        # FLAGGED 的约束必须写成**双向**的：只说"不得用来论证该形式有能力"，模型会
+        # 反过来把它当"先验被否证"的证据。实测 20260925-134149 的初次分析就引用了
+        # FLAGGED 行 a*λ12^b+c（NMSE 0.8649，靠门控取得）支撑"σ 不是 λ12 的函数"。
         lines.append("candidate skeleton baselines (fitted with the evaluator's own optimizer; "
                      "NMSE is the fit's own mean-square error with no selection penalty mixed "
                      "in, lower NMSE is better, so a physical prior that contradicts this "
                      "ranking must be reported as a conflict, not restated as fact; a row "
                      "marked FLAGGED reached its NMSE through a localized/gating device and "
-                     "must NOT be used to argue that form is capable):")
+                     "must NOT be used as evidence in EITHER direction -- neither that the "
+                     "form is capable, nor that the prior behind it is refuted):")
         for s in facts["skeletons"]:
             nmse = s.get("nmse")
             shown = "failed" if nmse is None else f"NMSE={nmse} R2={s.get('r2')}"

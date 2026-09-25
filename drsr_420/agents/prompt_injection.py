@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 import traceback
 
 from drsr_420.core import config as config_lib
@@ -65,6 +66,44 @@ def resolve_policy(exp_cfg) -> config_lib.ExperienceInjectionConfig:
 #: "……但乘积骨架的 NMSE 反而更高"这类转折句整句截掉，注入下游只剩半句结论，
 #: 比不注入更误导——所以改为按段落边界截断。
 _RESIDUAL_CHAR_LIMIT = 2000
+
+#: 同一个"骨架族"在每类经验里的注入上限。实测 MRFCompress-Cuboid_20260925-134149
+#: 中段 12 轮无改进、top-10 里 9 个是同一族的重新参数化（可分离幂律 P0·λ23^P1 +
+#: P2·λ12^P3 + P4，P0 在 7.3e3~8.2e3 之间漂），Good 经验也就反复说着同一句
+#: "用可分离/乘积幂律"——注入名额被同族文本吃光，等于把模型锁死在同一族。去重后
+#: 名额留给不同族。
+_MAX_PER_SKELETON_FAMILY = 1
+
+#: 经验条目里独立变量声明的形态（样本文本自带的 "Independents: lambda12, lambda23"）。
+_INDEPENDENTS_RE = re.compile(r"Independents:\s*(.*)")
+_PARAM_INDEX_RE = re.compile(r"params\s*\[\s*(\d+)\s*\]")
+
+
+def skeleton_signature(equation: str) -> str:
+    """从样本文本抽取"骨架族"签名：同族样本给出同一签名，用于经验注入去重。
+
+    归一化步骤：取 ``return`` 之后的表达式 → 独立变量名换成 ``@0/@1/...`` →
+    ``params[i]`` 换成 ``p`` → 去空白、``np.`` 与括号 → 按加减号切项后**排序**再拼。
+    排序与去括号是为了让换序/加括号的同一形式（``p*λ23^p + p*λ12^p + p``、
+    ``(p + p*λ12^p) + p*λ23^p``）落到同一签名。这是**提示词卫生**用的启发式
+    （同族经验限流），不是判等：去括号会让 ``(a+b)*c`` 与 ``a+b*c`` 撞签名，
+    代价只是偶尔少注入一条同族经验，不会影响评分与产物。取不到 ``return`` 时返回
+    空串（调用方按"无签名"处理，不去重）。
+    """
+    text = str(equation or "")
+    match = re.search(r"return\b(.*)", text, re.S)
+    if not match:
+        return ""
+    expr = match.group(1)
+    names_match = _INDEPENDENTS_RE.search(text)
+    names = [v.strip() for v in re.split(r"[,，\s]+", names_match.group(1) if names_match else "")
+             if v.strip()]
+    for i, name in enumerate(names):
+        expr = re.sub(rf"\b{re.escape(name)}\b", f"@{i}", expr)
+    expr = _PARAM_INDEX_RE.sub("p", expr).replace("np.", "").replace("**", "^")
+    expr = re.sub(r"[()\s]+", "", expr)
+    terms = sorted(t for t in re.split(r"[+-]", expr) if t)
+    return "+".join(terms)[:200]
 
 
 def _clip_paragraph(text: str, limit: int) -> str:
@@ -228,6 +267,11 @@ class PromptInjector:
                     category_exps,
                     key=lambda e: e.get("score") if isinstance(e.get("score"), (int, float)) else float('inf'),
                 )
+            # 同族限流：Good/Bad 的建议文本几乎都是"用某某形式"，同族多条会把注入
+            # 名额吃光（实测该类别 30 条全在重复同一族建议）。先按骨架签名去重，
+            # 再截断——名额因此留给不同族，而不是同一族的措辞变体。
+            if category in ("Good", "Bad"):
+                category_exps = self._dedupe_by_family(category_exps)
             # 截断到每类条数上限
             limit = policy.max_per_category.get(category, 2)
             category_exps = category_exps[:limit]
@@ -247,6 +291,26 @@ class PromptInjector:
                         entry["error"] = error_msg
                 selected.append(entry)
         return selected
+
+    @staticmethod
+    def _dedupe_by_family(experiences: list) -> list:
+        """按骨架签名给同类经验去重（同族最多 ``_MAX_PER_SKELETON_FAMILY`` 条，保持顺序）。
+
+        签名为空（样本文本里没有 ``return``，例如历史产物或测试夹具）的条目**不参与
+        去重**：宁可多注入一条，也不要因为解析不出来而丢掉教训。
+        """
+        seen: dict[str, int] = {}
+        kept = []
+        for exp in experiences:
+            signature = skeleton_signature(exp.get("equation", ""))
+            if not signature:
+                kept.append(exp)
+                continue
+            if seen.get(signature, 0) >= _MAX_PER_SKELETON_FAMILY:
+                continue
+            seen[signature] = seen.get(signature, 0) + 1
+            kept.append(exp)
+        return kept
 
     def build_experience_prompt(self, selected: list, max_analysis_chars: int) -> str:
         """把选中的经验条目拼成提示词块（含编号、类别标签、参数预算提示）。"""

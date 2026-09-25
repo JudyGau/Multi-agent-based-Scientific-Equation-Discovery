@@ -138,6 +138,64 @@ class ResolvePolicyTest(unittest.TestCase):
         self.assertIs(resolve_policy(cfg), cfg)
 
 
+class SkeletonFamilyDedupeTest(unittest.TestCase):
+    """经验注入按“骨架族”去重：同族多条会把注入名额吃光。
+
+    实测 MRFCompress-Cuboid_20260925-134149：中段 12 轮无改进、top-10 里 9 个是同一族
+    的重新参数化，Good 经验（30 条）也都在重复“用可分离/乘积幂律”，注入后等于把模型
+    锁死在同一族。``equation`` 字段在 ``experiences.json`` 里，签名从它抽取。
+    """
+
+    #: 同族的两种写法（实测同一实验里并存）：换序 + 有无括号/空格差异
+    FAMILY_A = ("Variables:\n- Independents: lambda12, lambda23\n"
+                "def equation(lambda12, lambda23, params):\n"
+                "    return params[0] * lambda23**params[1] + params[2] * lambda12**params[3] + params[4]\n")
+    FAMILY_A2 = ("Variables:\n- Independents: lambda12, lambda23\n"
+                 "def equation(lambda12, lambda23, params):\n"
+                 "    return (params[4] + params[0]*lambda23**params[1]"
+                 " + params[2]*lambda12**params[3])\n")
+    FAMILY_B = ("Variables:\n- Independents: lambda12, lambda23\n"
+                "def equation(lambda12, lambda23, params):\n"
+                "    return params[0] * (lambda12 * lambda23) ** params[1] + params[2]\n")
+
+    def setUp(self):
+        self.injector = PromptInjector()
+
+    def test_same_family_shares_a_signature(self):
+        from drsr_420.agents.prompt_injection import skeleton_signature
+        self.assertEqual(skeleton_signature(self.FAMILY_A),
+                         skeleton_signature(self.FAMILY_A2))
+        self.assertNotEqual(skeleton_signature(self.FAMILY_A),
+                            skeleton_signature(self.FAMILY_B))
+
+    def test_duplicate_family_is_deduped_and_slot_goes_to_another_family(self):
+        experiences = {"Good": [
+            {"analysis": "famA best", "score": -0.1, "sample_order": 1,
+             "equation": self.FAMILY_A},
+            {"analysis": "famA twin", "score": -0.2, "sample_order": 2,
+             "equation": self.FAMILY_A2},
+            {"analysis": "famB", "score": -0.3, "sample_order": 3,
+             "equation": self.FAMILY_B},
+        ]}
+        selected = self.injector.select_experiences(
+            experiences, 3, resolve_policy(
+                config_lib.ExperienceInjectionConfig(optional_category_probability=1.0,
+                                                     max_per_category={"Good": 2})))
+        # 同族只留分数最好的那条；腾出的名额给另一个族（而不是注入同族变体）
+        self.assertEqual([e["analysis"] for e in selected], ["famA best", "famB"])
+
+    def test_entries_without_equation_are_not_deduped(self):
+        experiences = {"Good": [
+            {"analysis": "no-eq-1", "score": -0.1, "sample_order": 1},
+            {"analysis": "no-eq-2", "score": -0.2, "sample_order": 2},
+        ]}
+        selected = self.injector.select_experiences(
+            experiences, 2, resolve_policy(
+                config_lib.ExperienceInjectionConfig(optional_category_probability=1.0,
+                                                     max_per_category={"Good": 2})))
+        self.assertEqual([e["analysis"] for e in selected], ["no-eq-1", "no-eq-2"])
+
+
 class ExperienceSelectionTest(unittest.TestCase):
     """`select_experiences`：类别配额、概率、新鲜度窗口、排序与噪声过滤。"""
 

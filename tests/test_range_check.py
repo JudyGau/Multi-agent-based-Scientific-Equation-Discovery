@@ -222,6 +222,62 @@ class EvaluatePenaltyIntegrationTest(unittest.TestCase):
         self.assertLess(score_on, score_off - RANGE_SLOPE_LIMIT - 1.0)
 
 
+class CoefficientCancellationTest(unittest.TestCase):
+    """判据三（大系数抵消）：输出由几个远大于输出的系数相减而来。
+
+    实测来源 MRFCompress-Cuboid_20260925-134149：中段 12 轮无改进，top-10 里 9 个是
+    同一族 ``P0·λ23^P1 + P2·λ12^P3 + P4``，P0 ≈ 7.3e3~8.2e3 而数据输出跨度只有 159
+    ——该族的跨度/斜率判据全过（span_ratio 1.2、slope_max 0.3），却在同一次实验里
+    留下 3 次 [BOUND] 贴边（参数被 ±1e4 边界截断）。
+    """
+
+    #: order 12 的真实拟合结果（NMSE 0.00936）：σ = p0 + p1·λ23^p2 + p3·λ12^p4。
+    CANCEL_PARAMS = [-7208.128016, 7401.912626, 0.008287, 3.2e-05, 8.518075,
+                     -0.69897, 0.180533, 0.180292, 0.722333, -0.737635]
+
+    @staticmethod
+    def _cancel_equation(a, b, p):
+        return p[0] + p[1] * b ** p[2] + p[3] * a ** p[4]
+
+    def _check(self, params, eq):
+        return dynamic_range_check(
+            np.array(_XY), np.array(_Y), lambda a, b, _e=eq, _p=params: _e(a, b, _p),
+            params=np.array(params),
+            probe_fn=lambda *args, _e=eq: _e(*args[:-1], np.asarray(args[-1])))
+
+    def test_cancellation_is_caught_where_span_and_slope_pass(self):
+        from drsr_420.evaluation.problems import RANGE_COEF_RATIO_LIMIT
+        info = self._check(self.CANCEL_PARAMS, self._cancel_equation)
+        # 前两条判据看不见它（这正是加判据三的原因）
+        self.assertLess(info["span_ratio"], RANGE_SPAN_RATIO_LIMIT)
+        self.assertEqual(info["span_penalty"], 0.0)
+        self.assertLess(info["slope_max"], RANGE_SLOPE_LIMIT)
+        self.assertEqual(info["slope_penalty"], 0.0)
+        # 判据三：max|生效参数| 7401.9 / 跨度 159.14 ≈ 46.5
+        self.assertGreater(info["coef_ratio"], RANGE_COEF_RATIO_LIMIT)
+        self.assertGreater(info["coef_penalty"], 0.0)
+        self.assertEqual(info["penalty"], info["coef_penalty"])
+
+    def test_unused_large_parameters_do_not_trigger_it(self):
+        """未被方程使用的 params 是平坦方向，会被留在随机初值上（可达 1e4）——
+        实测上一实验 order 74：全向量 42.1 而真正用到的参数只有 0.75。"""
+        params = [167.08, 18.45, 12.82, 9000.0, -8000.0]
+        info = self._check(params, lambda a, b, p: p[0] + p[1] * a + p[2] * b)
+        self.assertEqual(info["n_active_params"], 3)
+        self.assertLess(info["coef_ratio"], 2.0)
+        self.assertEqual(info["penalty"], 0.0)
+
+    def test_abstains_when_params_or_probe_missing(self):
+        info = dynamic_range_check(np.array(_XY), np.array(_Y),
+                                   lambda a, b: 23.1 * a + 70.1 * b)
+        self.assertIsNone(info["coef_ratio"])
+        self.assertEqual(info["coef_penalty"], 0.0)
+        info2 = dynamic_range_check(np.array(_XY), np.array(_Y),
+                                    lambda a, b: 23.1 * a + 70.1 * b,
+                                    params=np.array([23.1, 70.1]))
+        self.assertIsNone(info2["coef_ratio"], "只给 params 不给探针时同样弃权")
+
+
 class ExplainRangeSectionTest(unittest.TestCase):
     PRUNING = {"dependent": "sigma", "sym_names": ["lambda12", "lambda23"],
                "threshold": 0.1, "sample_range": (1, 14), "nodes_visited": 8,
@@ -325,6 +381,41 @@ class PruneSummaryRangeCheckTest(unittest.TestCase):
         self.assertIsInstance(rc, dict, "剪枝摘要必须携带体检结果")
         self.assertGreater(rc["penalty"], 0.0, "钉扎样本必须被判病理")
         self.assertGreater(rc["span_ratio"], RANGE_SPAN_RATIO_LIMIT)
+
+    def test_coefficient_criterion_is_evaluated_for_alias_style_samples(self):
+        """判据三在收尾处必须真的被求值——样本用 ``c0, c1 = params[:2]`` 这类元组
+        解包时，SymPy 符号化路径建不出探针，判据会静默弃权（实测 20260925-134149 的
+        order 83 就是这样）。这里用别名写法的样本守住"不再静默弃权"。"""
+        from drsr_420.analysis.find_best_eq import prune_and_visualize
+        func = ("Variables:\n"
+                "- Independents: lambda12, lambda23\n"
+                "- Dependent: sigma\n"
+                "def equation(lambda12, lambda23, params):\n"
+                "    c0, c1, c2, c3 = params[:4]\n"
+                "    return c0 + c1 * lambda23**c2 + c3 * lambda12**2\n")
+        params = [-7208.13, 7401.91, 0.008287, 3.24]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "samples").mkdir(parents=True)
+            (root / "samples" / "top01_samples_7.json").write_text(json.dumps(
+                {"score": -20.0, "sample_order": 7, "function": func,
+                 "params": params + [0.0] * 6}), encoding="utf-8")
+            (root / "config_snapshot.json").write_text(json.dumps(
+                {"data_csv": "data/tiny/train.csv"}), encoding="utf-8")
+            data_dir = root / "data" / "tiny"
+            data_dir.mkdir(parents=True)
+            rows = ["lambda12,lambda23,sigma"]
+            for (a, b), y in zip(_XY, _Y):
+                rows.append(f"{a},{b},{y}")
+            (data_dir / "train.csv").write_text("\n".join(rows) + "\n", encoding="utf-8")
+            with mock.patch("builtins.print"):
+                summary = prune_and_visualize(str(root), func, params + [0.0] * 6,
+                                              threshold=0.1, sample_range=(1, 14),
+                                              test_csv="none")
+        rc = summary["range_check"]
+        self.assertIsNotNone(rc["coef_ratio"], "判据三不得静默弃权")
+        self.assertGreater(rc["coef_ratio"], rc["coef_limit"])
+        self.assertGreater(rc["coef_penalty"], 0.0)
 
 
 if __name__ == "__main__":
