@@ -712,6 +712,26 @@ class RepairMetadataTest(unittest.TestCase):
             self.assertEqual(rag_kb._first_page_title(path),
                              "Effect of particle shape in magnetorheology")
 
+    def test_page_scan_cuts_the_cover_block(self):
+        """首页把标题与引用/下载信息排成同一字号时只取标题（实测 AIP 下载页）：
+
+        取出来的是 ``Structure-enhanced yield stress of magnetorheological fluids
+        Citation: Journal of Applied Physics 87, 2634 (2000); doi: ... View online: ...``。
+        """
+        import pymupdf
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "10.10631.372229.pdf")
+            doc = pymupdf.open()
+            page = doc.new_page()
+            page.insert_text((72, 72), "Structure-enhanced yield stress of magnetorheological fluids",
+                             fontsize=14, fontname="helv")
+            page.insert_text((72, 110), "Citation: J. Appl. Phys. 87, 2634 (2000); doi: 10.1063/1.372229",
+                             fontsize=14, fontname="helv")
+            doc.save(path)
+            doc.close()
+            self.assertEqual(rag_kb._first_page_title(path),
+                             "Structure-enhanced yield stress of magnetorheological fluids")
+
     def test_printed_doi_and_page_title_repair_bad_metadata(self):
         """回归：旧入库规则把 10.11221.3479045.pdf 猜成 10.11221/.3479045、标题退化为
         文件名。论文正文印了真 DOI 时必须以印刷值修复；标题取首页最大字号。"""

@@ -298,6 +298,17 @@ _NAV_TITLES = frozenset({
     "full text", "download details",
 })
 
+#: 首页"封面块"的分隔标记：其后的内容都是下载/引用信息，不属于标题。
+#: 实测 AIP 下载页把标题与引用信息排成同一字号，取出来是
+#: ``Structure-enhanced yield stress of magnetorheological fluids Citation: Journal of
+#: Applied Physics 87, 2634 (2000); doi: ... View online: ... Published by ...``；
+#: 在标记处切掉即得真标题（该标记不可能出现在标题里）。
+_COVER_MARKER_RE = re.compile(
+    r"\s*(?:Citation:|To cite this article|View online|View Table of Contents|"
+    r"Download details|Published by|Articles you may be interested|You may also like|"
+    r"This content has been downloaded|Contents lists available)",
+    re.IGNORECASE)
+
 
 def _is_placeholder_title(text: str) -> bool:
     """判断一段"标题"其实是占位物：排版软件痕迹、文件名、DOI、版面导航/样板行。
@@ -363,7 +374,9 @@ def _first_page_title(pdf_path: str, limit: int = 300) -> str:
                 largest, lines = size, [text]
             elif lines and abs(size - largest) <= 0.1:
                 lines.append(text)
-    return " ".join(lines).strip()[:limit]
+    joined = " ".join(lines).strip()
+    # 同一字号里混进了封面块（引用/下载信息）时按标记切掉，只留标题部分
+    return _COVER_MARKER_RE.split(joined, maxsplit=1)[0].strip()[:limit]
 
 
 def _resolve_title(explicit: str, meta_title: str, page_title: str, stem: str) -> str:
