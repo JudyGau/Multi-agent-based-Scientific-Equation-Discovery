@@ -22,3 +22,5 @@ error.log
 .venv2/
 .idea/
 __pycache__/
+
+papers/
