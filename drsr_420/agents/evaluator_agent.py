@@ -152,6 +152,12 @@ class EvaluatorAgent(BaseAgent):
                 new_function.optimized_params = params
             except Exception:
                 pass
+            # 原始拟合 MSE（不含体检罚分）：Profiler 据此写 mse/nmse，
+            # 否则 −score 会把罚分混进 "MSE"（见 core.code_manipulation.Function.fit_mse）
+            try:
+                new_function.fit_mse = getattr(self._sandbox, '_last_fit_mse', None)
+            except Exception:
+                pass
 
             self._database.register_program(
                 new_function,
@@ -173,6 +179,10 @@ class EvaluatorAgent(BaseAgent):
                 try:
                     params = getattr(self._sandbox, '_last_params', None)
                     new_function.optimized_params = params
+                except Exception:
+                    pass
+                try:
+                    new_function.fit_mse = getattr(self._sandbox, '_last_fit_mse', None)
                 except Exception:
                     pass
                 profiler.register_function(new_function)

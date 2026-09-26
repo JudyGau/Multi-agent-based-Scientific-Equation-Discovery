@@ -5,7 +5,9 @@
 - rag_kb.get_embedder：双重检查锁定，并发首调只构造一次嵌入模型；
 - LocalSandbox._respawn_workers：重建 worker 前清空队列中的陈旧任务。
 """
+import json
 import multiprocessing
+import os
 import queue
 import tempfile
 import threading
@@ -29,6 +31,7 @@ class _FuncStub:
         self.sample_time = 0.1
         self.evaluate_time = 0.2
         self.optimized_params = None
+        self.fit_mse = None
 
     def __str__(self):
         return f"def {self.name}():\n  {self.body}"
@@ -81,6 +84,75 @@ class ProfilerCountingTest(unittest.TestCase):
         with open(os.path.join(self.tmp.name, "progress.json"), encoding="utf-8") as f:
             progress = json.load(f)
         self.assertEqual(progress[0]["best_sample_order"], 3)
+
+
+class MsePenaltySplitTest(unittest.TestCase):
+    """写盘的 mse 只反映**拟合本身**，体检罚分单独进 penalty 字段。
+
+    实测缺陷（20260926-094330）：profile 用 `−score` 当 mse，而 score = −(拟合 + 罚分)，
+    于是 top-1 记录成 mse=11.999，真实拟合只有 0.2438（罚分 11.755 是它的 48 倍），
+    同一份 report.md 里同时出现 11.999 与 0.243752 两个"MSE"。
+    """
+
+    #: 该实验 top-1（order 40）的真实数字
+    SCORE = -11.999037620730263
+    FIT_MSE = 0.24375177
+    VARIANCE = 2012.0789
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.prof = Profiler(self.tmp.name, samples_per_iteration=4,
+                             target_variance=self.VARIANCE, persist_all_samples=True)
+
+    def _func(self, order=40, score=None, fit_mse=None):
+        func = _FuncStub("equation", "return 1", order,
+                         score=self.SCORE if score is None else score)
+        func.fit_mse = fit_mse
+        return func
+
+    def _read(self, *parts):
+        with open(os.path.join(self.tmp.name, *parts), encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_fit_mse_and_penalty_written_separately(self):
+        self.prof.register_function(self._func(fit_mse=self.FIT_MSE))
+        content = self._read("samples", "samples_40.json")
+        self.assertAlmostEqual(content["mse"], self.FIT_MSE, places=6)
+        self.assertAlmostEqual(content["penalty"], -self.SCORE - self.FIT_MSE, places=6)
+        self.assertEqual(content["score"], self.SCORE)
+        # 两者之和必须回到评分：读者据此一眼看出 11.999 是被罚分撑起来的
+        self.assertAlmostEqual(content["mse"] + content["penalty"], -self.SCORE, places=6)
+        # nmse 同样只反映拟合
+        self.assertAlmostEqual(content["nmse"], self.FIT_MSE / self.VARIANCE, places=12)
+
+    def test_topk_and_best_history_and_progress_carry_the_split(self):
+        self.prof.register_function(self._func(fit_mse=self.FIT_MSE))
+        for path in (("samples", "top01_samples_40.json"),
+                     ("best_history", "best_sample_40.json")):
+            content = self._read(*path)
+            self.assertAlmostEqual(content["mse"], self.FIT_MSE, places=6,
+                                   msg=f"{path} 的 mse 必须是拟合值")
+            self.assertAlmostEqual(content["penalty"], -self.SCORE - self.FIT_MSE, places=6)
+        progress = self._read("progress.json")
+        self.assertAlmostEqual(progress[-1]["best_mse"], self.FIT_MSE, places=6)
+        self.assertAlmostEqual(progress[-1]["best_penalty"],
+                               -self.SCORE - self.FIT_MSE, places=6)
+
+    def test_unknown_penalty_is_none_not_zero(self):
+        """拿不到 fit_mse（旧口径/替身）时退回 −score，罚分记 None——
+        写 0.0 会被读成"该解无病理"。"""
+        self.prof.register_function(self._func(order=2, score=-4.0, fit_mse=None))
+        content = self._read("samples", "samples_2.json")
+        self.assertEqual(content["mse"], 4.0)
+        self.assertIsNone(content["penalty"])
+
+    def test_split_helper_reports_both_ends(self):
+        mse, penalty = self.prof._mse_and_penalty(-11.999037620730263, 0.24375177)
+        self.assertAlmostEqual(mse, 0.24375177, places=12)
+        self.assertAlmostEqual(mse + penalty, 11.999037620730263, places=12)
+        self.assertEqual(self.prof._mse_and_penalty(-4.0, None), (4.0, None))
+        self.assertEqual(self.prof._mse_and_penalty(None, None), (None, None))
 
 
 class _CountingEmbedder(rk.EmbeddingModel):

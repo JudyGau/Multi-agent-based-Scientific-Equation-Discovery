@@ -211,7 +211,7 @@ def _eval_worker(task_queue: multiprocessing.Queue, worker_id: int) -> None:
                 program, function_to_run, function_to_evolve, dataset,
                 numba_accelerate, eval_config, warm_start)
         except Exception as e:  # 兜底：_run_evaluation_task 内部已捕获，这里防御 worker 意外崩溃
-            out = (None, None, False, f'Execution Error: {e}', None)
+            out = (None, None, False, f'Execution Error: {e}', None, None)
         try:
             conn.send(out)
         except (BrokenPipeError, EOFError):
@@ -230,10 +230,20 @@ def _sample_residuals(full_res, sample_size: int):
 
 def _run_evaluation_task(program, function_to_run, function_to_evolve, dataset,
                          numba_accelerate, eval_config, warm_start):
-    """在 worker 进程中执行一条样本，返回统一 5 元组：
-    (grade, res, runs_ok, remark, optimized_params)。"""
+    """在 worker 进程中执行一条样本，返回统一 6 元组：
+    (grade, res, runs_ok, remark, optimized_params, fit_mse)。
+
+    ``fit_mse`` 是**原始拟合 MSE**（不含动态范围体检罚分）。它必须在这里算：
+    主进程收到的 ``res`` 只是 :func:`_sample_residuals` 的随机子样，算不出全量
+    MSE；而 :func:`evaluate_on_problems.evaluate` 的返回契约保证矩阵残差列与
+    ``best_loss`` 严格一致（同一次清洗后残差取反），故这里从**完整**残差矩阵
+    直接取即可。评分是 ``score = −(fit_mse + 罚分)``，所以两者相减就是罚分——
+    历史上 profile 直接拿 ``−score`` 当 mse 写盘，把"带罚分的评分"当成"MSE"
+    （实测 20260926-094330：记录 11.999 = 拟合 0.2438 + 罚分 11.755）。
+    """
     res = None
     opt_params = None
+    fit_mse = None
     try:
         program = code_manipulation.sanitize_code_text(program)
         # numba 加速（可选）：编译失败或方程不受支持时自动降级为原始程序。
@@ -266,12 +276,16 @@ def _run_evaluation_task(program, function_to_run, function_to_evolve, dataset,
             verbose=eval_config.get('verbose', False),
         )
         if not isinstance(results, (int, float)):
-            return None, None, False, 'no output', None
+            return None, None, False, 'no output', None, None
+        if full_res is not None and getattr(full_res, 'shape', None) is not None and len(full_res):
+            col = np.asarray(full_res, dtype=float)[:, -1]
+            if np.isfinite(col).all():
+                fit_mse = float(np.mean(col ** 2))
         res = _sample_residuals(
             full_res, eval_config.get('sample_size', evaluate_on_problems.SAMPLE_SIZE))
-        return results, res, True, 'yes', opt_params
+        return results, res, True, 'yes', opt_params, fit_mse
     except Exception as e:
-        return None, None, False, f'Execution Error: {e}', None
+        return None, None, False, f'Execution Error: {e}', None, None
 
 class LocalSandbox(Sandbox):
     """在常驻子进程中执行并评估 LLM 生成的程序（支持超时与 numba 可选加速）。
@@ -293,6 +307,8 @@ class LocalSandbox(Sandbox):
         self._numba_accelerate = numba_accelerate
         self._eval_config = dict(eval_config or {})
         self._last_params = None
+        #: 最近一次评估的**原始拟合 MSE**（不含体检罚分）；None=无有效值。
+        self._last_fit_mse = None
 
         # numba 是可选加速依赖：未安装时自动降级，避免所有样本评估失败
         if self._numba_accelerate:
@@ -387,19 +403,23 @@ class LocalSandbox(Sandbox):
             self._task_queue.put(task)
             if parent_conn.poll(timeout_seconds):
                 try:
-                    grade, res, runs_ok, remark, params = parent_conn.recv()
+                    grade, res, runs_ok, remark, params, fit_mse = parent_conn.recv()
                 except (EOFError, OSError):
                     # worker 进程意外崩溃（如被 LLM 生成的代码拖垮），重建后返回失败结果
                     self._respawn_workers()
-                    grade, res, runs_ok, remark, params = None, None, False, 'worker crashed', None
+                    grade, res, runs_ok, remark, params, fit_mse = (
+                        None, None, False, 'worker crashed', None, None)
             else:
                 # 超时：worker 可能被卡死样本占用，销毁并重建后返回超时结果
                 self._respawn_workers()
-                grade, res, runs_ok, remark, params = None, None, False, 'timeout01', None
+                grade, res, runs_ok, remark, params, fit_mse = (
+                    None, None, False, 'timeout01', None, None)
             parent_conn.close()
 
         # 保留最优参数，供下一轮评估热启动（params 为 None 时自动忽略）
         self._last_params = params
+        # 原始拟合 MSE（不含罚分），供 profile 写 mse/nmse 用
+        self._last_fit_mse = fit_mse
         results = (grade, runs_ok, remark)
         if self._verbose:
             self._print_evaluation_details(program, results, function_to_evolve)

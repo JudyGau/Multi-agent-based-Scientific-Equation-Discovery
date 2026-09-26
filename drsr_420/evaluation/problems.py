@@ -11,7 +11,9 @@
     RESIDUAL_CAP 与 _sanitize_residual。
     score 取负均方误差（越大越好）；result_matrix 为 (输入, 输出, 残差) 拼接矩阵，
     供残差分析回路消费（残差列保持全精度）；optimized_params 可直接作为下一轮
-    优化的热启动起点。
+    优化的热启动起点。开体检时 **score = −(拟合 MSE + 罚分)**——罚分只加在评分上、
+    不改残差，故要拿到"拟合 MSE"必须从残差列算（sandbox 就是这么做的，见
+    _run_evaluation_task）：直接取 −score 会把罚分当成 MSE。
 """
 from __future__ import annotations
 

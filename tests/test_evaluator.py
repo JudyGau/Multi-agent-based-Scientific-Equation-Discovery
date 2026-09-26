@@ -56,11 +56,11 @@ class SampleResidualsTest(unittest.TestCase):
 
 
 class RunEvaluationTaskTest(unittest.TestCase):
-    """直接调用 worker 逻辑（不经过进程），覆盖统一 5 元组契约。"""
+    """直接调用 worker 逻辑（不经过进程），覆盖统一 6 元组契约。"""
 
     def test_success_returns_unified_tuple(self):
         dataset = make_inputs()['data']
-        grade, res, runs_ok, remark, params = _run_evaluation_task(
+        grade, res, runs_ok, remark, params, fit_mse = _run_evaluation_task(
             PROGRAM, 'run', 'equation', dataset, False, {}, None)
         self.assertTrue(runs_ok)
         self.assertEqual(remark, 'yes')
@@ -68,14 +68,20 @@ class RunEvaluationTaskTest(unittest.TestCase):
         self.assertLess(grade, 0.0)
         self.assertEqual(res.shape, (100, 4))
         self.assertIsInstance(params, np.ndarray)
+        # fit_mse = 原始拟合 MSE（**完整**残差矩阵算得，主进程收到的 res 只是它的
+        # 随机子样，故不能拿 res 复算）。与评分的关系是 score = −(fit_mse + 罚分)：
+        # 本夹具无病理器件 → 罚分 0 → 两者严格相等（有罚分时 grade 会更低）。
+        self.assertIsInstance(fit_mse, float)
+        self.assertGreaterEqual(fit_mse, 0.0)
+        self.assertAlmostEqual(grade, -fit_mse, places=10)
 
     def test_failure_returns_informative_error(self):
         """NaN 方程 → remark 携带真实原因（'Execution Error: ...'），
         不再是无信息量的 'no output'（第 8 轮修复，喂给经验回路）。"""
         dataset = make_inputs()['data']
-        grade, res, runs_ok, remark, params = _run_evaluation_task(
+        grade, res, runs_ok, remark, params, fit_mse = _run_evaluation_task(
             NAN, 'run', 'equation', dataset, False, {}, None)
-        self.assertEqual((grade, res, runs_ok, params), (None, None, False, None))
+        self.assertEqual((grade, res, runs_ok, params, fit_mse), (None, None, False, None, None))
         self.assertIn('Execution Error', remark)
         self.assertIn('not finite', remark)
 
@@ -104,6 +110,9 @@ class LocalSandboxTest(unittest.TestCase):
         self.assertLess(grade, 0.0)
         self.assertEqual(res.shape, (100, 4))
         self.assertIsNotNone(sb._last_params)  # 为下一轮热启动保留参数
+        # 原始拟合 MSE 由 sandbox 缓存（profile 用它写 mse/nmse 字段，与体检罚分分开）
+        self.assertIsInstance(sb._last_fit_mse, float)
+        self.assertAlmostEqual(grade, -sb._last_fit_mse, places=10)
 
         # 热启动：复用上一轮参数，仍应正常评估
         results2, _ = sb.run(PROGRAM, 'run', 'equation', inputs, 'data', 30)

@@ -11,8 +11,9 @@ report.md 的机器生成小节。
 ----
 * **只读实验目录内的机器产物** ``best_history/best_sample_<sample_order>.json``
   ——评估器每刷新一次全局最优就写一个文件，含 ``sample_order`` / ``iteration`` /
-  ``mse`` / ``nmse``。这些文件本身就是"刷新点"，故图上的阶梯用 ``step(where="post")``
-  表示"该最优值保持到下一个刷新点"。
+  ``mse`` / ``nmse`` / ``penalty``。其中 ``mse`` 是**拟合本身**的均方误差，
+  体检罚分记在 ``penalty`` 里（评分 = −(mse+penalty)）；**旧目录没有 ``penalty``
+  字段**，其 ``mse`` 内含罚分，本模块会据此改写纵轴标注并在小节里告警。
 * **不解析 run.out 的逐样本分数**：``MRFCompress-Cuboid.bat`` 等启动入口并不重定向
   stdout（实测其调用是裸的 ``python -m drsr_420.cli.main …``），``run.out`` 不是每条
   启动路径都存在的产物，把它当数据源会让报告在别的启动方式下缺图。
@@ -82,7 +83,11 @@ def load_best_history(results_root: str) -> list[dict]:
             print(f"[WARN] 历史最优 mse 非有限，跳过 {os.path.basename(path)}")
             continue
         rows.append({"sample_order": order, "iteration": rec.get("iteration"),
-                     "mse": mse, "nmse": rec.get("nmse")})
+                     "mse": mse, "nmse": rec.get("nmse"),
+                     "penalty": rec.get("penalty"),
+                     # 口径拆分（20260926 之后）才写 penalty 字段；旧目录的 mse 里
+                     # 混着动态范围体检罚分（= −score），不能当拟合质量读。
+                     "mse_includes_penalty": "penalty" not in rec})
     # 兜底：文件名里的 order 与内容不一致时以内容为准（内容才是评估器写的）
     rows.sort(key=lambda r: r["sample_order"])
     return rows
@@ -115,6 +120,9 @@ def plot_progress_curve(results_root: str) -> dict | None:
     xs = np.asarray([p["sample_order"] for p in points], dtype=float)
     ys = np.asarray([p["mse"] for p in points], dtype=float)
     log_scale = bool(np.all(ys > 0))
+    # 旧目录没有 penalty 字段：那里的 mse 是"拟合 MSE + 体检罚分"，纵轴必须写明，
+    # 否则读者会把罚分当拟合质量（实测 20260926-094330：11.999 里 98% 是罚分）。
+    legacy = any(p["mse_includes_penalty"] for p in points)
 
     fig, ax = plt.subplots(figsize=(7, 5))
     ax.step(xs, ys, where="post", color="tab:blue", lw=2,
@@ -124,10 +132,10 @@ def plot_progress_curve(results_root: str) -> dict | None:
     if log_scale:
         ax.set_yscale("log")
     ax.set_xlabel("sample_order")
-    ax.set_ylabel("MSE")
+    ax.set_ylabel("MSE" if not legacy else "MSE (+ pathology penalty)")
     ax.set_title(f"MSE vs sample_order"
                  f"\n(best-so-far; {len(points)} refresh points, "
-                 f"in-sample on the training points)")
+                 f"in-sample {'incl. penalty (legacy records)' if legacy else 'fit only'})")
     ax.grid(True, which="both", linestyle=":", linewidth=0.6, alpha=0.6)
     ax.legend()
     fig.tight_layout()
@@ -144,16 +152,27 @@ def plot_progress_curve(results_root: str) -> dict | None:
 
     best = min(points, key=lambda p: p["mse"])
     return {"path": out, "n_points": len(points), "log_scale": log_scale,
-            "first": points[0], "best": best, "points": points}
+            "legacy_records": legacy, "first": points[0], "best": best,
+            "points": points}
 
 
 def _fmt_point(point: dict) -> str:
-    """把一个刷新点渲染成 ``sample_order=N，MSE=…，NMSE=…``（缺字段就不写该字段）。"""
+    """把刷新点渲染成 ``sample_order=N，MSE=…，NMSE=…（含体检罚分 X）``。
+
+    ``MSE`` 在口径拆分后是**拟合本身**的 MSE；`penalty` 字段存在时把罚分一并写出——
+    罚分可以远大于 MSE 本身（实测 11.755 vs 0.244），不写出来读者会以为拟合很差。
+    """
     text = f"sample_order={point['sample_order']}，MSE={point['mse']:.6g}"
     nmse = point.get("nmse")
     try:
         if nmse is not None and np.isfinite(float(nmse)):
             text += f"，NMSE={float(nmse):.4g}"
+    except (TypeError, ValueError):
+        pass
+    penalty = point.get("penalty")
+    try:
+        if penalty is not None and np.isfinite(float(penalty)) and float(penalty) > 0:
+            text += f"（其中动态范围体检罚分 {float(penalty):.6g}）"
     except (TypeError, ValueError):
         pass
     return text
@@ -184,7 +203,20 @@ def render_progress_section(progress: dict | None) -> str:
         f"- 首个刷新点：{_fmt_point(first)}",
         f"- 最终最优：{_fmt_point(best)}",
         "",
-        "> 口径：该曲线**全程是样本内指标**（评估器在同一批训练点上拟合参数并打分），"
+        "> 口径：纵轴的 MSE 是**拟合本身**的均方误差，与「动态范围体检」的罚分分开记账"
+        "（评分 = −(拟合 MSE + 罚分)）。罚分可以远大于拟合 MSE——实测 20260926-094330 的"
+        "最优解拟合 MSE 仅 0.2438，而罚分 11.755，两者之和才是当时记录的 11.999。",
+    ]
+    if progress.get("legacy_records"):
+        lines += [
+            "",
+            "> **注意**：本实验的记录里没有 `penalty` 字段（口径拆分之前的目录），其"
+            "`mse` 内含体检罚分，**不能当作拟合质量**读——纵轴已标注为 "
+            "`MSE (+ pathology penalty)`。",
+        ]
+    lines += [
+        "",
+        "> 该曲线**全程是样本内指标**（评估器在同一批训练点上拟合参数并打分），"
         "低 MSE 不代表泛化能力——泛化对照见上面的「样本外验证」小节。",
     ]
     return "\n".join(lines)

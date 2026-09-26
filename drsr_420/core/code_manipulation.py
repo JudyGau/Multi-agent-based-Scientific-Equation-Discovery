@@ -53,6 +53,10 @@ class Function:
     sample_time: float | None = None  
     evaluate_time: float | None = None  
     optimized_params: list[float] | None = None  
+    #: 原始拟合 MSE（不含动态范围体检罚分）。评分是 ``score = −(fit_mse + 罚分)``，
+    #: 故两者相减即罚分；Profiler 用它写 mse/nmse，**不能**用 ``−score`` 代替——
+    #: 那会把罚分折进 mse 字段（实测 20260926-094330：记录 11.999 而拟合只有 0.2438）。
+    fit_mse: float | None = None  
 
     def __str__(self) -> str:
         return_type = f' -> {self.return_type}' if self.return_type else ''

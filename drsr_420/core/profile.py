@@ -11,6 +11,7 @@ import threading
 from typing import List, Dict
 import logging
 import json
+import math
 from drsr_420.core import code_manipulation
 # 移除对 TensorBoard 的依赖，避免安装额外包
 
@@ -95,6 +96,8 @@ class Profiler:
         self._global_best_score = None
         self._global_best_mse = None
         self._global_best_nmse = None
+        #: 全局最优样本的体检罚分（= −score − 拟合 MSE）；与 best_mse 分开记账。
+        self._global_best_penalty = None
         self._global_best_sample_order = None
 
         # 线程锁：多 sampler 并行时保护计数器与文件写入
@@ -121,15 +124,18 @@ class Profiler:
         iteration = self._compute_iteration(int(sample_order))
         function_str = str(programs)
 
-        mse = self._score_to_mse(score)
+        mse, penalty = self._mse_and_penalty(score, getattr(programs, "fit_mse", None))
         nmse = self._mse_to_nmse(mse)
 
         # 字段顺序尽量对齐 llmsr：iteration -> sample_order -> nmse/mse -> score -> function -> params
+        # penalty 是**动态范围体检罚分**，与 mse 分开写：mse 只反映拟合本身（20260926-094330
+        # 之前它内含罚分，导致报告里 11.999 与 0.243752 两个"MSE"并存）。
         content = {
             "iteration": iteration,
             "sample_order": int(sample_order),
             "nmse": nmse,
             "mse": mse,
+            "penalty": penalty,
             "score": score,
             "function": function_str,
         }
@@ -188,10 +194,38 @@ class Profiler:
         # 按 samples_per_iteration 分组，1-based
         return (sample_order - 1) // self._samples_per_iteration + 1
 
-    def _score_to_mse(self, score: float | None) -> float | None:
-        if not isinstance(score, (int, float)):
-            return None
-        return -float(score)
+    def _score_to_mse(self, score: float | None,
+                      fit_mse: float | None = None) -> float | None:
+        """把评分换算成**拟合 MSE**（= :meth:`_mse_and_penalty` 的第一项）。"""
+        return self._mse_and_penalty(score, fit_mse)[0]
+
+    @staticmethod
+    def _is_finite_number(value) -> bool:
+        """有限实数（不是 bool）。profile 不引 numpy，故用 math.isfinite。"""
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return False
+        return math.isfinite(float(value))
+
+    def _mse_and_penalty(self, score, fit_mse) -> tuple[float | None, float | None]:
+        """返回 ``(拟合 MSE, 动态范围体检罚分)`` 两个字段。
+
+        评分是 ``score = −(拟合 MSE + 罚分)``（见 ``evaluation/problems.evaluate``），
+        所以只有拿得到评估器上报的 ``fit_mse``（从完整残差矩阵算出，见
+        ``evaluation/sandbox._run_evaluation_task``）时，两者才是**可分离**的。
+
+        拿不到 ``fit_mse``（旧 checkpoint / 评测替身）时退回 ``−score``，此时罚分
+        **未知**，记 ``None`` 而不是 ``0.0``——0 会被读成"无病理"。实测
+        20260926-094330：记录 mse=11.999 而真实拟合只有 0.2438（罚分 11.755 是它的
+        48 倍），同一份报告里因此出现两个"MSE"。
+        """
+        if self._is_finite_number(fit_mse):
+            value = float(fit_mse)
+            if self._is_finite_number(score):
+                return value, float(-float(score) - value)
+            return value, None
+        if not self._is_finite_number(score):
+            return None, None
+        return -float(score), None
 
     def _mse_to_nmse(self, mse: float | None) -> float | None:
         if mse is None or self._target_variance is None or self._target_variance <= 0:
@@ -225,7 +259,7 @@ class Profiler:
             return
 
         iteration = self._compute_iteration(sample_order)
-        mse = self._score_to_mse(score)
+        mse, penalty = self._mse_and_penalty(score, getattr(programs, "fit_mse", None))
         nmse = self._mse_to_nmse(mse)
 
         # 1. 若是全局最优被刷新，则追加一条历史最优样本
@@ -236,6 +270,7 @@ class Profiler:
             self._global_best_score = float(score)
             self._global_best_mse = mse
             self._global_best_nmse = nmse
+            self._global_best_penalty = penalty
             self._global_best_sample_order = int(sample_order)
 
             # 写入 best_history/best_sample_<sample_order>.json
@@ -245,6 +280,7 @@ class Profiler:
                 "sample_order": self._global_best_sample_order,
                 "nmse": self._global_best_nmse,
                 "mse": self._global_best_mse,
+                "penalty": self._global_best_penalty,
                 "score": self._global_best_score,
                 "function": function_str,
             }
@@ -270,6 +306,7 @@ class Profiler:
                     "iteration": next_iter,
                     "best_nmse": self._global_best_nmse,
                     "best_mse": self._global_best_mse,
+                    "best_penalty": self._global_best_penalty,
                     # 保留旧字段，兼容现有 DRSR 分析/恢复脚本。
                     "best_score": self._global_best_score,
                     "best_sample_order": self._global_best_sample_order,
@@ -279,6 +316,7 @@ class Profiler:
         # 当前 iteration 的记录更新为最新的全局最优
         self._progress_records[iteration - 1]["best_nmse"] = self._global_best_nmse
         self._progress_records[iteration - 1]["best_mse"] = self._global_best_mse
+        self._progress_records[iteration - 1]["best_penalty"] = self._global_best_penalty
         self._progress_records[iteration - 1]["best_score"] = self._global_best_score
         self._progress_records[iteration - 1]["best_sample_order"] = (
             self._global_best_sample_order
@@ -370,7 +408,7 @@ class Profiler:
             function_str = str(func)
 
             iteration = self._compute_iteration(int(sample_order))
-            mse = self._score_to_mse(score)
+            mse, penalty = self._mse_and_penalty(score, getattr(func, "fit_mse", None))
             nmse = self._mse_to_nmse(mse)
 
             # 按用户需求的字段顺序组织内容：
@@ -380,6 +418,7 @@ class Profiler:
                 "sample_order": sample_order,
                 "nmse": nmse,
                 "mse": mse,
+                "penalty": penalty,
                 "score": score,
                 "function": function_str,
             }

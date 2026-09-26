@@ -289,7 +289,8 @@ class EvaluationOutcomeToSamplesJsonTest(unittest.TestCase):
             self.assertEqual(content["score"], outcome.score)
             self.assertEqual(content["sample_order"], 5)
             self.assertEqual(set(content),
-                             {"iteration", "sample_order", "nmse", "mse", "score", "function"})
+                             {"iteration", "sample_order", "nmse", "mse", "penalty",
+                              "score", "function"})
 
 
 class SummarizerAlignmentTest(unittest.TestCase):

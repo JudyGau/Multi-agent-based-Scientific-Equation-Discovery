@@ -25,13 +25,18 @@ def _matplotlib_available() -> bool:
         return False
 
 
-def _write_best(root, order, mse, nmse=None, iteration=1):
-    """在 ``best_history/`` 下写一个刷新点文件（与评估器的字段一致）。"""
+def _write_best(root, order, mse, nmse=None, iteration=1, penalty=None):
+    """在 ``best_history/`` 下写一个刷新点文件（与评估器的字段一致）。
+
+    ``penalty`` 不给就不写该键——那正是口径拆分之前的历史目录形态（mse 内含罚分）。
+    """
     d = pathlib.Path(root) / "best_history"
     d.mkdir(parents=True, exist_ok=True)
     rec = {"sample_order": order, "iteration": iteration, "mse": mse}
     if nmse is not None:
         rec["nmse"] = nmse
+    if penalty is not None:
+        rec["penalty"] = penalty
     (d / f"best_sample_{order}.json").write_text(json.dumps(rec), encoding="utf-8")
 
 
@@ -148,6 +153,54 @@ class PlotProgressCurveTest(unittest.TestCase):
             self.assertEqual(path.name, pcur.PROGRESS_PNG_NAME)
 
 
+class SchemaCaliberTest(unittest.TestCase):
+    """口径拆分（20260926 之后）：penalty 单列；旧目录据此打标。"""
+
+    def test_record_with_penalty_is_not_marked_legacy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_best(tmp, 40, 0.2438, nmse=1.2e-4, penalty=11.7553)
+            rows = pcur.load_best_history(tmp)
+        self.assertEqual(rows[0]["penalty"], 11.7553)
+        self.assertFalse(rows[0]["mse_includes_penalty"], "新口径的 mse 只含拟合")
+
+    def test_record_without_penalty_is_marked_legacy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_best(tmp, 40, 11.999038, nmse=5.964e-3)
+            rows = pcur.load_best_history(tmp)
+        self.assertIsNone(rows[0]["penalty"])
+        self.assertTrue(rows[0]["mse_includes_penalty"], "旧目录的 mse 内含罚分")
+
+    def test_plot_marks_legacy_axis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_best(tmp, 0, 102.5632)
+            _write_best(tmp, 40, 11.999038)
+            ax = _FakeAx()
+            import matplotlib.pyplot as plt
+            with mock.patch.object(plt, "subplots",
+                                   lambda *a, **k: (_FakeFig(), ax)), \
+                 mock.patch.object(plt, "close"), \
+                 mock.patch("builtins.print"):
+                summary = pcur.plot_progress_curve(tmp)
+            label = ax._named("set_ylabel")[0][1][0]
+        self.assertTrue(summary["legacy_records"])
+        self.assertIn("penalty", label, "旧口径纵轴必须写明含罚分")
+
+    def test_plot_uses_plain_label_when_penalty_is_known(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_best(tmp, 0, 102.5632, penalty=0.2)
+            _write_best(tmp, 40, 0.2438, penalty=11.7553)
+            ax = _FakeAx()
+            import matplotlib.pyplot as plt
+            with mock.patch.object(plt, "subplots",
+                                   lambda *a, **k: (_FakeFig(), ax)), \
+                 mock.patch.object(plt, "close"), \
+                 mock.patch("builtins.print"):
+                summary = pcur.plot_progress_curve(tmp)
+            label = ax._named("set_ylabel")[0][1][0]
+        self.assertFalse(summary["legacy_records"])
+        self.assertEqual(label, "MSE")
+
+
 class RenderProgressSectionTest(unittest.TestCase):
     def _summary(self):
         return {"path": "x.png", "n_points": 2, "log_scale": True,
@@ -174,6 +227,28 @@ class RenderProgressSectionTest(unittest.TestCase):
         text = pcur.render_progress_section(self._summary())
         self.assertIn("样本内", text)
         self.assertIn("不代表泛化", text)
+
+    def test_section_reports_penalty_separately_from_mse(self):
+        """MSE 与罚分必须分开写：否则读者会把 11.999 当拟合质量（真实拟合 0.2438）。"""
+        s = self._summary()
+        s["best"] = {"sample_order": 40, "iteration": 10, "mse": 0.2438,
+                     "nmse": 1.21144e-4, "penalty": 11.7553}
+        text = pcur.render_progress_section(s)
+        self.assertIn("MSE=0.2438", text)
+        self.assertIn("动态范围体检罚分 11.7553", text)
+        self.assertNotIn("MSE=11.9990", text)
+
+    def test_legacy_records_are_flagged(self):
+        s = self._summary()
+        s["legacy_records"] = True
+        text = pcur.render_progress_section(s)
+        self.assertIn("没有 `penalty` 字段", text)
+        self.assertIn("MSE (+ pathology penalty)", text)
+
+    def test_current_caliber_states_the_split(self):
+        text = pcur.render_progress_section(self._summary())
+        self.assertIn("拟合本身", text)
+        self.assertIn("评分 = −(拟合 MSE + 罚分)", text)
 
     def test_missing_nmse_is_not_printed_as_none(self):
         s = self._summary()
