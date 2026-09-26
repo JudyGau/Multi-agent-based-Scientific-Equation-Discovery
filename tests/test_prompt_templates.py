@@ -176,9 +176,26 @@ class ResidualIncrementPromptTest(unittest.TestCase):
     def test_task_numbering_follows_extra_requirements(self):
         self.assertIn("4.##Output Format##", self._ctx().render_initial_analysis_prompt())
         # 残差通道的编号 = 3 条基础要求 + N 条残差专有要求 + 1；加了"方向词/单调性口径"
-        # 那条之后 N=3，故格式块编号顺延到 7。
-        self.assertIn("7.##Output Format##",
+        # 与"架构触底必须给出删项候选"两条之后 N=4，故格式块编号顺延到 8。
+        self.assertIn("8.##Output Format##",
                       self._ctx().render_residual_analysis_prompt("prev", "res", "sample"))
+
+    def test_architecture_deletion_rule_is_in_both_prompt_paths(self):
+        """架构触底时必须给出**删项**候选（20260926-110809 的实测教训）。
+
+        该实验 87 个有评分样本里 52 个是同一个完整二阶响应面的重新参数化，而"删掉
+        一个平方项"的 5 参数非对称形式（分数最高的干净骨架）一次都没被提出——残差
+        通道此前只会提局部改动，对架构触底没有反应。静态兜底模板与动态 PromptContext
+        两条路径都必须带这条要求。
+        """
+        dynamic = self._ctx().render_residual_analysis_prompt("prev", "res", "sample")
+        for text in (pc.residual_analysis_prompt, dynamic):
+            with self.subTest(path=text[:40]):
+                self.assertIn("has already been evaluated with no score improvement", text)
+                self.assertIn("MUST include at least one DELETION", text)
+                self.assertIn("Re-parameterizing the same term set is not a structural change", text)
+        # 静态模板的编号也必须跟着顺延（否则输出格式块的序号与条数不符）
+        self.assertIn("7.##Output Format##", pc.residual_analysis_prompt)
 
     def test_direction_wording_rule_is_in_both_prompt_paths(self):
         """方向词自检 + 不得自行重判/重计数单调性（20260926-110809 的实测教训）。

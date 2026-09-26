@@ -20,6 +20,11 @@ from drsr_420.core import prompt_config as pc
 
 from drsr_420.agents.base import THREAD_PER_SAMPLER, AgentSpec, BaseAgent
 from drsr_420.agents.messages import ResidualInsight
+from drsr_420.evaluation.architecture_facts import (
+    features_from_equation,
+    render_terrain,
+    sampling_terrain,
+)
 from drsr_420.evaluation.data_facts import load_facts, render_facts
 
 
@@ -58,6 +63,37 @@ class ResidualAnalyzerAgent(BaseAgent):
             print(f"读取数据事实表失败（跳过注入）: {e}")
             return ""
         return render_facts(facts) if facts else ""
+
+    def _load_terrain_block(self, sample) -> str:
+        """读取"该方程所属架构在历史采样中的地形"并渲染（缺失/不足时不注入）。
+
+        与采样通道共用同一份机器事实（见 :mod:`drsr_420.evaluation.architecture_facts`），
+        但 ``target`` 是**当前被分析的方程**：残差通道要说清"这个架构是不是已经触底、
+        它最小的未试删项邻域是什么"，否则改进建议只会停留在局部改动上（实测该实验
+        52/87 个样本是同一二阶响应面的重新参数化，删一个平方项的形式从未被提出）。
+        """
+        try:
+            path = os.path.join(self._results_root, "experiences.json")
+            with open(path, "r", encoding="utf-8") as f:
+                experiences = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return ""
+        if not isinstance(experiences, dict):
+            return ""
+
+        features = None
+        if self._prompt_ctx is not None:
+            features = [str(name) for name in self._prompt_ctx.features]
+        if not features or len(features) != 2:
+            features = features_from_equation(sample)
+        if not features or len(features) != 2:
+            return ""
+
+        entries = []
+        for category in ("None", "Good", "Bad"):
+            entries.extend(experiences.get(category) or [])
+        terrain = sampling_terrain(entries, features, target=str(sample or ""))
+        return render_terrain(terrain, features, pc.architecture_block_title)
 
     def analyze(self, sample, residual) -> ResidualInsight:
         """构造残差分析提示并调用 LLM，返回残差洞察（样本 + 分析文本）。
@@ -101,6 +137,10 @@ class ResidualAnalyzerAgent(BaseAgent):
         facts_block = self._load_facts_block()
         if facts_block:
             res_analyze += facts_block
+        # 再附上"该架构在历史采样中的地形"：架构是否触底 + 未试的删项邻域（机器事实）
+        terrain_block = self._load_terrain_block(sample)
+        if terrain_block:
+            res_analyze += terrain_block
 
         print_block("========这是输入的残差提示词==========\n")
         print_block(res_analyze)

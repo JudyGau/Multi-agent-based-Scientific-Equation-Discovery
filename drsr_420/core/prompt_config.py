@@ -96,6 +96,21 @@ residual_block_title = (
     "two disagree. ###\n\n"
 )
 
+# 架构地形注入区块标题（内容由 evaluation.architecture_facts 逐样本算出）。
+#
+# 为什么要"机器事实"而不是让分析自己回忆试过什么：实测 MRFCompress-Cuboid_20260926-110809
+# 的 87 个有评分样本里 52 个是同一个完整二阶响应面的重新参数化（换记号/平移），而"删掉
+# 一个平方项"的非对称形式一次都没被提出；模型自述的"我试过很多形式"与此完全不符。
+# 标题里必须写清"该项是一维变换"——否则模型会把 {λ12², λ23²} 读成"只有这一种写法"，
+# 而不知道平移/取对数的同一架构已被算作试过。
+architecture_block_title = (
+    "\n\n### The following facts about the function architectures already tried were computed "
+    "by code from every evaluated sample. A term below stands for a one-dimensional transform "
+    "of that variable (identity, shifted/scaled or log are counted as the SAME architecture). "
+    "Treat them as authoritative: they are the only source for what has and has not been "
+    "tried. ###\n\n"
+)
+
 # 系统角色提示：角色设定与任务数据分离（采样/分析/残差/解释通用）
 system_prompt = (
     "You are a physics-informed scientific equation discovery assistant. "
@@ -213,7 +228,16 @@ residual_analysis_prompt = (
     "monotonicity verdict or the number of reversals: the fact block above is the single "
     "authority — quote its count and its reversal points, and if your own reading differs, say so "
     "explicitly instead of silently using your own count.\n\n"
-    "6.##Output Format##:\n"
+    # 架构锁死（20260926-110809 的实测教训）：87 个有评分样本里 52 个是同一个完整二阶
+    # 响应面的重新参数化，而"删掉一个平方项"的非对称形式一次都没被提出——残差通道此前
+    # 只会提"局部改动"，对"架构已触底"毫无反应，注入采样提示后等于让模型继续换记号。
+    # 这一条要求删项候选，且必须指向事实块里"从未评估过"的邻域（数字由代码给出）。
+    "6. If the injected architecture facts report that the term set of the equation above has "
+    "already been evaluated with no score improvement, `suggested_structural_change` MUST "
+    "include at least one DELETION: name the exact term to drop and the residual rows that "
+    "stop supporting it, and prefer one of the never-evaluated one-term deletions listed in "
+    "those facts. Re-parameterizing the same term set is not a structural change.\n\n"
+    "7.##Output Format##:\n"
     "STRICTLY deliver results in the following structured format:\n\n"
     "  \"output_format\": {{\n"
     "    \"analysis\": {{\n"
@@ -520,11 +544,14 @@ class PromptContext:
     def _residual_requirements(self) -> tuple[str, ...]:
         """残差通道**独占**的要求（初次分析没有残差列，不能带这些要求）。
 
-        两条实测缺陷的护栏：
+        三条实测缺陷的护栏：
         * 复述——上一轮结论是提示词里唯一符合 schema 的范例，模型把它抄一遍就当答案
           （实测本实验 21 轮残差分析里 8 轮与上一轮逐字相同，最长公共前缀 = 全文长度）；
         * 空转——分析只说"某一轮的趋势"，对当前方程哪里错、该怎么改只字未提，注入
           采样提示后不提供任何新信息。故要求必须给出由残差列派生的字段。
+        * 架构锁死——结论只做局部改动，从不提"删项"，对"同一架构已触底"没有反应
+          （实测 87 个样本里 52 个是同一二阶响应面的重新参数化，删一个平方项的形式
+          从未被提出）。故架构触底时必须给出删项候选。
         """
         return (
             "This round analyzes ONLY the residuals of the equation given above. Do NOT restate, "
@@ -550,6 +577,17 @@ class PromptContext:
             "re-word the monotonicity verdict or the number of reversals: the fact block above is "
             "the single authority — quote its count and its reversal points, and if your own "
             "reading differs, say so explicitly instead of silently using your own count.",
+            # 架构锁死（20260926-110809 的实测教训）：87 个有评分样本里 52 个是同一个
+            # 完整二阶响应面的重新参数化（换记号/平移），而"删掉一个平方项"的非对称
+            # 形式一次都没被提出。残差通道此前只会提"局部改动"，对"架构已触底"没有
+            # 反应——注入采样提示后等于让模型继续换记号。故要求：事实块报告该架构触底
+            # 时必须给出**删项**候选，且优先指向事实块里"从未评估过"的邻域。
+            "If the injected architecture facts report that the term set of the equation above "
+            "has already been evaluated with no score improvement, `suggested_structural_change` "
+            "MUST include at least one DELETION: name the exact term to drop and the residual "
+            "rows that stop supporting it, and prefer one of the never-evaluated one-term "
+            "deletions listed in those facts. Re-parameterizing the same term set is not a "
+            "structural change.",
         )
 
     def _task_section(self, role_text: str, extra_requirements: tuple[str, ...] = ()) -> str:
