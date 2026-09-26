@@ -346,17 +346,45 @@ def _monotonicity(names: list[str], X: np.ndarray, y: np.ndarray) -> list[dict]:
     为什么必须由代码判定：实测分析文本把 λ23 说成"Monotone increase with lambda23"，
     而它自己列出的数字里 σ(λ23=3.9174)=306.577 > σ(λ23=4.8446)=296.651 就是一处反转
     ——相关系数高（0.83）不等于单调。这类断言会被注入每条采样提示，必须在源头拦住。
+
+    **重复取值口径**（20260926-110809 的实测教训）：一个自变量上可以有两个不同的
+    因变量值——本数据 λ12=1.0 同时有 193.0543 与 352.1991，即 σ **不是** λ12 的单值
+    函数。旧实现按 x 排序后逐对比较，把"同一 x 的竖直跳变"当成一次真实上升，于是报
+    「2 处反转、首个在 1.0->2.0」；而任何沿采样路径的读法都只看到 1 处，分析文本与
+    事实表因此互相矛盾（提示词还规定事实表是唯一依据）。现在把同一 x 的取值按**区间**
+    参与比较：下一点落在该区间内记 ``undetermined_steps``（方向不可判定、不计反转），
+    并把该 x 的全部取值记进 ``duplicate_x_groups`` 供下游显式报告。
+
+    注意 ``direction`` 是**最后一段**的方向（历史口径，渲染器只在 ``monotone`` 为真时
+    才打印它）：非单调项的 ``direction`` 不代表整体趋势，判定请只看 ``monotone`` /
+    ``reversals`` / ``first_reversal``（实测 λ12 非单调但 direction="increasing"，
+    因为最后一段是 4.0->5.0 的回升）。
     """
     report = []
     for j, name in enumerate(names):
         order = np.argsort(X[:, j], kind="mergesort")
         xs, ys = X[order, j], y[order]
+        # 稳定排序后同一 x 必然相邻，故一次线性扫描即可分组
+        groups: list[tuple[float, list[float]]] = []
+        for xi, yi in zip(xs, ys):
+            if groups and float(xi) == groups[-1][0]:
+                groups[-1][1].append(float(yi))
+            else:
+                groups.append((float(xi), [float(yi)]))
         direction = 0
         reversals = 0
         first = None
-        for i in range(len(ys) - 1):
-            delta = np.sign(ys[i + 1] - ys[i])
-            if delta == 0:
+        undetermined = 0
+        for (x1, g1), (x2, g2) in zip(groups, groups[1:]):
+            lo1, hi1 = min(g1), max(g1)
+            lo2, hi2 = min(g2), max(g2)
+            if lo2 > hi1:
+                delta = 1
+            elif hi2 < lo1:
+                delta = -1
+            else:
+                # 两组取值区间重叠：这一步的方向取决于取组内哪个值，不敢判定
+                undetermined += 1
                 continue
             if direction == 0:
                 direction = delta
@@ -364,17 +392,28 @@ def _monotonicity(names: list[str], X: np.ndarray, y: np.ndarray) -> list[dict]:
                 reversals += 1
                 direction = delta   # 必须锁存新方向：否则一段持续下行/上行会被逐增量重复计数
                 if first is None:
-                    first = {"from": {name: _round(xs[i]), "dependent": _round(ys[i])},
-                             "to": {name: _round(xs[i + 1]), "dependent": _round(ys[i + 1])}}
+                    # 只用**真实数据点**做见证，且取最保守的一对（升：左组最高 → 右组最低）
+                    left = hi1 if delta > 0 else lo1
+                    right = lo2 if delta > 0 else hi2
+                    first = {"from": {name: _round(x1), "dependent": _round(left)},
+                             "to": {name: _round(x2), "dependent": _round(right)}}
         entry = {
             "feature": name,
-            "monotone": reversals == 0,
+            "monotone": reversals == 0 and undetermined == 0,
             "direction": ("increasing" if direction > 0 else
                           "decreasing" if direction < 0 else "flat"),
             "reversals": reversals,
         }
         if first is not None:
             entry["first_reversal"] = first
+        if undetermined:
+            entry["undetermined_steps"] = undetermined
+        dup = [(x, vals) for x, vals in groups if len(vals) > 1]
+        if dup:
+            entry["duplicate_x_groups"] = [
+                {name: _round(x), "dependent": [_round(v) for v in vals]}
+                for x, vals in dup
+            ]
         report.append(entry)
     return report
 
@@ -490,18 +529,32 @@ def render_facts(facts: dict) -> str:
     # 单调性判定放在最前面：实测模型会写"Monotone increase with lambda23"，而数据里
     # 明明有一处反转。相关系数高不等于单调，这条必须由代码给出结论。
     for m in facts.get("monotonicity") or []:
+        feature = m.get("feature")
         if m.get("monotone"):
             lines.append(f"monotonicity: {dep} is monotone {m.get('direction')} in "
-                         f"{m.get('feature')} on this dataset")
+                         f"{feature} on this dataset")
             continue
         rev = m.get("first_reversal") or {}
         frm, to = rev.get("from", {}), rev.get("to", {})
+        extra = ""
+        if m.get("undetermined_steps"):
+            extra += (f" {m['undetermined_steps']} step(s) are UNDETERMINED because two "
+                      f"different {dep} values share one {feature} value (see below).")
         lines.append(
-            f"monotonicity: {dep} is NOT monotone in {m.get('feature')} "
-            f"({m.get('reversals')} reversal(s); first at {m.get('feature')}="
-            f"{frm.get(m.get('feature'))}->{to.get(m.get('feature'))}: "
-            f"{frm.get('dependent')}->{to.get('dependent')}). Do not describe it as "
-            "a monotone/saturating trend without acknowledging this.")
+            f"monotonicity: {dep} is NOT monotone in {feature} "
+            f"({m.get('reversals')} reversal(s); first at {feature}="
+            f"{frm.get(feature)}->{to.get(feature)}: "
+            f"{frm.get('dependent')}->{to.get('dependent')}).{extra} Do not describe it as "
+            "a monotone/saturating trend without acknowledging this, and do NOT re-derive, "
+            "re-count or re-word this verdict yourself: quote these numbers and this count.")
+        # 重复 x（同一自变量取值上有多个因变量值）必须显式给出：这等价于"因变量不是该
+        # 自变量的单值函数"，本身是重要事实，也是上面 undetermined 步的成因。
+        for dup in m.get("duplicate_x_groups") or []:
+            vals = ", ".join(str(v) for v in dup.get("dependent") or [])
+            lines.append(
+                f"  same {feature} value carries different {dep} values: {feature}="
+                f"{dup.get(feature)} -> [{vals}] (so {dep} is NOT a single-valued function "
+                f"of {feature})")
     lines.append("column stats:")
     for name, st in (facts.get("columns") or {}).items():
         lines.append(f"  {name}: min={st['min']} max={st['max']} mean={st['mean']} std={st['std']}")

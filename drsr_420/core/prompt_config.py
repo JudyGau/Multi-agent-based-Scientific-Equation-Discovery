@@ -7,6 +7,9 @@
 - 避免继续向模型暴露 with driving force / col0 / col1 之类的历史模板残留。
 """
 
+import json
+import re
+
 # 任务头中使用的占位参数（用于 _do_request 中的 head 文本格式化）
 problem_name_in_prompt = 'target relation'
 dependent_name_in_prompt = 'y'
@@ -199,7 +202,18 @@ residual_analysis_prompt = (
     "`worst_fit_rows` (rows with the largest |residual|, with sign and magnitude) and "
     "`suggested_structural_change` (ONE concrete skeleton change justified by the pattern). Quote only "
     "numbers that appear in the dataset above.\n\n"
-    "5.##Output Format##:\n"
+    # 方向词与单调性口径（20260926-110809 的实测教训）：分析文本把一段下降序列
+    # （339.5776 -> 296.6507）写成 "sigma rises ... up through 296.6507"；同一轮它又
+    # 按自己的口径数反转次数，与事实表给的不一致——而提示词规定事实表是唯一依据。
+    "5. Direction wording and the monotonicity verdict are CHECKED FACTS, not your judgement. "
+    "(a) Before writing any sentence containing rises/increases/falls/decreases, re-read the "
+    "numbers that follow it in that same sentence and check that the wording matches their "
+    "direction (a sequence descending from 339.5776 to 296.6507 must not be called a rise); if "
+    "you cannot check it, drop the direction word. (b) Never re-derive, re-count or re-word the "
+    "monotonicity verdict or the number of reversals: the fact block above is the single "
+    "authority — quote its count and its reversal points, and if your own reading differs, say so "
+    "explicitly instead of silently using your own count.\n\n"
+    "6.##Output Format##:\n"
     "STRICTLY deliver results in the following structured format:\n\n"
     "  \"output_format\": {{\n"
     "    \"analysis\": {{\n"
@@ -525,6 +539,17 @@ class PromptContext:
             "rows with the largest |residual|, with sign and magnitude), and "
             "`suggested_structural_change` (ONE concrete change to the skeleton justified by the "
             "pattern). Quote only numbers that appear in the dataset or the code-measured facts.",
+            # 方向词与单调性口径（20260926-110809 的实测教训）：分析把一段下降序列
+            # （339.5776 -> 296.6507）写成 "sigma rises ... up through 296.6507"，同一轮又
+            # 按自己的口径数反转次数、与事实表不一致——而提示词规定事实表是唯一依据。
+            "Direction wording and the monotonicity verdict are CHECKED FACTS, not your judgement. "
+            "(a) Before writing any sentence containing rises/increases/falls/decreases, re-read the "
+            "numbers that follow it in that same sentence and check that the wording matches their "
+            "direction (a sequence descending from 339.5776 to 296.6507 must not be called a rise); "
+            "if you cannot check it, drop the direction word. (b) Never re-derive, re-count or "
+            "re-word the monotonicity verdict or the number of reversals: the fact block above is "
+            "the single authority — quote its count and its reversal points, and if your own "
+            "reading differs, say so explicitly instead of silently using your own count.",
         )
 
     def _task_section(self, role_text: str, extra_requirements: tuple[str, ...] = ()) -> str:
@@ -632,3 +657,76 @@ class PromptContext:
             f"{self._task_section(role_text, self._residual_requirements())}\n"
             f"{self._output_format_block(residual=True)}"
         )
+
+
+# ── 分析结果落盘前的清洗 ────────────────────────────────────────
+#: ```json 围栏行（模型常把结构化答案包在代码块里）。
+_FENCE_RE = re.compile(r"^\s*```[A-Za-z]*\s*$")
+
+
+def flatten_analysis(text: str) -> str:
+    """剥掉分析模型按 ##Output Format## 回显的 JSON 外壳，返回扁平化纯文本。
+
+    提示词第 5/6 条**明确要求**输出 ``"output_format": {"analysis": {...}}`` 外壳，
+    模型是在照做；但 ``residual_analyze.json`` 的 ``analysis`` 字段是**当纯文本**存、
+    并会被注入采样提示（``prompt_injection``）与"上一轮结论"（``residual_analyzer``）
+    ——带着外壳只会浪费 token，并把 schema 噪声喂给采样器（实测 20260926-110809 等多
+    次运行都原样存了外壳）。
+
+    解析不出来时**原样返回**：宁可留外壳，也不能因为"美化"而丢内容。
+    """
+    if not text or "output_format" not in text:
+        return text
+    payload = _parse_analysis_envelope(text)
+    if payload is None:
+        return text
+    rendered = _render_analysis_payload(payload)
+    return rendered or text
+
+
+def _parse_analysis_envelope(text: str):
+    """尽力把外壳解析成 ``analysis`` 字典；失败返回 None。
+
+    模型常省略最外层花括号（骨架里就没有），故两种写法都试；中途任何异常都只当
+    "没解析出来"，交给调用方原样保留。
+    """
+    body = "\n".join(line for line in text.splitlines() if not _FENCE_RE.match(line)).strip()
+    for candidate in (body, "{" + body + "}"):
+        try:
+            data = json.loads(candidate)
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        inner = (data.get("output_format") or {}).get("analysis")
+        if isinstance(inner, dict):
+            return inner
+        if isinstance(data.get("analysis"), dict):   # 模型省掉了 output_format 这一层
+            return data["analysis"]
+    return None
+
+
+def _render_analysis_payload(payload: dict) -> str:
+    """把 ``analysis`` 结构渲染成"字段名 + 逐条"的纯文本（信息不变，只去外壳）。"""
+    lines: list[str] = []
+    for key, value in payload.items():
+        lines.append(f"### {key} ###")
+        if isinstance(value, dict):
+            for sub_key, sub_value in value.items():
+                lines.append(f"- {sub_key}:")
+                for item in _as_items(sub_value):
+                    lines.append(f"    - {item}")
+        else:
+            for item in _as_items(value):
+                lines.append(f"- {item}")
+    return "\n".join(lines).strip()
+
+
+def _as_items(value) -> list[str]:
+    """把字段值统一成非空字符串列表（标量当单条）。"""
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    if value is None:
+        return []
+    text = str(value).strip()
+    return [text] if text else []

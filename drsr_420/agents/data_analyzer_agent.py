@@ -376,11 +376,14 @@ STRICTLY deliver results in the following structured format:
                 print(f"读取现有初次分析文件时出错: {e}")
 
         # 创建初次分析数据结构（sample_order=0，作为残差分析链路的起点）
+        # 分析结果按 ##Output Format## 回显时会带 "output_format" 外壳；落盘前剥掉，
+        # 否则这份文本会连外壳一起被注入采样提示（见 prompt_config.flatten_analysis）。
+        cleaned = pc.flatten_analysis(result)
         residual_record = {
             "sample_order": 0,
             "island_id": 'this is the initial data',
             "equation": None,
-            "analysis": result,
+            "analysis": cleaned,
             "stats": {
                 "mean_residual": None,
                 "max_absolute_residual": None,

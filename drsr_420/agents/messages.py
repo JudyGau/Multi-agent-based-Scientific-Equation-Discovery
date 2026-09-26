@@ -31,6 +31,8 @@ from __future__ import annotations
 import dataclasses
 from typing import TYPE_CHECKING, Any, Sequence
 
+from drsr_420.core import prompt_config as pc
+
 if TYPE_CHECKING:      # 仅类型检查：避免 messages → core 的运行时依赖
     from drsr_420.core import buffer
     from drsr_420.core.profile import Profiler
@@ -140,12 +142,17 @@ class ResidualInsight:
     best_score: float | None = None
 
     def to_json(self) -> dict:
-        """转为写入 ``residual_analyze.json`` 的字典（字段名与历史产物保持一致）。"""
+        """转为写入 ``residual_analyze.json`` 的字典（字段名与历史产物保持一致）。
+
+        ``analysis`` 落盘前剥掉按 ##Output Format## 回显的 ``output_format`` 外壳
+        （见 :func:`prompt_config.flatten_analysis`）：该字段是当纯文本消费的，
+        带外壳只会被原样注入采样提示。
+        """
         return {
             "sample_order": self.sample_order,
             "island_id": self.island_id,
             "equation": self.sample,
-            "analysis": self.analysis,
+            "analysis": pc.flatten_analysis(self.analysis),
             "best_score": self.best_score,
         }
 

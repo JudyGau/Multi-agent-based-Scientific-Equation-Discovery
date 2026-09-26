@@ -175,12 +175,85 @@ class ResidualIncrementPromptTest(unittest.TestCase):
 
     def test_task_numbering_follows_extra_requirements(self):
         self.assertIn("4.##Output Format##", self._ctx().render_initial_analysis_prompt())
-        self.assertIn("6.##Output Format##",
+        # 残差通道的编号 = 3 条基础要求 + N 条残差专有要求 + 1；加了"方向词/单调性口径"
+        # 那条之后 N=3，故格式块编号顺延到 7。
+        self.assertIn("7.##Output Format##",
                       self._ctx().render_residual_analysis_prompt("prev", "res", "sample"))
+
+    def test_direction_wording_rule_is_in_both_prompt_paths(self):
+        """方向词自检 + 不得自行重判/重计数单调性（20260926-110809 的实测教训）。
+
+        同一轮里分析把一段下降序列（339.5776 -> 296.6507）写成 "sigma rises ... up
+        through 296.6507"，又按自己的口径数出与事实表不一致的反转次数——而提示词规定
+        事实表是唯一依据。静态兜底模板与动态 PromptContext 两条路径都必须带这条要求。
+        """
+        dynamic = self._ctx().render_residual_analysis_prompt("prev", "res", "sample")
+        for text in (pc.residual_analysis_prompt, dynamic):
+            with self.subTest(path=text[:40]):
+                self.assertIn("CHECKED FACTS, not your judgement", text)
+                self.assertIn("must not be called a rise", text)
+                self.assertIn("Never re-derive, re-count or re-word", text)
 
     def test_fallback_residual_template_carries_the_same_requirements(self):
         self.assertIn("Do NOT restate", pc.residual_analysis_prompt)
         self.assertIn("residual_sign_pattern", pc.residual_analysis_prompt)
+
+
+class FlattenAnalysisTest(unittest.TestCase):
+    """落盘前剥掉分析模型按 ##Output Format## 回显的 ``output_format`` 外壳。
+
+    实测 20260926-110809 / 094330 等多轮：提示词第 5/6 条**明确要求**这个外壳，
+    模型是在照做，而 ``analysis`` 字段是当纯文本存并被注入采样提示的——带外壳只会
+    浪费 token、把 schema 噪声喂给采样器。
+    """
+
+    #: 真实形态：模型常带 ```json 围栏、且省略最外层花括号（骨架里本来就没有）
+    ENVELOPE = (
+        "```json\n"
+        '"output_format": {\n'
+        '  "analysis": {\n'
+        '    "independent_to_dependent_relationships": {\n'
+        '      "lambda12": [\n'
+        '        "sigma is NOT monotone in lambda12: it falls 339.5776 -> 296.6507."\n'
+        "      ]\n"
+        "    },\n"
+        '    "inter_relationships_between_independents": {\n'
+        '      "lambda12 vs lambda23": [\n'
+        '        "|r| = 0.9996 in log space."\n'
+        "      ]\n"
+        "    }\n"
+        "  }\n"
+        "}\n"
+        "```\n"
+    )
+
+    def test_envelope_is_flattened(self):
+        out = pc.flatten_analysis(self.ENVELOPE)
+        self.assertNotIn("output_format", out)
+        self.assertNotIn("```", out)
+        self.assertIn("independent_to_dependent_relationships", out)
+        self.assertIn("sigma is NOT monotone in lambda12: it falls 339.5776 -> 296.6507.", out)
+        self.assertIn("|r| = 0.9996 in log space.", out)
+
+    def test_outer_braces_variant_also_flattens(self):
+        body = self.ENVELOPE.replace("```json\n", "").replace("```\n", "").rstrip()
+        with_braces = "{" + body + "}"          # 模型有时会补上最外层花括号
+        out = pc.flatten_analysis(with_braces)
+        self.assertNotIn("output_format", out)
+        self.assertIn("|r| = 0.9996 in log space.", out)
+
+    def test_plain_text_is_returned_unchanged(self):
+        text = "sigma is not monotone in lambda12; nothing to flatten here."
+        self.assertEqual(pc.flatten_analysis(text), text)
+
+    def test_unparsable_envelope_keeps_the_original(self):
+        """解析不出来宁可留外壳，也不能因为"美化"而丢内容。"""
+        broken = '```json\n"output_format": {\n  "analysis": { oops not json\n```'
+        self.assertEqual(pc.flatten_analysis(broken), broken)
+
+    def test_empty_input_is_safe(self):
+        self.assertEqual(pc.flatten_analysis(""), "")
+        self.assertEqual(pc.flatten_analysis(None), None)
 
 
 class DataQuotingInstructionTest(unittest.TestCase):

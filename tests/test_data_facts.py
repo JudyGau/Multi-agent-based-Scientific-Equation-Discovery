@@ -110,16 +110,48 @@ class MonotonicityTest(_MRFFixtureTest):
 
     def test_reversals_count_direction_flips_not_opposite_deltas(self):
         """回归：反转计数曾不锁存新方向，一段持续下行被逐增量重复计数——
-        实测本数据 lambda12 报 5 次，实际方向翻转只有 2 次（升->降->升）。"""
+        实测本数据 lambda12 报 5 次，实际方向翻转只有 1 次（沿脊下行 -> 5.0 回升）。"""
         X, names, y, dep = _load_mrf()
         facts = df.compute_facts(X, y, names, dep, with_skeletons=False)
         by_feature = {m["feature"]: m for m in facts["monotonicity"]}
         lam12 = by_feature["lambda12"]
-        # 排序后符号序列为 +,-,-,-,-,-,+：升(1.0 两行)->沿脊下行(2.0..4.0)->5.0 回升
-        self.assertEqual(lam12["reversals"], 2)
-        self.assertAlmostEqual(lam12["first_reversal"]["from"]["lambda12"], 1.0, places=6)
-        self.assertAlmostEqual(lam12["first_reversal"]["from"]["dependent"], 352.1991, places=3)
-        self.assertAlmostEqual(lam12["first_reversal"]["to"]["lambda12"], 2.0, places=6)
+        self.assertEqual(lam12["reversals"], 1)
+        rev = lam12["first_reversal"]
+        self.assertAlmostEqual(rev["from"]["lambda12"], 4.0, places=6)
+        self.assertAlmostEqual(rev["from"]["dependent"], 296.6507, places=3)
+        self.assertAlmostEqual(rev["to"]["lambda12"], 5.0, places=6)
+        self.assertAlmostEqual(rev["to"]["dependent"], 306.577, places=3)
+
+    def test_duplicated_x_is_reported_instead_of_counted_as_a_reversal(self):
+        """λ12=1.0 上有两个不同的 σ（193.0543 与 352.1991）⇒ σ 不是 λ12 的单值函数。
+
+        旧口径把这条"同一 x 的竖直跳变"当成一次真实上升，于是报「2 处反转、首个在
+        1.0->2.0」（见本文件上一版测试），而任何沿采样路径的读法只看到 1 处——分析
+        文本因此与事实表互相矛盾（实测 20260926-110809）。现在该步记 undetermined、
+        反转不计数，并把重复取值显式列出。
+        """
+        X, names, y, dep = _load_mrf()
+        facts = df.compute_facts(X, y, names, dep, with_skeletons=False)
+        by_feature = {m["feature"]: m for m in facts["monotonicity"]}
+        lam12 = by_feature["lambda12"]
+        self.assertEqual(lam12["undetermined_steps"], 1)
+        dup = lam12["duplicate_x_groups"]
+        self.assertEqual(len(dup), 1)
+        self.assertAlmostEqual(dup[0]["lambda12"], 1.0, places=6)
+        self.assertEqual(sorted(dup[0]["dependent"]), [193.0543, 352.1991])
+        # 单值的那种自变量不该凭空多出这些字段
+        lam23 = by_feature["lambda23"]
+        self.assertNotIn("duplicate_x_groups", lam23)
+        self.assertNotIn("undetermined_steps", lam23)
+
+    def test_render_reports_the_duplicate_x_fact(self):
+        X, names, y, dep = _load_mrf()
+        text = df.render_facts(df.compute_facts(X, y, names, dep, with_skeletons=False))
+        self.assertIn("same lambda12 value carries different sigma values", text)
+        self.assertIn("NOT a single-valued function", text)
+        self.assertIn("UNDETERMINED", text)
+        # 表中口径即权威：正文不得自行重判/重计数
+        self.assertIn("do NOT re-derive, re-count or re-word this verdict", text)
 
     def test_monotone_relation_is_reported_as_monotone(self):
         x = np.array([1.0, 2.0, 3.0, 4.0])
