@@ -1,23 +1,32 @@
-"""训练进度曲线：把"历史最优刷新点"画成随 sample_order 变化的阶梯图（拟合 MSE /
-动态范围体检罚分 / 评分三条），并渲染 report.md 的机器生成小节。
+"""训练进度曲线：把"逐样本轨迹"与"历史最优刷新点"各自画成随 sample_order 变化的
+三条曲线（拟合 MSE / 动态范围体检罚分 / 评分），并渲染 report.md 的机器生成小节。
 
 用途
 ----
 收尾时回答"这一次搜索是怎么收敛的"：最优解在第几个样本出现、中途刷新过几次、
 末段的改善是台阶还是抖动；以及——只看 MSE 会漏掉的那件事——**罚分是不是在同步上涨**
 （实测"低 MSE 高罚分 ↔ 高 MSE 零罚分"两模态会让 MSE 曲线看起来在改善而评分没动）。
-三张图分别落在 ``<results_root>/mse_vs_sample_order.png`` /
-``penalty_vs_sample_order.png`` / ``score_vs_sample_order.png``，小节由系统生成
-（数字不经 LLM 转述），排在「动态范围体检」之后、「参考文献」之前。
+两套曲线各三张图：
+
+* **逐样本**（``samples/*.json``，每个已落盘样本一个点、折线连接）：
+  ``mse_per_sample_vs_sample_order.png`` / ``penalty_per_sample_vs_sample_order.png`` /
+  ``score_per_sample_vs_sample_order.png``；
+* **刷新点**（``best_history/best_sample_<sample_order>.json``，一次全局最优刷新一个点、
+  阶梯线）::
+
+      mse_vs_sample_order.png / penalty_vs_sample_order.png / score_vs_sample_order.png
+
+小节由系统生成（数字不经 LLM 转述），排在「动态范围体检」之后、「参考文献」之前。
 
 口径
 ----
-* **只读实验目录内的机器产物** ``best_history/best_sample_<sample_order>.json``
-  ——评估器每刷新一次全局最优就写一个文件，含 ``sample_order`` / ``iteration`` /
-  ``mse`` / ``nmse`` / ``penalty`` / ``score``。其中 ``mse`` 是**拟合本身**的均方误差，
-  体检罚分记在 ``penalty`` 里（评分 = −(mse+penalty)）；**旧目录没有 ``penalty``
-  字段**，其 ``mse`` 内含罚分，本模块会据此改写纵轴标注、跳过罚分曲线并在小节里告警。
-* **三条曲线共用同一批刷新点**（刷新 = 评分改善），横轴逐点对齐；每个点上恒有
+* **只读实验目录内的机器产物**：``samples/*.json``（逐样本）与
+  ``best_history/best_sample_<sample_order>.json``（刷新点）。``mse`` 是**拟合本身**的
+  均方误差，体检罚分记在 ``penalty`` 里（评分 = −(mse+penalty)）；**旧目录没有
+  ``penalty`` 字段**，其 ``mse`` 内含罚分，本模块会据此改写纵轴标注、跳过罚分曲线
+  并在小节里告警。逐样本曲线还可能只含 top-K（``persist_all_samples`` 之前）——
+  小节里必须写明，否则会被读成"只评估了这么多次"。
+* 刷新点曲线的三条线共用同一批刷新点（刷新 = 评分改善），横轴逐点对齐；每个点上恒有
   ``|score| = mse + penalty``，可逐点自检。
 * **不解析 run.out 的逐样本分数**：``MRFCompress-Cuboid.bat`` 等启动入口并不重定向
   stdout（实测其调用是裸的 ``python -m drsr_420.cli.main …``），``run.out`` 不是每条
@@ -31,7 +40,7 @@
 
     python -m drsr_420.analysis.progress_curve <results_root>
 
-回填：对已有实验目录重跑本模块即可补出三张图与小节（不触发任何 LLM 调用）；
+回填：对已有实验目录重跑本模块即可补出六张图与小节（不触发任何 LLM 调用）；
 小节按 ``## 训练进度`` 前缀整节替换，故对只含旧 MSE 标题的历史报告同样幂等。
 """
 from __future__ import annotations
@@ -44,11 +53,20 @@ import sys
 
 import numpy as np
 
+from drsr_420.core.sample_records import load_sample_records
+
 #: 三个量各自的进度图文件名（报告小节按相对路径引用）。MSE 沿用旧名——历史报告与
 #: 文档都引用过它，改名只会制造孤儿文件。
 PROGRESS_PNG_NAME = "mse_vs_sample_order.png"
 PENALTY_PNG_NAME = "penalty_vs_sample_order.png"
 SCORE_PNG_NAME = "score_vs_sample_order.png"
+
+#: 逐样本（每个已落盘样本一个点、折线连接）三张图。与上面三张的区别是**数据源**：
+#: 上面只取全局最优刷新点（``best_history``），这里取 ``samples/*.json`` 的全部样本。
+#: 文件名刻意不与上面互为子串，便于在任何文本里唯一定位。
+PER_SAMPLE_MSE_PNG_NAME = "mse_per_sample_vs_sample_order.png"
+PER_SAMPLE_PENALTY_PNG_NAME = "penalty_per_sample_vs_sample_order.png"
+PER_SAMPLE_SCORE_PNG_NAME = "score_per_sample_vs_sample_order.png"
 
 #: report.md 里训练进度小节的标题（机器生成）。现在覆盖三个量，故标题改为此；
 #: **剥离旧小节用前缀** :data:`_SECTION_PREFIX`，这样老报告里只含 MSE 的旧标题
@@ -130,14 +148,45 @@ def _finite_or_none(value):
     return number if np.isfinite(number) else None
 
 
+def load_sample_points(results_root: str) -> list[dict]:
+    """读 ``samples/*.json`` 的**每个已落盘样本**，按 ``sample_order`` 升序返回。
+
+    与 :func:`load_best_history`（只有全局最优刷新点）相对：这里是**原始轨迹**——
+    每个 ``sample_order`` 一个点，于是"低 MSE 高罚分 ↔ 高 MSE 零罚分"在两模态之间的
+    来回摆动直接可见；而刷新点曲线按定义只保留"评分改善"的那几个点，看不见摆动。
+
+    返回项与 :func:`load_best_history` 同形（``mse`` / ``nmse`` / ``penalty`` / ``score``），
+    以便复用同一套画法与刻度规则。
+
+    只包含**已落盘**的样本：``persist_all_samples`` 之前的实验只留 top-K，此时点数
+    远小于实际评估数——渲染方必须把这一点写进小节（否则会被读成"只评估了这么多次"）。
+    """
+    rows: list[dict] = []
+    for record in load_sample_records(results_root or "."):
+        order = record.get("sample_order")
+        mse = _finite_or_none(record.get("mse"))
+        if order is None or mse is None:
+            continue
+        rows.append({"sample_order": int(order), "iteration": None, "mse": mse,
+                     "nmse": record.get("nmse"),
+                     "penalty": _finite_or_none(record.get("penalty")),
+                     # load_sample_records 只收带数字 score 的记录，故这里必有值
+                     "score": float(record["score"])})
+    rows.sort(key=lambda r: r["sample_order"])
+    return rows
+
+
 def _plot_quantity(plt, rows: list[dict], results_root: str, *, key: str, png_name: str,
                    label: str, ylabel: str, title: str, color: str,
-                   symlog: bool = False) -> dict | None:
-    """把单个量画成"历史最优阶梯 + 刷新点标记"，返回 ``{path, n_points, scale}``。
+                   symlog: bool = False, step: bool = True) -> dict | None:
+    """把单个量画成一条曲线，返回 ``{path, n_points, scale}``。
 
-    三条曲线共用同一批刷新点（``best_history`` 的每个文件 = 一次全局最优刷新），
-    所以横轴位置完全对齐、可直接对照。没有可画的数据（该字段全缺）时返回 ``None``
-    **且不落盘**——报告侧据此省略这一条曲线，而不是贴一张空图。
+    ``step=True``（默认，刷新点曲线）：阶梯线是"当时的全局最优、保持到下一次刷新"，
+    菱形标出刷新点。``step=False``（逐样本曲线）：把每个 ``sample_order`` 的点用
+    **折线**连起来——它表示"每个样本各自的值"，没有"保持"的语义，故不能画成阶梯。
+
+    没有可画的数据（该字段全缺）时返回 ``None`` **且不落盘**——报告侧据此省略这一条
+    曲线，而不是贴一张空图。
     """
     values = np.asarray([row[key] for row in rows], dtype=float)
     xs = np.asarray([row["sample_order"] for row in rows], dtype=float)
@@ -145,10 +194,14 @@ def _plot_quantity(plt, rows: list[dict], results_root: str, *, key: str, png_na
     log_scale = bool(not symlog and np.all(values > 0))
 
     fig, ax = plt.subplots(figsize=(7, 5))
-    ax.step(xs, values, where="post", color=color, lw=2,
-            label=f"{label} (held to next refresh)")
-    ax.plot(xs, values, linestyle="none", marker="D", ms=6, color="tab:red",
-            label=f"refresh points ({len(rows)})")
+    if step:
+        ax.step(xs, values, where="post", color=color, lw=2,
+                label=f"{label} (held to next refresh)")
+        ax.plot(xs, values, linestyle="none", marker="D", ms=6, color="tab:red",
+                label=f"refresh points ({len(rows)})")
+    else:
+        ax.plot(xs, values, marker="o", ms=3.5, lw=1.2, color=color,
+                label=f"{label} ({len(rows)} samples)")
     scale_text = "linear"
     if symlog:
         ax.set_yscale("symlog", linthresh=SCORE_SYMLOG_LINTHRESH)
@@ -178,23 +231,27 @@ def _plot_quantity(plt, rows: list[dict], results_root: str, *, key: str, png_na
 
 
 def plot_progress_curve(results_root: str) -> dict | None:
-    """画 MSE / 体检罚分 / 评分三条进度曲线，返回报告小节所需的数字摘要。
+    """画两套各三条曲线（逐样本轨迹 / 全局最优刷新点），返回报告小节所需的数字摘要。
 
-    三者都画在 ``best_history/best_sample_<sample_order>.json`` 的**同一批刷新点**上
-    （每个文件 = 一次全局最优刷新），故横轴逐点对齐：
+    **逐样本**（``samples/*.json``，每个 ``sample_order`` 一个点、折线连接）::
 
-    * MSE —— ``mse_vs_sample_order.png``（拟合本身，不含罚分；旧目录口径见 ``legacy_records``）；
-    * 罚分 —— ``penalty_vs_sample_order.png``（动态范围体检罚分；旧目录无该字段 → 不画）；
-    * 评分 —— ``score_vs_sample_order.png``（``-(mse+penalty)``，symlog 纵轴）。
+        mse_per_sample_vs_sample_order.png / penalty_per_sample_vs_sample_order.png /
+        score_per_sample_vs_sample_order.png
 
-    为什么要看罚分/评分与 MSE 并列：实测"低 MSE 高罚分 ↔ 高 MSE 零罚分"两模态会让
-    MSE 曲线**看起来在改善**而评分其实没动（20260926-151008 的 order 53 拟合 MSE 0.1747
-    却带 7.0e8 罚分）；只看 MSE 一条曲线读不出这件事。
+    **刷新点**（``best_history/best_sample_<sample_order>.json``，阶梯线 + 刷新点标记，
+    每个文件 = 一次全局最优刷新）::
+
+        mse_vs_sample_order.png / penalty_vs_sample_order.png / score_vs_sample_order.png
+
+    为什么要两套：刷新点曲线只看得到"评分改善"，而实测存在"低 MSE 高罚分 ↔ 高 MSE
+    零罚分"两模态——两个模式各自的评分都可能"看起来在改善/停滞"，摆动本身只在
+    **逐样本**轨迹上可见（20260926-151008 的 order 53 拟合 MSE 0.1747 却带 7.0e8 罚分）。
+    两套共用同一套纵轴规则：MSE 与罚分全为正时取对数（含 0 退回线性），评分恒 symlog。
 
     没有可用记录时返回 ``None`` 且不生成任何文件，报告侧据此跳过整个小节。返回值除
-    三条曲线的子摘要（``mse`` / ``penalty`` / ``score``）外，仍保留描述 **MSE 曲线**的
-    顶层键（``path`` / ``n_points`` / ``log_scale`` / ``first`` / ``best`` / ``points``），
-    供既有调用方与测试使用。
+    六个子摘要（``mse`` / ``penalty`` / ``score`` / ``per_sample``）外，仍保留描述
+    **刷新点 MSE 曲线**的顶层键（``path`` / ``n_points`` / ``log_scale`` / ``first`` /
+    ``best`` / ``points``），供既有调用方与测试使用。
     """
     points = load_best_history(results_root)
     if not points:
@@ -219,7 +276,7 @@ def plot_progress_curve(results_root: str) -> dict | None:
         label="best-so-far MSE", ylabel="MSE" if not legacy else "MSE (+ pathology penalty)",
         title="MSE vs sample_order" + (" (legacy records: MSE incl. penalty)" if legacy else ""),
         color="tab:blue")
-    if mse is None:                       # MSE 画不出来就不该有小节（其余两条也没意义）
+    if mse is None:                       # MSE 画不出来就不该有小节（其余各条也没意义）
         return None
     penalty = _plot_quantity(
         plt, with_penalty, results_root, key="penalty", png_name=PENALTY_PNG_NAME,
@@ -231,11 +288,41 @@ def plot_progress_curve(results_root: str) -> dict | None:
         label="best-so-far score", ylabel="score = -(fit MSE + penalty)",
         title="Score vs sample_order", color="tab:green", symlog=True)
 
+    # 逐样本轨迹（第二套）：同一套纵轴规则，但画折线、点全部来自 samples/
+    samples = load_sample_points(results_root)
+    per_sample = None
+    if samples:
+        sample_penalty = [p for p in samples if p["penalty"] is not None]
+        per_sample = {
+            "n_points": len(samples),
+            "n_clean": sum(1 for p in samples if p["penalty"] == 0),
+            "best_score": max(samples, key=lambda p: p["score"]),
+            "worst_score": min(samples, key=lambda p: p["score"]),
+            "max_penalty": max(sample_penalty, key=lambda p: p["penalty"])
+            if sample_penalty else None,
+            "mse": _plot_quantity(
+                plt, samples, results_root, key="mse", png_name=PER_SAMPLE_MSE_PNG_NAME,
+                label="fit MSE per sample", ylabel="MSE",
+                title="Fit MSE vs sample_order (every persisted sample)",
+                color="tab:blue", step=False),
+            "penalty": _plot_quantity(
+                plt, sample_penalty, results_root, key="penalty",
+                png_name=PER_SAMPLE_PENALTY_PNG_NAME,
+                label="pathology penalty per sample", ylabel="dynamic-range penalty",
+                title="Dynamic-range penalty vs sample_order (every persisted sample)",
+                color="tab:orange", step=False) if sample_penalty else None,
+            "score": _plot_quantity(
+                plt, samples, results_root, key="score", png_name=PER_SAMPLE_SCORE_PNG_NAME,
+                label="score per sample", ylabel="score = -(fit MSE + penalty)",
+                title="Score vs sample_order (every persisted sample)",
+                color="tab:green", symlog=True, step=False),
+        }
+
     best = min(points, key=lambda p: p["mse"])
     return {"path": mse["path"], "n_points": len(points), "log_scale": mse["log_scale"],
             "legacy_records": legacy, "first": points[0], "best": best,
             "points": points,
-            "mse": mse, "penalty": penalty, "score": score}
+            "mse": mse, "penalty": penalty, "score": score, "per_sample": per_sample}
 
 
 def _fmt_point(point: dict) -> str:
@@ -291,12 +378,40 @@ def render_progress_section(progress: dict | None) -> str:
     lines = [
         PROGRESS_HEADING,
         "",
-        f"数据源：`best_history/best_sample_<sample_order>.json`——评估器每刷新一次"
-        f"全局最优写一个文件，共 **{progress['n_points']}** 个刷新点。下面三条曲线"
-        f"（拟合 MSE / 动态范围体检罚分 / 评分）画在**同一批刷新点**上，横轴逐点对齐、"
-        f"可直接对照。",
+        f"本节有两套曲线，回答不同的问题：**逐样本轨迹**（`samples/`，每个已落盘样本"
+        f"一个点、折线连接——摆动与个别离群都看得见）与**全局最优刷新点**"
+        f"（`best_history/`，只保留评分改善的那几个点、阶梯线——收敛过程看得见）。"
+        f"共 **{progress['n_points']}** 个刷新点。",
+    ]
+
+    if progress.get("per_sample"):
+        per = progress["per_sample"]
+        lines += [
+            "",
+            "### 逐样本轨迹（每个已落盘样本一个点，折线连接）",
+            "",
+            f"![逐样本拟合 MSE]({PER_SAMPLE_MSE_PNG_NAME})",
+            "",
+            f"![逐样本体检罚分]({PER_SAMPLE_PENALTY_PNG_NAME})",
+            "",
+            f"![逐样本评分]({PER_SAMPLE_SCORE_PNG_NAME})",
+            "",
+            f"- 共 **{per['n_points']}** 个样本点，其中体检罚分 == 0 的有 **{per['n_clean']}** 个。",
+            f"- 评分最好：{_fmt_score_point(per['best_score'])}；最差："
+            f"{_fmt_score_point(per['worst_score'])}。",
+        ]
+        if per.get("max_penalty"):
+            lines.append(f"- 该批样本里最大罚分：{_fmt_penalty_point(per['max_penalty'])}。")
+        lines += [
+            "- 与「全局最优刷新点」的区别：刷新点只留评分改善的那几个点，看不见"
+            "「低 MSE 高罚分 ↔ 高 MSE 零罚分」的来回摆动——摆动只在**本图**上可见。",
+            "- 只含**已落盘**的样本：`persist_all_samples` 之前的实验只留 top-K，"
+            "此时点数远小于实际评估数（图上这些「最好/最差」也只覆盖已落盘部分）。",
+        ]
+
+    lines += [
         "",
-        "### 拟合 MSE（不含体检罚分）",
+        "### 全局最优刷新点：拟合 MSE",
         "",
         f"![MSE 随 sample_order 的变化]({PROGRESS_PNG_NAME})",
         "",
@@ -316,7 +431,7 @@ def render_progress_section(progress: dict | None) -> str:
         penalty_scale = "对数刻度" if progress["penalty"].get("log_scale") else "线性刻度"
         lines += [
             "",
-            "### 动态范围体检罚分",
+            "### 全局最优刷新点：体检罚分",
             "",
             f"![体检罚分随 sample_order 的变化]({PENALTY_PNG_NAME})",
             "",
@@ -329,7 +444,7 @@ def render_progress_section(progress: dict | None) -> str:
     else:
         lines += [
             "",
-            "### 动态范围体检罚分",
+            "### 全局最优刷新点：体检罚分",
             "",
             "> 本实验目录的记录里**没有 `penalty` 字段**（口径拆分之前），不画罚分曲线："
             "那里的 `mse` = 拟合 MSE + 体检罚分，两者无法分离。",
@@ -338,7 +453,7 @@ def render_progress_section(progress: dict | None) -> str:
     if progress.get("score"):
         lines += [
             "",
-            "### 评分（−(拟合 MSE + 罚分)）",
+            "### 全局最优刷新点：评分（−(拟合 MSE + 罚分)）",
             "",
             f"![评分随 sample_order 的变化]({SCORE_PNG_NAME})",
             "",
@@ -458,7 +573,8 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="训练进度曲线（拟合 MSE / 体检罚分 / 评分 随 sample_order）+ 报告小节回填")
+        description="训练进度曲线（逐样本 + 全局最优刷新点；拟合 MSE / 体检罚分 / 评分）"
+                    " + 报告小节回填")
     parser.add_argument("results_root", help="实验目录")
     parser.add_argument("--report", default="report.md",
                         help="要更新的报告文件名（缺省 report.md）")
