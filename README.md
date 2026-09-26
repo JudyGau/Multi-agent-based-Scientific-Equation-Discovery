@@ -287,7 +287,7 @@ drsr_420/                     # 单一顶层包（8 层，依赖方向自底向�
     holdout.py                #   样本外验证（test.csv 上只报告，不参与选择）
     expr_viz.py               #   预览图与表达式树（可选依赖，失败仅告警）
     expr_curves.py            #   剪枝前后曲线 + 数据点（每个自变量一幅）
-    progress_curve.py         #   训练进度：MSE 随 sample_order 的历史最优曲线 + report.md 小节
+    progress_curve.py         #   训练进度：MSE / 体检罚分 / 评分 随 sample_order 的三条曲线 + report.md 小节
     prune_demo.py             #   剪枝行为演示（python -m …prune_demo）
   runtime/
     pipeline.py               #   实验主流程编排

@@ -25,7 +25,7 @@ def _matplotlib_available() -> bool:
         return False
 
 
-def _write_best(root, order, mse, nmse=None, iteration=1, penalty=None):
+def _write_best(root, order, mse, nmse=None, iteration=1, penalty=None, score=None):
     """在 ``best_history/`` 下写一个刷新点文件（与评估器的字段一致）。
 
     ``penalty`` 不给就不写该键——那正是口径拆分之前的历史目录形态（mse 内含罚分）。
@@ -37,7 +37,24 @@ def _write_best(root, order, mse, nmse=None, iteration=1, penalty=None):
         rec["nmse"] = nmse
     if penalty is not None:
         rec["penalty"] = penalty
+        if score is None:
+            score = -(mse + penalty)
+    if score is not None:
+        rec["score"] = score
     (d / f"best_sample_{order}.json").write_text(json.dumps(rec), encoding="utf-8")
+
+
+def _patched_subplots(axes):
+    """把 ``plt.subplots`` 换成"每次调用新建一个假 Axes"，按调用顺序收集到 ``axes``。
+
+    本模块现在按 MSE → 体检罚分 → 评分 的顺序各画一幅图，所以断言要按图取 Axes，
+    而不是把三次调用记在同一个 Axes 上。
+    """
+    def _fake(*args, **kwargs):
+        ax = _FakeAx()
+        axes.append(ax)
+        return _FakeFig(), ax
+    return _fake
 
 
 class _FakeAx:
@@ -73,6 +90,33 @@ class LoadBestHistoryTest(unittest.TestCase):
         self.assertEqual(rows[0]["mse"], 18.846566)
         self.assertEqual(rows[1]["iteration"], 21)
 
+    def test_score_is_derived_when_the_field_is_missing(self):
+        """记录缺 ``score`` 时按同一口径推出来：有 penalty → −(mse+penalty)。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = pathlib.Path(tmp) / "best_history"
+            d.mkdir(parents=True)
+            (d / "best_sample_3.json").write_text(
+                json.dumps({"sample_order": 3, "mse": 2.0, "penalty": 3.0}), encoding="utf-8")
+            rows = pcur.load_best_history(tmp)
+        self.assertEqual(rows[0]["score"], -5.0)
+
+    def test_legacy_record_derives_score_as_minus_mse(self):
+        """旧目录的 ``mse`` 本就内含罚分，故 score = −mse。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_best(tmp, 4, 7.0)
+            rows = pcur.load_best_history(tmp)
+        self.assertEqual(rows[0]["score"], -7.0)
+        self.assertIsNone(rows[0]["penalty"])
+
+    def test_score_is_consistent_with_mse_and_penalty_at_every_refresh(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_best(tmp, 0, 102.5632, penalty=1.5)
+            _write_best(tmp, 5, 0.2438, penalty=11.7553)
+            rows = pcur.load_best_history(tmp)
+        for row in rows:
+            with self.subTest(order=row["sample_order"]):
+                self.assertAlmostEqual(row["score"], -(row["mse"] + row["penalty"]), places=12)
+
     def test_broken_and_non_finite_records_are_skipped(self):
         with tempfile.TemporaryDirectory() as tmp:
             _write_best(tmp, 4, 55.2658)
@@ -87,6 +131,17 @@ class LoadBestHistoryTest(unittest.TestCase):
         self.assertEqual([r["sample_order"] for r in rows], [4],
                          "坏文件只跳过它自己，好记录要留下")
 
+    def test_non_finite_penalty_is_treated_as_missing(self):
+        """penalty=inf 不能进曲线（会让罚分图的反向半径爆掉），按缺失处理。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            d = pathlib.Path(tmp) / "best_history"
+            d.mkdir(parents=True)
+            (d / "best_sample_2.json").write_text(
+                json.dumps({"sample_order": 2, "mse": 1.0,
+                            "penalty": float("inf"), "score": -1.0}), encoding="utf-8")
+            rows = pcur.load_best_history(tmp)
+        self.assertIsNone(rows[0]["penalty"])
+
     def test_missing_directory_yields_empty(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(pcur.load_best_history(tmp), [])
@@ -98,59 +153,136 @@ class PlotProgressCurveTest(unittest.TestCase):
             with mock.patch("builtins.print"):
                 summary = pcur.plot_progress_curve(tmp)
             self.assertIsNone(summary)
-            self.assertFalse((pathlib.Path(tmp) / pcur.PROGRESS_PNG_NAME).exists(),
-                             "没有记录时不能留下空图（否则报告会引用一张空图）")
+            for name in (pcur.PROGRESS_PNG_NAME, pcur.PENALTY_PNG_NAME, pcur.SCORE_PNG_NAME):
+                with self.subTest(png=name):
+                    self.assertFalse((pathlib.Path(tmp) / name).exists(),
+                                     "没有记录时不能留下空图（否则报告会引用一张空图）")
 
-    def test_staircase_markers_and_log_axis_wiring(self):
+    def test_three_curves_share_the_same_refresh_points(self):
+        """三条曲线的横轴必须逐点对齐（同一批刷新点），否则对照会错位。"""
         with tempfile.TemporaryDirectory() as tmp:
-            _write_best(tmp, 0, 102.5632)
-            _write_best(tmp, 5, 18.8466)
-            _write_best(tmp, 7, 4.2504)
-            ax = _FakeAx()
+            _write_best(tmp, 0, 102.5632, penalty=0.0)
+            _write_best(tmp, 5, 18.8466, penalty=2.0)
+            _write_best(tmp, 7, 4.2504, penalty=0.5)
+            axes = []
             import matplotlib.pyplot as plt
-            with mock.patch.object(plt, "subplots",
-                                   lambda *a, **k: (_FakeFig(), ax)), \
+            with mock.patch.object(plt, "subplots", _patched_subplots(axes)), \
                  mock.patch.object(plt, "close"), \
                  mock.patch("builtins.print"):
                 summary = pcur.plot_progress_curve(tmp)
-            step = ax._named("step")
-            self.assertEqual(len(step), 1, "历史最优必须用阶梯线画")
-            self.assertEqual(step[0][2].get("where"), "post")
-            self.assertTrue(np.allclose(np.asarray(step[0][1][0], dtype=float), [0, 5, 7]))
-            self.assertTrue(np.allclose(np.asarray(step[0][1][1], dtype=float), [102.5632, 18.8466, 4.2504]))
-            self.assertEqual(len(ax._named("plot")), 1, "刷新点要有数据点标记")
-            self.assertEqual(ax._named("set_yscale")[0][1], ("log",))
-            self.assertEqual(len(ax._named("legend")), 1)
-        self.assertTrue(summary["log_scale"])
+            self.assertEqual(len(axes), 3, "MSE / 罚分 / 评分 各一幅图")
+            for label, ax in zip(("mse", "penalty", "score"), axes):
+                step = ax._named("step")
+                self.assertEqual(len(step), 1, f"{label} 必须用阶梯线画")
+                self.assertEqual(step[0][2].get("where"), "post")
+                self.assertTrue(
+                    np.allclose(np.asarray(step[0][1][0], dtype=float), [0, 5, 7]),
+                    f"{label} 的横轴必须落在同一批刷新点上")
+                self.assertEqual(len(ax._named("plot")), 1, "刷新点要有数据点标记")
+                self.assertEqual(len(ax._named("legend")), 1)
+            self.assertTrue(np.allclose(
+                np.asarray(axes[0]._named("step")[0][1][1], dtype=float),
+                [102.5632, 18.8466, 4.2504]))
+            self.assertTrue(np.allclose(
+                np.asarray(axes[1]._named("step")[0][1][1], dtype=float), [0.0, 2.0, 0.5]))
+            # 评分 = −(拟合 MSE + 罚分)，逐点成立
+            self.assertTrue(np.allclose(
+                np.asarray(axes[2]._named("step")[0][1][1], dtype=float),
+                [-102.5632, -20.8466, -4.7504]))
         self.assertEqual(summary["n_points"], 3)
         self.assertEqual(summary["first"]["sample_order"], 0)
         self.assertEqual(summary["best"]["sample_order"], 7, "best 取 MSE 最小的那个刷新点")
+        self.assertIsNotNone(summary["penalty"])
+        self.assertIsNotNone(summary["score"])
 
-    def test_non_positive_mse_falls_back_to_linear_axis(self):
+    def test_positive_penalty_uses_a_log_axis(self):
         with tempfile.TemporaryDirectory() as tmp:
-            _write_best(tmp, 0, 0.0)
-            _write_best(tmp, 3, 1.0)
-            ax = _FakeAx()
+            _write_best(tmp, 0, 102.5632, penalty=1.0)
+            _write_best(tmp, 5, 4.2504, penalty=1.0e5)
+            axes = []
             import matplotlib.pyplot as plt
-            with mock.patch.object(plt, "subplots",
-                                   lambda *a, **k: (_FakeFig(), ax)), \
+            with mock.patch.object(plt, "subplots", _patched_subplots(axes)), \
+                 mock.patch.object(plt, "close"), \
+                 mock.patch("builtins.print"):
+                pcur.plot_progress_curve(tmp)
+            self.assertEqual(axes[0]._named("set_yscale")[0][1], ("log",))
+            self.assertEqual(axes[1]._named("set_yscale")[0][1], ("log",))
+
+    def test_zero_penalty_falls_back_to_a_linear_axis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_best(tmp, 0, 102.5632, penalty=0.0)
+            _write_best(tmp, 5, 4.2504, penalty=2.0)
+            axes = []
+            import matplotlib.pyplot as plt
+            with mock.patch.object(plt, "subplots", _patched_subplots(axes)), \
                  mock.patch.object(plt, "close"), \
                  mock.patch("builtins.print"):
                 summary = pcur.plot_progress_curve(tmp)
-            self.assertEqual(ax._named("set_yscale"), [], "有 0 值时不能取对数刻度")
+            self.assertEqual(axes[1]._named("set_yscale"), [], "罚分有 0 值时不能取对数刻度")
+        self.assertFalse(summary["penalty"]["log_scale"])
+
+    def test_score_curve_is_always_symlog(self):
+        """评分 ≤ 0 且跨数量级：线性轴会把后段改善压平，对数轴表示不了负数。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_best(tmp, 0, 102.5632, penalty=0.0)
+            _write_best(tmp, 42, 0.2716, penalty=0.0)
+            axes = []
+            import matplotlib.pyplot as plt
+            with mock.patch.object(plt, "subplots", _patched_subplots(axes)), \
+                 mock.patch.object(plt, "close"), \
+                 mock.patch("builtins.print"):
+                summary = pcur.plot_progress_curve(tmp)
+            call = axes[2]._named("set_yscale")[0]
+            self.assertEqual(call[1], ("symlog",))
+            self.assertEqual(call[2]["linthresh"], pcur.SCORE_SYMLOG_LINTHRESH)
+        self.assertEqual(summary["score"]["path"].endswith(pcur.SCORE_PNG_NAME), True)
+
+    def test_legacy_directory_skips_the_penalty_curve(self):
+        """旧目录没有 penalty 字段 → 不画罚分曲线（也不落盘），MSE 与评分照画。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_best(tmp, 0, 102.5632)
+            _write_best(tmp, 40, 11.999038)
+            axes = []
+            import matplotlib.pyplot as plt
+            with mock.patch.object(plt, "subplots", _patched_subplots(axes)), \
+                 mock.patch.object(plt, "close"), \
+                 mock.patch("builtins.print"):
+                summary = pcur.plot_progress_curve(tmp)
+            self.assertEqual(len(axes), 2, "只有 MSE 与评分两幅图")
+            self.assertFalse((pathlib.Path(tmp) / pcur.PENALTY_PNG_NAME).exists())
+        self.assertTrue(summary["legacy_records"])
+        self.assertIsNone(summary["penalty"])
+        self.assertIsNotNone(summary["score"])
+
+    def test_non_positive_mse_falls_back_to_linear_axis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _write_best(tmp, 0, 0.0, penalty=0.0)
+            _write_best(tmp, 3, 1.0, penalty=0.0)
+            axes = []
+            import matplotlib.pyplot as plt
+            with mock.patch.object(plt, "subplots", _patched_subplots(axes)), \
+                 mock.patch.object(plt, "close"), \
+                 mock.patch("builtins.print"):
+                summary = pcur.plot_progress_curve(tmp)
+            self.assertEqual(axes[0]._named("set_yscale"), [], "有 0 值时不能取对数刻度")
         self.assertFalse(summary["log_scale"])
 
     @unittest.skipUnless(_matplotlib_available(), "本机没有 matplotlib")
-    def test_real_render_writes_a_png(self):
+    def test_real_render_writes_three_pngs(self):
         with tempfile.TemporaryDirectory() as tmp:
-            _write_best(tmp, 0, 102.5632, nmse=0.05097)
-            _write_best(tmp, 42, 1.113129, nmse=5.5e-4)
+            _write_best(tmp, 0, 102.5632, nmse=0.05097, penalty=0.0)
+            _write_best(tmp, 42, 1.113129, nmse=5.5e-4, penalty=2.5)
             with mock.patch("builtins.print"):
                 summary = pcur.plot_progress_curve(tmp)
             path = pathlib.Path(summary["path"])
             self.assertTrue(path.exists(), "有记录时必须真的落盘")
             self.assertGreater(path.stat().st_size, 5000, "不能是空图")
             self.assertEqual(path.name, pcur.PROGRESS_PNG_NAME)
+            for name in (pcur.PENALTY_PNG_NAME, pcur.SCORE_PNG_NAME):
+                with self.subTest(png=name):
+                    other = pathlib.Path(tmp) / name
+                    self.assertTrue(other.exists(), f"{name} 必须落盘")
+                    self.assertGreater(other.stat().st_size, 5000)
 
 
 class SchemaCaliberTest(unittest.TestCase):
@@ -174,14 +306,13 @@ class SchemaCaliberTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             _write_best(tmp, 0, 102.5632)
             _write_best(tmp, 40, 11.999038)
-            ax = _FakeAx()
+            axes = []
             import matplotlib.pyplot as plt
-            with mock.patch.object(plt, "subplots",
-                                   lambda *a, **k: (_FakeFig(), ax)), \
+            with mock.patch.object(plt, "subplots", _patched_subplots(axes)), \
                  mock.patch.object(plt, "close"), \
                  mock.patch("builtins.print"):
                 summary = pcur.plot_progress_curve(tmp)
-            label = ax._named("set_ylabel")[0][1][0]
+            label = axes[0]._named("set_ylabel")[0][1][0]
         self.assertTrue(summary["legacy_records"])
         self.assertIn("penalty", label, "旧口径纵轴必须写明含罚分")
 
@@ -189,26 +320,34 @@ class SchemaCaliberTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             _write_best(tmp, 0, 102.5632, penalty=0.2)
             _write_best(tmp, 40, 0.2438, penalty=11.7553)
-            ax = _FakeAx()
+            axes = []
             import matplotlib.pyplot as plt
-            with mock.patch.object(plt, "subplots",
-                                   lambda *a, **k: (_FakeFig(), ax)), \
+            with mock.patch.object(plt, "subplots", _patched_subplots(axes)), \
                  mock.patch.object(plt, "close"), \
                  mock.patch("builtins.print"):
                 summary = pcur.plot_progress_curve(tmp)
-            label = ax._named("set_ylabel")[0][1][0]
+            label = axes[0]._named("set_ylabel")[0][1][0]
         self.assertFalse(summary["legacy_records"])
         self.assertEqual(label, "MSE")
 
 
 class RenderProgressSectionTest(unittest.TestCase):
     def _summary(self):
+        """与 ``plot_progress_curve`` 的返回同形（含三条曲线的子摘要）。"""
+        points = [
+            {"sample_order": 0, "iteration": 1, "mse": 102.56318982336019,
+             "nmse": 0.05097, "penalty": 0.0, "score": -102.56318982336019},
+            {"sample_order": 87, "iteration": 22, "mse": 0.867473,
+             "nmse": 0.000431133, "penalty": 0.0, "score": -0.867473},
+        ]
         return {"path": "x.png", "n_points": 2, "log_scale": True,
-                "first": {"sample_order": 0, "iteration": 1, "mse": 102.56318982336019,
-                          "nmse": 0.05097},
-                "best": {"sample_order": 87, "iteration": 22, "mse": 0.867473,
-                         "nmse": 0.000431133},
-                "points": []}
+                "first": points[0], "best": points[1], "points": points,
+                "mse": {"path": "m.png", "n_points": 2, "log_scale": True, "symlog": False,
+                        "scale": "log"},
+                "penalty": {"path": "p.png", "n_points": 2, "log_scale": False,
+                            "symlog": False, "scale": "linear"},
+                "score": {"path": "s.png", "n_points": 2, "log_scale": False,
+                          "symlog": True, "scale": "symlog"}}
 
     def test_none_yields_empty_string(self):
         self.assertEqual(pcur.render_progress_section(None), "")
@@ -223,6 +362,25 @@ class RenderProgressSectionTest(unittest.TestCase):
         self.assertIn("NMSE=0.0004311", text)
         self.assertIn("对数刻度", text)
 
+    def test_section_shows_all_three_curves(self):
+        text = pcur.render_progress_section(self._summary())
+        for name in (pcur.PROGRESS_PNG_NAME, pcur.PENALTY_PNG_NAME, pcur.SCORE_PNG_NAME):
+            with self.subTest(png=name):
+                self.assertIn(name, text)
+        self.assertIn("罚分=", text)
+        self.assertIn("评分=", text)
+        self.assertLess(text.index(pcur.PROGRESS_PNG_NAME), text.index(pcur.PENALTY_PNG_NAME))
+        self.assertLess(text.index(pcur.PENALTY_PNG_NAME), text.index(pcur.SCORE_PNG_NAME))
+
+    def test_missing_penalty_curve_is_disclosed_instead_of_an_image(self):
+        s = self._summary()
+        s["penalty"] = None
+        s["legacy_records"] = True
+        text = pcur.render_progress_section(s)
+        self.assertNotIn(pcur.PENALTY_PNG_NAME, text)
+        self.assertIn("不画罚分曲线", text)
+        self.assertIn(pcur.SCORE_PNG_NAME, text)
+
     def test_caveat_states_the_metric_is_in_sample(self):
         text = pcur.render_progress_section(self._summary())
         self.assertIn("样本内", text)
@@ -232,7 +390,7 @@ class RenderProgressSectionTest(unittest.TestCase):
         """MSE 与罚分必须分开写：否则读者会把 11.999 当拟合质量（真实拟合 0.2438）。"""
         s = self._summary()
         s["best"] = {"sample_order": 40, "iteration": 10, "mse": 0.2438,
-                     "nmse": 1.21144e-4, "penalty": 11.7553}
+                     "nmse": 1.21144e-4, "penalty": 11.7553, "score": -11.9991}
         text = pcur.render_progress_section(s)
         self.assertIn("MSE=0.2438", text)
         self.assertIn("动态范围体检罚分 11.7553", text)
@@ -244,20 +402,40 @@ class RenderProgressSectionTest(unittest.TestCase):
         text = pcur.render_progress_section(s)
         self.assertIn("没有 `penalty` 字段", text)
         self.assertIn("MSE (+ pathology penalty)", text)
-        # 旧口径下**不能**再声称纵轴的 MSE 是拟合本身（那是拆分后的口径）
-        self.assertNotIn("纵轴的 MSE 是**拟合本身**", text)
+        # 旧口径下**不能**再声称 MSE 是拟合本身（那是拆分后的口径）
+        self.assertNotIn("**拟合本身**的均方误差", text)
 
     def test_current_caliber_states_the_split(self):
         text = pcur.render_progress_section(self._summary())
-        self.assertIn("纵轴的 MSE 是**拟合本身**", text)
+        self.assertIn("**拟合本身**的均方误差", text)
         self.assertIn("评分 = −(拟合 MSE + 罚分)", text)
         self.assertNotIn("没有 `penalty` 字段", text)
+
+    def test_current_caliber_warns_the_mse_step_is_not_monotone(self):
+        """只看 MSE 一条线会把"低 MSE 高罚分"读成改善，口径里必须点名。"""
+        text = pcur.render_progress_section(self._summary())
+        self.assertIn("不是单调的", text)
+        self.assertIn("低 MSE 高罚分", text)
 
     def test_missing_nmse_is_not_printed_as_none(self):
         s = self._summary()
         s["first"] = {"sample_order": 0, "iteration": None, "mse": 5.0, "nmse": None}
         text = pcur.render_progress_section(s)
         self.assertNotIn("None", text)
+
+    def test_missing_penalty_value_is_not_printed_as_none(self):
+        """混合目录（首个刷新点没有 penalty 字段）：写 n/a，绝不把 None 写进报告。"""
+        s = self._summary()
+        s["points"] = [{"sample_order": 0, "mse": 5.0, "nmse": None,
+                        "penalty": None, "score": -5.0},
+                       {"sample_order": 5, "mse": 2.0, "nmse": None,
+                        "penalty": 3.0, "score": -5.0}]
+        s["first"] = s["points"][0]
+        s["best"] = s["points"][1]
+        text = pcur.render_progress_section(s)
+        self.assertNotIn("None", text)
+        self.assertIn("罚分=n/a", text)
+        self.assertIn("罚分=3", text)
 
 
 class UpsertProgressSectionTest(unittest.TestCase):
@@ -290,6 +468,34 @@ class UpsertProgressSectionTest(unittest.TestCase):
         self.assertNotIn("999", out)
         self.assertIn("MSE=1", out)
         self.assertEqual(out.count(pcur.PROGRESS_HEADING), 1)
+
+    def test_legacy_mse_only_section_is_replaced_not_duplicated(self):
+        """历史报告里的标题是「## 训练进度：MSE 随 sample_order 的变化」（没有子标题）。
+
+        回填必须整节替换——按前缀剥离，否则老标题小节会留在原地、与新小节并存。
+        """
+        legacy = "## 训练进度：MSE 随 sample_order 的变化\n\n旧数字 MSE=424242\n"
+        report = f"# T\n\n## 1. 正文\n\n正文\n\n{legacy}\n## 参考文献\n\n[1] 文献\n"
+        section = pcur.render_progress_section(
+            {"n_points": 1, "log_scale": True,
+             "first": {"sample_order": 0, "mse": 1.0, "nmse": None},
+             "best": {"sample_order": 0, "mse": 1.0, "nmse": None}, "points": []})
+        out = pcur.upsert_progress_section(report, section)
+        self.assertNotIn("424242", out)
+        self.assertEqual(out.count("## 训练进度"), 1)
+        self.assertLess(out.index("## 1. 正文"), out.index(pcur.PROGRESS_HEADING))
+        self.assertLess(out.index(pcur.PROGRESS_HEADING), out.index("## 参考文献"))
+
+    def test_sub_headings_do_not_end_the_section(self):
+        """### 子标题属于本节内容：剥离时不能在那里停下（否则留下半节旧内容）。"""
+        report = ("# T\n\n" + pcur.render_progress_section(
+            {"n_points": 1, "log_scale": True,
+             "first": {"sample_order": 0, "mse": 1.0, "nmse": None},
+             "best": {"sample_order": 0, "mse": 1.0, "nmse": None}, "points": []})
+            + "\n\n## 参考文献\n\n[1] 文献\n")
+        stripped = pcur._strip_progress_section(report)
+        self.assertNotIn("### 拟合 MSE", stripped)
+        self.assertIn("## 参考文献", stripped)
 
     def test_anchor_absent_appends_at_end(self):
         out = pcur.upsert_progress_section("# T\n\n正文\n", "# 某小节\n")
