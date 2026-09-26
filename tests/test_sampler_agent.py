@@ -300,6 +300,19 @@ class ExperiencePromptTest(unittest.TestCase):
             [{"type": "Good", "analysis": "A", "sample_order": 1}], 500)
         self.assertNotIn("trainable parameters", prompt)
 
+    def test_experience_block_is_marked_unverified(self):
+        """经验块必须**明说未经校验**（与残差块同口径）。
+
+        实测缺陷：残差注入有 `[unverified hypothesis...]` 前缀，而 Good/Bad 经验以
+        "successful experience" 的权威口吻直接进提示词，与"数据事实表是唯一合法出处"
+        的规则冲突——模型自述的经验里出现过把先验当结论、同族建议反复复述。
+        """
+        prompt = self.injector.build_experience_prompt(
+            [{"type": "Good", "analysis": "A", "sample_order": 1},
+             {"type": "None", "analysis": "B", "sample_order": 2, "error": "E"}], 500)
+        self.assertIn("UNVERIFIED HYPOTHESES", prompt)
+        self.assertIn("check any claim against the data", prompt)
+
 
 class ExperienceInjectionTest(unittest.TestCase):
     """`inject_experiences`：读盘、缓存、前置拼接。"""

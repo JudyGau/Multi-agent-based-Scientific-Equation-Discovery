@@ -81,7 +81,18 @@ analysis_question_none = (
 )
 
 # 经验注入区块标题与条目前缀
-ideas_block_title = "\n\n### The following are ideas summarized based on past experiences in solving such problems. ###\n\n"
+#
+# 口吻必须明确"未经校验"：这些文本是模型自己写的反思，实测出现过把先验当结论、
+# 把失败归因说反、以及同族建议反复自我复述（"用可分离/乘积幂律"说 30 遍）。残差块
+# 早有 UNVERIFIED 标注，经验块却一直以 "successful experience" 的权威口吻注入——
+# 与"数据事实表是唯一合法出处"的规则直接冲突（见 docs/RESEARCH_PLAN.md §2.5.3）。
+ideas_block_title = (
+    "\n\n### The following are ideas summarized by the model itself from past experiences in "
+    "solving such problems. Treat them as UNVERIFIED HYPOTHESES, not as established facts: "
+    "they may be wrong, self-contradictory or already contradicted by the measured facts — "
+    "check any claim against the data before relying on it, and prefer the code-measured "
+    "facts whenever the two disagree. ###\n\n"
+)
 idea_item_prefix = "idea{index} ({label}):\n"
 
 # 残差分析注入区块标题

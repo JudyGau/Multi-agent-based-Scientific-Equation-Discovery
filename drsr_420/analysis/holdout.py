@@ -155,8 +155,10 @@ def evaluate_holdout(dependent: str, sym_names: list[str], expr, test_data: np.n
 
     ``train_data`` 给定时会检查"held-out 点是否其实就在训练集里"：实测
     ``data/MRFShear-3`` 与 ``data/MRFCompress-3`` 的 ``test.csv`` 与 ``train.csv``
-    **逐行相同**，把它们当独立 held-out 报出去等于谎报验证结果，因此这种情况会在
-    指标里标出 ``overlaps_train``，渲染时也会明说。
+    **曾**逐行相同（现已互异），把它们当独立 held-out 报出去等于谎报验证结果，因此这种
+    情况会在指标里标出 ``overlaps_train``，渲染时也会明说。注意另一类同样致命的情形：
+    MRF 系的 ``test.csv`` **只有 2 行**且落在训练点之间（插值），即使不重合，指标也
+    只是存在性提示——渲染时会照数报 ``n_points``，引用方必须自己看这个分母。
     """
     if test_data is None:
         return None

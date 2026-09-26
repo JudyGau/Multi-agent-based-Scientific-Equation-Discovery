@@ -10,7 +10,8 @@
 ::
 
     find_best_eq(results_root)
-      ├── find_best_sample()      扫描 samples/*.json 取最高分样本
+      ├── select_published_sample()  **病理门禁**：优先取体检罚分==0 的最高分样本
+      │     └── load_sample_records()  两种命名（samples_N / topNN_samples_N）都读，按 order 去重
       ├── prune_and_visualize()   **先剪枝**（解释要覆盖剪枝结果与剪枝过程）
       │     ├── expr_parse.expr_substitution()   骨架字符串 → SymPy 表达式
       │     ├── sensitivity_prune.SensitivityPruner.prune()  敏感度剪枝
@@ -48,21 +49,124 @@ from drsr_420.analysis.prune_report import (classify_pruning, compare_fits,
 from drsr_420.analysis.sensitivity_prune import SensitivityPruner
 
 
-def find_best_sample(results_root: str):
-    """扫描 samples 目录，返回分数最高的样本 (score, path, func, params)；无则 None。"""
-    best = None
-    for p in glob.glob(os.path.join(results_root, "samples", "*_samples_*.json")):
+def load_sample_records(results_root: str) -> list[dict]:
+    """读 ``samples/`` 下**全部**样本记录（按 sample_order 去重），按分数降序返回。
+
+    两种命名并存、必须都读：``topNN_samples_<order>.json``（Top-K 排行）与
+    ``samples_<order>.json``（全量单样本，``persist_all_samples=True`` 时才有）。
+    旧实现只 glob ``*_samples_*.json``，而 ``samples_3.json`` **不匹配**该模式——也就是
+    说"全量落盘"模式下收尾分析会一个样本都读不到。默认改成全量落盘之前必须先修这条
+    （否则跑完 490 次运行的收尾全部静默失效）。
+
+    每条含 ``score`` / ``penalty`` / ``mse`` / ``sample_order`` / ``path`` /
+    ``function`` / ``params``；同一 sample_order 有两种文件时优先取全量文件。
+    """
+    records: dict = {}
+    for path in sorted(glob.glob(os.path.join(results_root, "samples", "*.json"))):
+        name = os.path.basename(path)
+        is_top = name.startswith("top")
         try:
-            with open(p, "r", encoding="utf-8") as f:
-                d = json.load(f)
-            s = d.get("score")
-            if s is None:
-                continue
-            if best is None or s > best[0]:
-                best = (s, p, d.get("function", ""), d.get("params"))
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
         except Exception:
             continue
-    return best
+        score = data.get("score")
+        if isinstance(score, bool) or not isinstance(score, (int, float)):
+            continue
+        try:
+            order = int(data.get("sample_order"))
+        except (TypeError, ValueError):
+            order = None
+        key = order if order is not None else name
+        prev = records.get(key)
+        # 已有同一 sample_order 的记录时，只有"用全量文件替换 Top-K 副本"才覆盖
+        if prev is not None and not (prev["is_top"] and not is_top):
+            continue
+        records[key] = {
+            "score": float(score),
+            "penalty": data.get("penalty"),
+            "mse": data.get("mse"),
+            "sample_order": order,
+            "path": path,
+            "function": data.get("function", ""),
+            "params": data.get("params"),
+            "is_top": is_top,
+        }
+    return sorted(records.values(), key=lambda r: r["score"], reverse=True)
+
+
+def find_best_sample(results_root: str):
+    """扫描 samples 目录，返回分数最高的样本 (score, path, func, params)；无则 None。"""
+    records = load_sample_records(results_root)
+    if not records:
+        return None
+    best = records[0]
+    return best["score"], best["path"], best["function"], best["params"]
+
+
+def _selection_entry(record: dict) -> dict:
+    """选择小节的单条记录（数字截到 6 位，便于直接渲染）。"""
+    def _num(value):
+        return (round(float(value), 6)
+                if isinstance(value, (int, float)) and not isinstance(value, bool) else value)
+
+    return {
+        "sample_order": record.get("sample_order"),
+        "score": _num(record.get("score")),
+        "mse": _num(record.get("mse")),
+        "penalty": _num(record.get("penalty")),
+        "path": record.get("path"),
+    }
+
+
+def _is_pathological(record: dict) -> bool:
+    """该候选是否**确定**携带数值病理（体检罚分 > 0）。罚分未知（None）不算。"""
+    penalty = record.get("penalty")
+    return (isinstance(penalty, (int, float)) and not isinstance(penalty, bool)
+            and penalty > 0)
+
+
+def select_published_sample(results_root: str) -> tuple[dict | None, dict]:
+    """挑"要发布的解"：优先**无病理**（体检罚分 == 0）的最高分样本，并给出选择依据。
+
+    为什么需要这道门禁：评分是 ``-(拟合 MSE + 体检罚分)``，罚分只把病理解**压低**，
+    压不到底时它仍可能是分数最高的那个——实测 ``20260925-134149`` 的发布式自认
+    "病理性器件"却照样被发布，``20260926-110809`` 的交付解罚分 0.6877 更**大于**它的
+    拟合 MSE 0.4253。发布一个门控器件等于用产物打脸"本方法能治病理"。故把"发布什么解"
+    与"谁是最高分"解耦：**能给出干净解就给干净解**；被降级的最高分样本连同它的罚分
+    写进 report.md 的选择小节，绝不静默丢弃。
+
+    ``penalty`` 为 ``None``（旧产物 / 拿不到 fit_mse）时**既不算干净也不算病理**：
+    只在没有任何 ``penalty==0`` 候选时才可能被选中，并在选择小节里注明"罚分未知"。
+
+    Returns:
+        ``(record, info)``；无有效样本时 ``(None, {...})``。``info`` 含
+        ``n_candidates`` / ``n_clean`` / ``degraded`` / ``best`` / ``chosen`` /
+        ``rejected``（分数更高但带病理、被跳过的候选，最多 5 条）。
+    """
+    records = load_sample_records(results_root)
+    if not records:
+        return None, {"n_candidates": 0, "n_clean": 0, "degraded": False,
+                      "best": None, "chosen": None, "rejected": [], "n_rejected": 0,
+                      "n_unknown_skipped": 0}
+    best = records[0]
+    clean = [r for r in records if r["penalty"] == 0]
+    chosen = clean[0] if clean else best
+    skipped = [r for r in records if r["score"] > chosen["score"]]
+    # "被跳过"分两类，报告里必须分开写：真带病理（罚分 > 0）与**罚分未知**（旧产物）
+    rejected = [r for r in skipped if _is_pathological(r)]
+    unknown = [r for r in skipped if r["penalty"] != 0 and not _is_pathological(r)]
+    info = {
+        "n_candidates": len(records),
+        "n_clean": len(clean),
+        "degraded": chosen is not best,
+        "best": _selection_entry(best),
+        "chosen": _selection_entry(chosen),
+        "rejected": [_selection_entry(r) for r in rejected[:5]],
+        "n_rejected": len(rejected),
+        "n_unknown_skipped": len(unknown),
+    }
+    return chosen, info
 
 
 def _parse_symbols(func: str) -> tuple[str, list[str]] | None:
@@ -312,8 +416,12 @@ def find_best_eq(results_root: str, threshold: float = 0.1,
                  test_csv: str | None = None):
     """收尾：寻找最优样本 → 敏感度剪枝与可视化 → 生成物理解释（含剪枝分析）。
 
-    主函数仅做扁平编排，具体逻辑拆分到 find_best_sample / prune_and_visualize /
+    主函数仅做扁平编排，具体逻辑拆分到 select_published_sample / prune_and_visualize /
     explain_best_sample，避免原先 try-with-for-if-try 的深嵌套。
+
+    **发布解的选择带病理门禁**：候选里优先取体检罚分 == 0 的最高分样本；最高分样本带病理
+    时把它降级为"不建议采用"并写进 report.md 的「发布解选择」小节（见
+    :func:`select_published_sample`）。
 
     Args:
         role_clients: ``llm.roles.RoleClients``；物理解释按其中的 ``explain`` 角色
@@ -323,18 +431,34 @@ def find_best_eq(results_root: str, threshold: float = 0.1,
             ``holdout.resolve_test_csv``），``"none"`` 表示关闭。样本外指标只写进
             run.out 与 report.md，不参与采样/打分/选择。
     """
-    best = find_best_sample(results_root)
-    if best is None:
+    chosen, selection = select_published_sample(results_root)
+    if chosen is None:
         print("没有找到有效样本。")
         return
 
-    score, path, func, params = best
+    score, path, func, params = (chosen["score"], chosen["path"],
+                                 chosen["function"], chosen["params"])
     print(f"[BEST] score={score} file={path}")
+    best_entry, chosen_entry = selection.get("best"), selection.get("chosen")
+    if selection.get("degraded"):
+        # 病理门禁命中：最高分样本带体检罚分，改发布无病理的最高分样本。
+        print(f"[GATE] 最高分样本 order={best_entry['sample_order']}"
+              f"（score={best_entry['score']}，拟合 MSE={best_entry['mse']}，"
+              f"体检罚分={best_entry['penalty']}）携带数值病理，"
+              f"按「优先发布无病理解」口径改为发布 order={chosen_entry['sample_order']}"
+              f"（score={chosen_entry['score']}，罚分={chosen_entry['penalty']}）")
+    elif not selection.get("n_clean"):
+        print(f"[GATE] 本次 {selection.get('n_candidates')} 个候选全部带病理或罚分未知，"
+              f"没有可推荐的干净解；发布式仍取最高分样本，report.md 已显式标注")
 
     # 先剪枝：report.md 要解释"剪枝后的表达式"与"剪掉了哪些项、为什么合理"，
     # 剪枝摘要（含剪枝前后在训练数据上的拟合对比）必须先算出来。
     pruning = prune_and_visualize(results_root, func, params, threshold, sample_range,
                                   test_csv=test_csv)
+    if pruning is not None:
+        # 选择依据随剪枝摘要一起进 explain（渲染成 report.md 的「发布解选择」小节）：
+        # 被跳过的病理解候选必须留在报告里，否则"为什么发布的不是最高分"无法追溯。
+        pruning["selection"] = selection
 
     # 物理解释（按 sample_order 匹配 Good 经验，含 RAG 文献注入与剪枝分析）
     order_match = re.search(r"samples_(\d+)", path)

@@ -60,8 +60,10 @@ python -m drsr_420.cli.main --problem_name oscillator1 --data_csv ./data/oscilla
 > 它是**报告**而非训练/选择信号：样本内 NMSE 由评估器在同一批训练点上拟合并打分得到，
 > 小样本问题（如 MRF 系列只有 7–19 行）里这个数可以很小而公式仍然不泛化——实测某次
 > 8 个训练点、10 个自由参数的运行，样本内 NMSE 1.4e-7，两个 held-out 点上相对误差 7.95%。
-> 另外 `data/MRFShear-3` 与 `data/MRFCompress-3` 的 `test.csv` 与 `train.csv` 逐行相同，
-> 工具会把这种"重合"直接标出来，不会当成独立的样本外验证。
+> 另外 `data/MRFShear-3` 与 `data/MRFCompress-3` 的 `test.csv` 与 `train.csv` **曾经**
+> 逐行相同（现已改为互异），但两边的 `test.csv` **都只有 2 行**，且 MRF 系的 held-out
+> 点落在训练点之间（属插值而非 OOD）——工具会把"与训练集重合"标出来，但这种只有 2 个
+> 点的样本外数字同样**不能**用作泛化能力的统计结论，只作存在性提示。
 
 批量示例见根目录 `example.sh`（bash）与 `example.bat`（Windows，可直接双击）。4 个单问题
 运行配置（`MRFShear-Cuboid` / `MRFShear-Ellipsoid` / `MRFCompress-Cuboid` /

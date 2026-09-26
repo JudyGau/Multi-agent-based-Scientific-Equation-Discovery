@@ -55,13 +55,19 @@ class Profiler:
         max_log_nums: int | None = None,
         samples_per_iteration: int | None = None,
         target_variance: float | None = None,
-        persist_all_samples: bool = False,
+        persist_all_samples: bool = True,
     ):
         """
         Args:
             results_root: 实验根目录（samples JSON 将保存在此目录下的 samples 子目录）。
             pkl_dir     : save the results to a pkl file.
             max_log_nums: stop logging if exceeding max_log_nums.
+            persist_all_samples: 是否**每个样本都落盘** ``samples/samples_<order>.json``
+                （同时照旧刷新 top-K 排行文件 ``topNN_samples_<order>.json``）。
+                默认 ``True``：只留 top-10 会让整份搜索轨迹不可追溯——实测 490 个 run
+                里绝大多数只剩 10 条样本，"哪一轮注入了什么、分数怎么变的"事后无法复盘，
+                消融与因果链分析都做不了。置 ``False`` 可省盘（每样本约 2 KB），代价是
+                历史只能靠内存里的 Top-K 重建（进程重启即丢）。
         """
         logging.getLogger().setLevel(logging.INFO)
         self._results_root = results_root or '.'
@@ -169,8 +175,11 @@ class Profiler:
                 self._record_and_verbose(sample_orders)
                 self._write_tensorboard()
                 if self._persist_all_samples:
+                    # 全量：写 samples/samples_<order>.json 之后再刷新 Top-K 排行文件
+                    # （_write_json 内部第 2 步）。这是默认路径——轨迹必须留全。
                     self._write_json(programs)
                 else:
+                    # 省盘模式：只重算 Top-K 排行文件，不写单样本文件（历史不可追溯）
                     try:
                         self._prune_samples_dir_topk()
                     except Exception:

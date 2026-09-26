@@ -138,7 +138,9 @@ def _init_profiler(
         results_root,
         samples_per_iteration=config.samples_per_prompt,
         target_variance=target_variance,
-        persist_all_samples=bool(kwargs.get('persist_all_samples', False)),
+        # 默认全量落盘（每样本一个 samples_<order>.json）：只有 top-10 的产物无法
+        # 支撑事后复盘/消融/因果链分析。显式传 persist_all_samples=False 才退回省盘模式。
+        persist_all_samples=bool(kwargs.get('persist_all_samples', True)),
     ) if results_root else None
     return profiler
 

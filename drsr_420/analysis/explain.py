@@ -659,6 +659,58 @@ def _format_facts_block(facts: dict | None) -> str:
 
 RANGE_HEADING = "## 动态范围体检"
 
+#: 「发布解选择」小节标题。评分是 −(拟合 MSE + 体检罚分)，罚分压不彻底时病理解仍可能是
+#: 最高分，所以 find_best_eq 会优先发布**无病理**的最高分样本；本小节把这次选择连同
+#: 被跳过的病理解候选一起写进报告，让"为什么发布的不是最高分"可追溯。
+SELECTION_HEADING = "## 发布解选择"
+
+
+def render_selection_section(selection: dict | None) -> str:
+    """渲染 report.md 的「发布解选择」小节（机器生成；无选择信息时整节不出现）。
+
+    只有 `find_best_eq` 走完病理门禁才会带上 ``selection``；单独重跑 explain 或旧产物
+    没有这一段时返回空串，报告其余小节不受影响。
+    """
+    if not selection or not selection.get("chosen"):
+        return ""
+    chosen = selection["chosen"]
+    best = selection.get("best") or chosen
+    lines = [SELECTION_HEADING, ""]
+
+    def _fmt(entry: dict) -> str:
+        penalty = entry.get("penalty")
+        penalty_txt = "未知" if penalty is None else str(penalty)
+        return (f"sample_order={entry.get('sample_order')}、score={entry.get('score')}、"
+                f"拟合 MSE={entry.get('mse')}、体检罚分={penalty_txt}")
+
+    lines.append(f"发布解：{_fmt(chosen)}。")
+    lines.append(f"候选共 {selection.get('n_candidates', '?')} 个，"
+                 f"其中体检罚分 == 0（无病理）的有 {selection.get('n_clean', '?')} 个。")
+    if selection.get("degraded"):
+        lines.append("")
+        lines.append(f"**本次发生了降级**：分数最高的样本（{_fmt(best)}）携带**数值病理**"
+                     f"（罚分 > 0），按「优先发布无病理解」的口径改为发布上面那个"
+                     f"无病理样本。被跳过的最高分样本**不是被丢弃**：它的分数与罚分"
+                     f"一并记录在此，供人工判断。")
+        for entry in selection.get("rejected") or []:
+            lines.append(f"- 因病理被跳过（分数更高）：{_fmt(entry)}")
+        if selection.get("n_rejected", 0) > len(selection.get("rejected") or []):
+            lines.append(f"- 另有 {selection['n_rejected'] - len(selection['rejected'])} 个"
+                         f"分数更高的病理性候选未列出")
+        if selection.get("n_unknown_skipped"):
+            lines.append(f"- 另有 {selection['n_unknown_skipped']} 个分数更高的候选"
+                         f"体检罚分**未知**（旧产物缺少拟合 MSE），既不能判为干净也不能"
+                         f"判为病理，故未采用")
+    elif not selection.get("n_clean"):
+        lines.append("")
+        lines.append("**本次没有任何无病理候选**（全部带罚分，或罚分未知）：上面的发布解仅作记录，"
+                     "不应作为可用形式引用。罚分为「未知」时说明该产物缺少拟合 MSE，"
+                     "既不能判为干净也不能判为病理。")
+    else:
+        lines.append("")
+        lines.append("本次发布的样本本身就是无病理候选中的最高分，未发生降级。")
+    return "\n".join(lines)
+
 
 def _strip_range_section(text: str) -> str:
     """去掉正文里自带的「动态范围体检」小节（清单/数字一律由系统生成，避免两套数字）。"""
@@ -790,22 +842,37 @@ def render_range_section(range_check: dict | None) -> str:
 def _assemble_explain(answer: str | None, refs: list[dict],
                       holdout: dict | None = None, fit: dict | None = None,
                       range_check: dict | None = None,
-                      progress: dict | None = None) -> str:
-    """正文 + 权威「样本外验证」「动态范围体检」「训练进度」小节 + 权威参考文献小节。
+                      progress: dict | None = None,
+                      selection: dict | None = None,
+                      note: str | None = None) -> str:
+    """正文 + 权威「发布解选择」「样本外验证」「动态范围体检」「训练进度」小节 + 参考文献。
 
     正文自带的同名小节会被替换（数字一律由系统算，避免 LLM 转述出两套数字）。
     没有训练进度记录（``best_history`` 为空）时该小节整节不出现，而不是写一句
     "本次无数据"。
+
+    ``note`` 是**物理解释未能生成**的原因（无匹配经验 / LLM 返回空…）。旧实现在这些
+    情况下直接不写文件，结果 490 个 run 只有 4 份 report.md，而失败原因只留在 run.out
+    里没人看；现在改成"照写报告 + 在开头显式写明原因"，既保证产物齐全，也不掩盖故障。
     """
     body = strip_holdout_section(answer or "")
     body = _strip_range_section(body)
     body = _strip_reference_section(body).rstrip()
-    sections = [render_holdout_section(holdout, fit),
+    sections = [render_selection_section(selection),
+                render_holdout_section(holdout, fit),
                 render_range_section(range_check),
                 render_progress_section(progress),
                 render_reference_section(refs)]
     tail = "\n\n".join(s for s in sections if s)
-    return f"{body}\n\n{tail}" if body else tail
+    parts = []
+    if note:
+        parts.append(f"> ⚠️ 物理解释未生成：{note}。"
+                     f"本节以下的机器小节仍由系统直接计算，不依赖 LLM。")
+    if body:
+        parts.append(body)
+    if tail:
+        parts.append(tail)
+    return "\n\n".join(parts)
 
 
 def explain_best_sample(results_root: str, func: str, sample_order: str,
@@ -814,8 +881,10 @@ def explain_best_sample(results_root: str, func: str, sample_order: str,
                         progress: dict | None = None) -> None:
     """按 sample_order 匹配 Good 经验，调用 LLM 生成物理解释并落盘 report.md。
 
-    任意环节失败（无经验文件 / 无匹配条目 / 提示词构造失败 / LLM 初始化失败）
-    均只告警并返回，不抛出，避免影响后续剪枝流程。
+    任意环节失败（无经验文件 / 无匹配条目 / 提示词构造失败 / LLM 初始化失败）都不抛出，
+    但**仍会写出 report.md**：物理解释正文缺失时在报告开头写明原因，机器小节
+    （发布解选择 / 样本外验证 / 动态范围体检 / 训练进度 / 参考文献）照常输出。
+    只有"连机器小节都拿不到"时才不写文件（避免产出空报告）。
 
     Args:
         pruning: ``find_best_eq.prune_and_visualize`` 的剪枝摘要；给定时解释会覆盖
@@ -833,13 +902,15 @@ def explain_best_sample(results_root: str, func: str, sample_order: str,
             该文件在仓库中并不存在，异常被下面的 ``except`` 吞掉后静默写出空的
             ``report.md``（物理解释长期失效且无人发现）。
     """
+    exp_data = None
+    note = None
     exp_path = os.path.join(results_root, "experiences.json")
     try:
         with open(exp_path, "r", encoding="utf-8") as f:
             exp_data = json.load(f)
     except Exception as e:
-        print(f"[WARN] 读取经验文件失败，跳过物理解释: {e}")
-        return
+        print(f"[WARN] 读取经验文件失败，本次报告将不含物理解释: {e}")
+        note = f"读取 experiences.json 失败（{e}）"
 
     # 问题背景来自 config_snapshot.json（--background / --background_file 的最终
     # 文本）：解释 LLM 必须知道材料体系与自变量定义，否则会把 MRF 解释成 MRE
@@ -853,13 +924,14 @@ def explain_best_sample(results_root: str, func: str, sample_order: str,
         print(f"[WARN] 读取 config_snapshot.json 的问题背景失败（解释将不含背景块）: {e}")
 
     matched = None
-    for exp in exp_data.get("Good", []):
+    for exp in (exp_data or {}).get("Good", []):
         if str(exp.get("sample_order")) == sample_order:
             matched = exp
             break
-    if matched is None:
-        print(f"[WARN] 未找到 sample_order={sample_order} 的 Good 经验，跳过物理解释。")
-        return
+    if matched is None and note is None:
+        note = (f"未找到 sample_order={sample_order} 的 Good 经验（该样本当时被分类为 "
+                f"Bad/None，或该条经验已不在 experiences.json 中）")
+        print(f"[WARN] {note}，物理解释正文未生成。")
 
     # 先自己检索一次文献：既进提示词（按 [n] 编号），又是文末参考文献清单的来源。
     # 解析失败时不传 references，让 build_explain_content 内部按同样规则兜底。
@@ -868,54 +940,71 @@ def explain_best_sample(results_root: str, func: str, sample_order: str,
     if parsed is not None:
         references = retrieve_rag(_explain_query(parsed[1]))
 
-    content = build_explain_content(func, matched, background=background,
-                                    pruning=pruning, references=references,
-                                    holdout=holdout if holdout is not None
-                                    else (pruning or {}).get("holdout"),
-                                    facts=_load_facts(results_root))
-    if content is None:
-        print("[WARN] 构造物理解释提示词失败，跳过。")
-        return
-
-    # 初始化 LLM 客户端（explain 角色；档案与参数由 config/agents.config.json 决定，
-    # 未注入 role_clients 时按注册表自行解析，因此直接调用本函数也能拿到正确档案）
-    client = None
-    try:
-        if role_clients is not None:
-            client = role_clients.get('explain')
-        else:
-            client = llm.build_role_client('explain')
-        if client is not None:
-            print(f"[INFO] LLM client initialized: provider={client._provider_name()}, "
-                  f"model={client.model}, kwargs={client.kwargs}")
-    except Exception as e:
-        print(f"[WARN] Failed to init LLM client: {e}")
-        print("[WARN] 提示：运行 `python -m drsr_420.llm.roles --check` 查看角色档案解析情况")
-
     tool_refs: list[dict] = []
-    explain = explain_re_act(client, content, tool_refs=tool_refs)
+    explain = ""
+    if matched is not None:
+        content = build_explain_content(func, matched, background=background,
+                                        pruning=pruning, references=references,
+                                        holdout=holdout if holdout is not None
+                                        else (pruning or {}).get("holdout"),
+                                        facts=_load_facts(results_root))
+        if content is None:
+            note = "构造物理解释提示词失败"
+            print("[WARN] 构造物理解释提示词失败，物理解释正文未生成。")
+        else:
+            # 初始化 LLM 客户端（explain 角色；档案与参数由 config/agents.config.json
+            # 决定，未注入 role_clients 时按注册表自行解析，因此直接调用本函数也能拿到
+            # 正确档案）
+            client = None
+            try:
+                if role_clients is not None:
+                    client = role_clients.get('explain')
+                else:
+                    client = llm.build_role_client('explain')
+                if client is not None:
+                    print(f"[INFO] LLM client initialized: provider={client._provider_name()}, "
+                          f"model={client.model}, kwargs={client.kwargs}")
+            except Exception as e:
+                print(f"[WARN] Failed to init LLM client: {e}")
+                print("[WARN] 提示：运行 `python -m drsr_420.llm.roles --check` 查看角色档案解析情况")
 
-    if not (explain or "").strip():
-        # 失败时**不写文件**：把既有 report.md 覆盖成"只剩参考文献"的残件会掩盖
-        # 真实故障——旧实现写出空文件，结果物理解释长期失效却没人发现。
-        print(f"[WARN] 物理解释为空（LLM 调用失败或返回空），保留既有 {REPORT_FILENAME} 不覆盖。")
-        return
+            explain = explain_re_act(client, content, tool_refs=tool_refs)
+            if not (explain or "").strip():
+                note = "物理解释为空（LLM 调用失败或返回空）"
+                print(f"[WARN] {note}。")
 
     # 正文 + 权威参考文献清单（知识库检索命中 ∪ 解释过程中工具检索命中）
-    #        + 权威「样本外验证」小节（数字由系统算，不经过 LLM 转述）
+    #        + 权威「发布解选择 / 样本外验证 / 动态范围体检 / 训练进度」小节（数字由
+    #        系统直接算，不经过 LLM 转述）
+    #
+    # 落盘策略（2026-09-26 修正）：**无论物理解释是否生成都要写 report.md**。这些机器
+    # 小节本身就是可引用的产物，而旧实现"失败就不写"，导致 490 个 run 只剩 4 份报告、
+    # 失败原因只留在 run.out 里没人看；现在把原因写在报告开头，照写不会掩盖故障。
     refs = merge_references(references, tool_refs)
     holdout_result = holdout if holdout is not None else (pruning or {}).get("holdout")
     progress_result = progress if progress is not None else (pruning or {}).get("progress")
     final_text = _assemble_explain(explain, refs, holdout=holdout_result,
                                    fit=(pruning or {}).get("fit"),
                                    range_check=(pruning or {}).get("range_check"),
-                                   progress=progress_result)
+                                   progress=progress_result,
+                                   selection=(pruning or {}).get("selection"),
+                                   note=note)
+    if not final_text.strip():
+        print(f"[WARN] 报告无任何可用内容（物理解释与机器小节都为空），"
+              f"不写 {REPORT_FILENAME}。")
+        return
+    explain_out_path = os.path.join(results_root, REPORT_FILENAME)
+    if note and os.path.exists(explain_out_path):
+        # 物理解释缺失 + 已有报告：保留既有那份，不要把上一版好报告替换成"降级版"
+        # （旧实现的口径，仍然成立）。反之若目录里根本没有 report.md，下面照写——
+        # 那正是"490 个 run 只有 4 份报告"的场景，产物必须留下。
+        print(f"[WARN] 物理解释未生成（{note}），保留既有 {REPORT_FILENAME} 不覆盖。")
+        return
     print_block(final_text)
     print(f"[INFO] 参考文献 {len(refs)} 条"
           + ("" if refs else "（本次未检索到可引用文献）"))
 
     try:
-        explain_out_path = os.path.join(results_root, REPORT_FILENAME)
         with open(explain_out_path, "w", encoding="utf-8") as f:
             f.write(final_text)
         print(f"[INFO] Saved report to: {explain_out_path}")
