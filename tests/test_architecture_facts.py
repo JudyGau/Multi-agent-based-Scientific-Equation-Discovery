@@ -12,6 +12,12 @@
 2. "从未评估过的一阶删项邻域"必须逐样本核对得出来（含解析失败样本的显式披露）；
 3. 采样通道与残差通道都真的把这段机器事实（以及"触底必须给删项候选"的要求）
    送进了提示词。
+
+2026-09-26 的同数据 A/B 补充了第 4 层：**光列"没试过"不够**——
+* 110809 里点名的 term set 一次都没被采纳（88 个样本 0 个用 `drop λ12²`），
+  因为"换个记号不是新架构"被读成了"别回那个家族"；
+* 故未试邻域必须带**同口径实测的分数**，提示里必须给出**分数分解**（拟合 MSE ↔
+  体检罚分），否则"拟合 MSE 0.197 + 罚分 36.06"会被当成胜利。
 """
 from __future__ import annotations
 
@@ -28,6 +34,26 @@ from drsr_420.core import prompt_config as pc
 from drsr_420.evaluation import architecture_facts as af
 
 NAMES = ["lambda12", "lambda23"]
+
+#: 真实训练数据（``data/MRFCompress-Cuboid/train.csv`` 的 8 行）。
+#: 用真数据而不是编造的合成点，是为了让"未试邻域的实测分数是否真的更好"这一断言
+#: 有实际意义：这条数据的 λ12/λ23 反相关构成一维山脊，正是 A/B 里出问题的场景。
+REAL_ROWS = [
+    [1.0, 1.0, 193.054296],
+    [1.0, 14.1244539741282, 352.199124],
+    [2.0, 8.93309092586236, 339.577632],
+    [2.5, 7.41852507409512, 317.233144],
+    [3.0, 6.3166439769309, 305.192522],
+    [3.5, 5.4875489462117, 299.014498],
+    [4.0, 4.84464808860215, 296.650686],
+    [5.0, 3.91742135140293, 306.57695],
+]
+
+
+def _facts_payload(rows=None) -> dict:
+    """``data_facts.json`` 的最小可用形状（未试邻域拟合只需这三项）。"""
+    return {"table_included": True, "table_columns": list(NAMES) + ["sigma"],
+            "table_rows": list(REAL_ROWS if rows is None else rows)}
 
 #: 完整二阶响应面：6 个项（含两个平方项与交叉项）。
 FULL_TERMS = ("const", "lambda12", "lambda12*lambda23", "lambda12^2", "lambda23", "lambda23^2")
@@ -63,6 +89,12 @@ ASYMMETRIC = _eq("    u = lambda12 - 1.0\n    v = lambda23 - 1.0\n"
                  "    return (params[0] + params[1]*u + params[2]*v + params[3]*v**2\n"
                  "            + params[4]*u*v)")
 
+#: 一维山脊模型（只对乘积 λ12·λ23 做二次）：与完整二次型是**不同指纹**，
+#: 故拿它当"已评估的架构"时，被分析的方程（完整二次型）就**不是**最好的那个——
+#: 用于验证残差通道的 "term set of the equation under analysis" 分支。
+PRODUCT_QUADRATIC = _eq("    x = lambda12 * lambda23\n"
+                        "    return params[0] + params[1]*x + params[2]*x**2")
+
 
 def _write_json(path: str, payload) -> None:
     with open(path, "w", encoding="utf-8") as f:
@@ -94,6 +126,25 @@ class _ScriptedChat:
         if on_delta is not None:
             on_delta({"content": item.get("content", ""), "reasoning_content": ""})
         return item
+
+
+def _poor_entries(count: int = 12, equation: str = FULL_QUADRATIC_VARIANTS["plain"]) -> list:
+    """一批"最高分也很差"的样本（分数一律 −5）：让未试邻域的实测分数能超过它。"""
+    return [_entry(o, -5.0, equation) for o in range(1, count + 1)]
+
+
+def _record(order: int, mse: float, penalty=None, nmse=None) -> dict:
+    """一条样本记录（分数按实验口径推出：有罚分时 ``-(mse+penalty)``）。"""
+    score = -(mse + penalty) if isinstance(penalty, (int, float)) else -mse
+    return {"sample_order": order, "mse": mse, "penalty": penalty,
+            "nmse": nmse, "score": score}
+
+
+def _write_samples(root: str, records: list) -> None:
+    directory = os.path.join(root, "samples")
+    os.makedirs(directory, exist_ok=True)
+    for record in records:
+        _write_json(os.path.join(directory, f"samples_{record['sample_order']}.json"), record)
 
 
 class FingerprintInvarianceTest(unittest.TestCase):
@@ -377,6 +428,241 @@ class ResidualChannelInjectionTest(unittest.TestCase):
                                       results_root=self.root)
         insight = agent.analyze(ASYMMETRIC, self.residual)
         self.assertEqual(insight.analysis, "INSIGHT")
+
+
+class TemplateFromTermsTest(unittest.TestCase):
+    """由 term set 标签机械构造代表元模板（记号还原不唯一时显式拒绝）。"""
+
+    def test_quadratic_term_set_gets_a_template_and_its_parameter_count(self):
+        terms = ("const", "lambda12", "lambda12*lambda23", "lambda23", "lambda23^2")
+        self.assertEqual(
+            af.template_from_terms(terms, NAMES),
+            ("p0 + p1*lambda12 + p2*lambda12*lambda23 + p3*lambda23 + p4*lambda23**2", 5))
+
+    def test_power_label_spends_a_second_parameter_on_the_exponent(self):
+        template, n_params = af.template_from_terms(("const", "power(lambda12)"), NAMES)
+        self.assertEqual((template, n_params), ("p0 + p1*lambda12**p2", 3))
+
+    def test_variable_names_come_from_the_caller(self):
+        self.assertEqual(af.template_from_terms(("const", "x^2"), ["x", "y"]),
+                         ("p0 + p1*x**2", 2))
+
+    def test_ambiguous_labels_are_not_guessed(self):
+        """``higher`` / ``power(a,b)`` 各自归并了多个不同形状，不猜。"""
+        for terms in (("const", "higher"), ("const", "power(lambda12,lambda23)"),
+                      ("const", "no_such_label")):
+            with self.subTest(terms=terms):
+                self.assertIsNone(af.template_from_terms(terms, NAMES))
+
+
+class MeasureTermSetTest(unittest.TestCase):
+    """未试邻域的实测分数：口径必须与评估器一致，且与评分同轴可比。"""
+
+    ASYMMETRIC_TERMS = tuple(t for t in FULL_TERMS if t != "lambda12^2")
+
+    def test_never_tried_asymmetric_quadratic_is_measured_clean(self):
+        measurement = af.measure_term_set(self.ASYMMETRIC_TERMS, NAMES, _facts_payload())
+        self.assertIsNone(measurement["reason"])
+        self.assertGreater(measurement["nmse"], 0)
+        self.assertEqual(measurement["penalty"], 0.0)
+        self.assertFalse(measurement["flagged"])
+        self.assertAlmostEqual(measurement["score"],
+                               -(measurement["mse"] + measurement["penalty"]), places=12)
+
+    def test_full_quadratic_measures_as_pathological_here(self):
+        """回归（实测 110809）：完整二次型的最优拟合靠"局部斜率"取得，必须被标出。"""
+        measurement = af.measure_term_set(FULL_TERMS, NAMES, _facts_payload())
+        self.assertTrue(measurement["flagged"])
+        self.assertGreater(measurement["penalty"], 0)
+        self.assertTrue(any("slope" in hit for hit in measurement["criteria"]))
+
+    def test_the_clean_five_term_form_scores_better_than_the_penalized_six_term_one(self):
+        """A/B 里缺失的那句话：拟合更好的那个，分数反而更低（罚分吃掉了）。"""
+        full = af.measure_term_set(FULL_TERMS, NAMES, _facts_payload())
+        asym = af.measure_term_set(self.ASYMMETRIC_TERMS, NAMES, _facts_payload())
+        self.assertLess(full["mse"], asym["mse"])
+        self.assertGreater(asym["score"], full["score"])
+
+    def test_the_number_is_reproducible(self):
+        first = af.measure_term_set(self.ASYMMETRIC_TERMS, NAMES, _facts_payload())
+        second = af.measure_term_set(self.ASYMMETRIC_TERMS, NAMES, _facts_payload())
+        self.assertEqual(first["nmse"], second["nmse"])
+
+    def test_missing_or_unusable_table_degrades_with_an_explicit_reason(self):
+        unusable = [None, {}, {"table_included": False, "table_columns": list(NAMES) + ["sigma"],
+                               "table_rows": []},
+                    {"table_included": True, "table_columns": ["lambda12"],
+                     "table_rows": [[1.0]]}]
+        for facts in unusable:
+            with self.subTest(facts=facts):
+                measurement = af.measure_term_set(("const", "lambda12"), NAMES, facts)
+                self.assertIsNone(measurement["nmse"])
+                self.assertTrue(measurement["reason"])
+
+    def test_unreconstructible_terms_are_reported_not_guessed(self):
+        measurement = af.measure_term_set(("const", "higher"), NAMES, _facts_payload())
+        self.assertIsNone(measurement["nmse"])
+        self.assertIn("merges several different forms", measurement["reason"])
+
+
+class TerrainMeasurementTest(unittest.TestCase):
+    """地形里的未试邻域必须带上实测分数；渲染必须给出可验证的改进方向。"""
+
+    TITLE = "### TITLE ###"
+
+    def test_untried_deletions_carry_a_measured_score(self):
+        terrain = af.sampling_terrain(_stagnating_entries(), NAMES, facts=_facts_payload())
+        measurements = {item["dropped"]: item["measurement"]
+                        for item in terrain["untried_deletions"]}
+        self.assertIn("lambda12^2", measurements)
+        self.assertIsNotNone(measurements["lambda12^2"]["nmse"])
+        self.assertIsNotNone(measurements["lambda12^2"]["score"])
+
+    def test_without_a_data_table_every_measurement_explains_itself(self):
+        terrain = af.sampling_terrain(_stagnating_entries(), NAMES)
+        for item in terrain["untried_deletions"]:
+            self.assertIsNone(item["measurement"]["nmse"])
+            self.assertTrue(item["measurement"]["reason"])
+
+    def test_render_names_the_verifiable_improvement_on_the_score_axis(self):
+        terrain = af.sampling_terrain(_poor_entries(), NAMES, facts=_facts_payload())
+        block = af.render_terrain(terrain, NAMES, self.TITLE)
+        self.assertIn("drop lambda12^2 ->", block)
+        self.assertIn("WOULD BEAT your current best score", block)
+
+    def test_render_says_so_when_the_measured_neighbour_is_worse(self):
+        # 最高分 −0.5 比未对称二次的实测分数（约 −0.87）更好 → 不该喊"能超过"
+        terrain = af.sampling_terrain(_stagnating_entries(), NAMES, facts=_facts_payload())
+        block = af.render_terrain(terrain, NAMES, self.TITLE)
+        self.assertIn("is below your current best score", block)
+        self.assertNotIn("WOULD BEAT", block)
+
+    def test_render_lists_the_degradation_reason_without_a_number(self):
+        terrain = af.sampling_terrain(_stagnating_entries(), NAMES)
+        block = af.render_terrain(terrain, NAMES, self.TITLE)
+        self.assertIn("NOT measured here", block)
+
+
+class ScoreBreakdownRenderTest(unittest.TestCase):
+    """分数分解：把"拟合 MSE"与"体检罚分"拆开，点名"低 MSE 高罚分"的陷阱。"""
+
+    TITLE = "### TITLE ###"
+
+    def _block(self, records):
+        terrain = af.with_score_breakdown(
+            af.sampling_terrain(_poor_entries(), NAMES, facts=_facts_payload()), records)
+        return af.render_terrain(terrain, NAMES, self.TITLE)
+
+    def test_clean_best_is_not_confused_with_a_penalized_low_mse_sample(self):
+        block = self._block([_record(1, 5.0, 0.0), _record(2, 0.2, 36.0),
+                             _record(3, 0.05, 1.0e4)])
+        self.assertIn("best score overall", block)
+        self.assertIn("best sample that still carries a penalty", block)
+        self.assertIn("lowest fit MSE seen", block)
+        self.assertIn("100% of the score is penalty", block)
+        self.assertIn("Of the 3 sample records persisted for this run, 2 carry", block)
+
+    def test_penalty_dominated_overall_best_is_reported_next_to_the_clean_one(self):
+        block = self._block([_record(1, 5.0, 0.0), _record(2, 0.2, 0.1)])
+        self.assertIn("best sample with ZERO penalty", block)
+
+    def test_no_clean_sample_is_stated_explicitly(self):
+        block = self._block([_record(1, 5.0, 2.0), _record(2, 0.2, 36.0)])
+        self.assertIn("NONE is clean", block)
+        self.assertNotIn("ZERO penalty", block)
+
+    def test_old_records_without_a_penalty_field_degrade_openly(self):
+        block = self._block([_record(1, 5.0, None)])
+        self.assertIn("score decomposition unavailable", block)
+
+    def test_no_records_no_decomposition(self):
+        terrain = af.sampling_terrain(_poor_entries(), NAMES, facts=_facts_payload())
+        block = af.render_terrain(terrain, NAMES, self.TITLE)
+        self.assertNotIn("how the score is built", block)
+
+
+class SamplingChannelFactsTest(unittest.TestCase):
+    """采样通道：事实表与样本记录真的被读进来，并进到最终提示词里。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = self._tmp.name
+        self.exp_path = os.path.join(self.root, "experiences.json")
+
+    def _ctx(self):
+        return pc.PromptContext(n_features=2, feature_names=list(NAMES),
+                                dependent_name="sigma", background="bg")
+
+    def _write_inputs(self, records):
+        _write_json(self.exp_path, {"Bad": _poor_entries()})
+        _write_json(os.path.join(self.root, "data_facts.json"), _facts_payload())
+        _write_samples(self.root, records)
+
+    def test_block_carries_measured_neighbours_and_the_score_breakdown(self):
+        # 最高分落在带罚分的样本上（−0.3 < 干净解的 −5）→ 分解必须同时给出两者
+        self._write_inputs([_record(1, 5.0, 0.0), _record(2, 0.2, 0.1)])
+        injector = PromptInjector(self._ctx(), base_dir=self.root)
+        out = injector.inject_architecture_terrain("BODY")
+        self.assertIn("WOULD BEAT your current best score", out)
+        self.assertIn("how the score is built", out)
+        self.assertIn("best sample with ZERO penalty", out)
+        self.assertIn("1 carry a nonzero penalty", out)
+        self.assertLess(out.index("how the score is built"), out.index("BODY"))
+
+    def test_without_a_facts_file_the_block_still_renders_the_degradation(self):
+        _write_json(self.exp_path, {"Bad": _poor_entries()})
+        injector = PromptInjector(self._ctx(), base_dir=self.root)
+        out = injector.inject_architecture_terrain("BODY")
+        self.assertIn("NOT measured here", out)
+        self.assertNotIn("WOULD BEAT", out)
+
+    def test_records_are_reread_only_when_a_new_sample_appears(self):
+        self._write_inputs([_record(1, 5.0, 0.0)])
+        injector = PromptInjector(self._ctx(), base_dir=self.root)
+        first = injector._load_records()
+        self.assertIs(injector._load_records(), first)      # 未变 → 复用
+        _write_samples(self.root, [_record(2, 4.0, 0.0)])
+        self.assertEqual(len(injector._load_records()), 2)  # 新样本 → 重读
+
+    def test_terrain_cache_is_invalidated_by_a_new_data_table(self):
+        self._write_inputs([_record(1, 5.0, 0.0)])
+        injector = PromptInjector(self._ctx(), base_dir=self.root)
+        injector.inject_architecture_terrain("BODY")
+        cached = injector._terrain_cache[0]
+        _write_json(os.path.join(self.root, "data_facts.json"),
+                    _facts_payload(rows=REAL_ROWS[:4]))
+        injector.inject_architecture_terrain("BODY")
+        self.assertNotEqual(injector._terrain_cache[0], cached)
+
+
+class ResidualChannelTerrainFactsTest(unittest.TestCase):
+    """残差通道与采样通道必须看到同一份事实（含实测邻域与分数分解）。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = self._tmp.name
+        self.residual = np.array([[1.0, 2.0, 0.5], [2.0, 4.0, -0.25]])
+
+    def _ctx(self):
+        return pc.PromptContext(n_features=2, feature_names=list(NAMES),
+                                dependent_name="sigma", background="bg")
+
+    def test_target_equation_neighbourhoods_come_with_measurements(self):
+        # 已评估的是"乘积二次"（另一个架构），被分析的是完整二次型 →
+        # 后者不是最好的那个，且它的"删 λ12²"邻域实测分数能超过当前最高分
+        _write_json(os.path.join(self.root, "experiences.json"),
+                    {"Bad": _poor_entries(equation=PRODUCT_QUADRATIC)})
+        _write_json(os.path.join(self.root, "data_facts.json"), _facts_payload())
+        _write_samples(self.root, [_record(1, 5.0, 0.0), _record(2, 0.2, 0.1)])
+        agent = ResidualAnalyzerAgent(_ScriptedChat([]), prompt_ctx=self._ctx(),
+                                      results_root=self.root)
+        block = agent._load_terrain_block(FULL_QUADRATIC_VARIANTS["plain"])
+        self.assertIn("the term set of the equation under analysis", block)
+        self.assertIn("drop lambda12^2 ->", block)
+        self.assertIn("WOULD BEAT your current best score", block)
+        self.assertIn("how the score is built", block)
 
 
 if __name__ == "__main__":

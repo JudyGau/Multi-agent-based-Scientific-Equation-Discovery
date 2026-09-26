@@ -19,6 +19,7 @@ from unittest import mock
 
 from drsr_420.analysis import explain as explain_mod
 from drsr_420.analysis import find_best_eq as fbe
+from drsr_420.core import sample_records as records_mod
 from drsr_420.core.profile import Profiler
 
 
@@ -58,6 +59,58 @@ class SampleRecordsTest(unittest.TestCase):
         _write(self.root, "samples_1.json", {"sample_order": 1, "score": None})
         _write(self.root, "samples_2.json", {"sample_order": 2, "score": "oops"})
         self.assertEqual(fbe.load_sample_records(str(self.root)), [])
+
+
+class ScoreBreakdownTest(unittest.TestCase):
+    """``score_breakdown`` 的口径：``score = −(拟合 MSE + 体检罚分)`` 必须被拆开。
+
+    这不是"统计好看不好看"的问题：混在一起正是要治的病——实测 20260926-151008 的
+    order 34 拟合 MSE 只有 0.197 却带 36.06 罚分，只看 MSE 会把它当成胜利。
+    """
+
+    @staticmethod
+    def _record(order, mse, penalty, score=None):
+        if score is None:
+            score = -(mse + penalty) if isinstance(penalty, (int, float)) else -mse
+        return {"sample_order": order, "mse": mse, "penalty": penalty, "score": score}
+
+    def test_empty_records_give_an_empty_breakdown(self):
+        breakdown = records_mod.score_breakdown([])
+        self.assertEqual(breakdown["n_scored"], 0)
+        self.assertIsNone(breakdown["best"])
+        self.assertFalse(breakdown["penalty_known"])
+
+    def test_best_clean_only_comes_from_zero_penalty_records(self):
+        """回归：干净解**不能**从带罚分的记录里凑（那会把两类数字混起来）。
+
+        这里让**总体最高分**恰恰是带罚分的那个（score −0.15 优于干净解的 −5），
+        于是"最好干净解"必须是另一条记录：任何回退到 ``best`` 的实现都会断言失败。
+        """
+        breakdown = records_mod.score_breakdown([
+            self._record(1, 0.05, 0.1),       # 分数最高，但由拟合+罚分共同构成
+            self._record(2, 5.0, 0.0),        # 干净解，拟合差
+        ])
+        self.assertEqual(breakdown["best"]["sample_order"], 1)
+        self.assertEqual(breakdown["best_clean"]["sample_order"], 2)
+        self.assertEqual(breakdown["best_penalized"]["sample_order"], 1)
+        self.assertEqual(breakdown["best_fit"]["sample_order"], 1)
+        self.assertEqual(breakdown["n_penalized"], 1)
+        self.assertEqual(breakdown["n_clean"], 1)
+
+    def test_missing_penalty_is_unknown_not_zero(self):
+        """旧目录没有 penalty 字段：罚分是**未知**，不许当成 0（那会被读成"干净"）。"""
+        breakdown = records_mod.score_breakdown([self._record(1, 12.0, None)])
+        self.assertTrue(breakdown["n_scored"] == 1)
+        self.assertFalse(breakdown["penalty_known"])
+        self.assertIsNone(breakdown["best_clean"])
+        self.assertIsNone(breakdown["best_penalized"])
+
+    def test_no_clean_record_leaves_best_clean_empty(self):
+        breakdown = records_mod.score_breakdown([self._record(1, 0.2, 1.0),
+                                                self._record(2, 0.3, 2.0)])
+        self.assertIsNone(breakdown["best_clean"])
+        self.assertEqual(breakdown["n_clean"], 0)
+        self.assertEqual(breakdown["n_penalized"], 2)
 
 
 class PublishGateTest(unittest.TestCase):

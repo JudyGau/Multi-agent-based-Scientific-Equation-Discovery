@@ -11,7 +11,8 @@
 
     find_best_eq(results_root)
       ├── select_published_sample()  **病理门禁**：优先取体检罚分==0 的最高分样本
-      │     └── load_sample_records()  两种命名（samples_N / topNN_samples_N）都读，按 order 去重
+      │     └── load_sample_records()  core.sample_records：两种命名都读，按 order 去重
+      │           （采样提示注入读同一份，故内核放 core 层）
       ├── prune_and_visualize()   **先剪枝**（解释要覆盖剪枝结果与剪枝过程）
       │     ├── expr_parse.expr_substitution()   骨架字符串 → SymPy 表达式
       │     ├── sensitivity_prune.SensitivityPruner.prune()  敏感度剪枝
@@ -31,7 +32,6 @@
 本模块只做"取样本 + 步骤编排 + 兜底告警"，具体逻辑见上表各自的模块。
 """
 import glob
-import json
 import os
 import re
 
@@ -47,52 +47,7 @@ from drsr_420.analysis.prune_report import (classify_pruning, compare_fits,
                                             format_fit_summary, load_training_data,
                                             resolve_columns)
 from drsr_420.analysis.sensitivity_prune import SensitivityPruner
-
-
-def load_sample_records(results_root: str) -> list[dict]:
-    """读 ``samples/`` 下**全部**样本记录（按 sample_order 去重），按分数降序返回。
-
-    两种命名并存、必须都读：``topNN_samples_<order>.json``（Top-K 排行）与
-    ``samples_<order>.json``（全量单样本，``persist_all_samples=True`` 时才有）。
-    旧实现只 glob ``*_samples_*.json``，而 ``samples_3.json`` **不匹配**该模式——也就是
-    说"全量落盘"模式下收尾分析会一个样本都读不到。默认改成全量落盘之前必须先修这条
-    （否则跑完 490 次运行的收尾全部静默失效）。
-
-    每条含 ``score`` / ``penalty`` / ``mse`` / ``sample_order`` / ``path`` /
-    ``function`` / ``params``；同一 sample_order 有两种文件时优先取全量文件。
-    """
-    records: dict = {}
-    for path in sorted(glob.glob(os.path.join(results_root, "samples", "*.json"))):
-        name = os.path.basename(path)
-        is_top = name.startswith("top")
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            continue
-        score = data.get("score")
-        if isinstance(score, bool) or not isinstance(score, (int, float)):
-            continue
-        try:
-            order = int(data.get("sample_order"))
-        except (TypeError, ValueError):
-            order = None
-        key = order if order is not None else name
-        prev = records.get(key)
-        # 已有同一 sample_order 的记录时，只有"用全量文件替换 Top-K 副本"才覆盖
-        if prev is not None and not (prev["is_top"] and not is_top):
-            continue
-        records[key] = {
-            "score": float(score),
-            "penalty": data.get("penalty"),
-            "mse": data.get("mse"),
-            "sample_order": order,
-            "path": path,
-            "function": data.get("function", ""),
-            "params": data.get("params"),
-            "is_top": is_top,
-        }
-    return sorted(records.values(), key=lambda r: r["score"], reverse=True)
+from drsr_420.core.sample_records import load_sample_records
 
 
 def find_best_sample(results_root: str):

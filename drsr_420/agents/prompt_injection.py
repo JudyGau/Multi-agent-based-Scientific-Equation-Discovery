@@ -16,7 +16,8 @@ SamplerAgent 的**提示词装配部件**：不调用 LLM、不发起采样，�
     PromptInjector.build_request_content()
         ├── inject_experiences()           从 experiences.json 选条目拼经验块
         ├── inject_residual()              按概率注入最近一条残差分析
-        ├── inject_architecture_terrain()  机器算出的"已试过哪些架构 + 未试邻域"
+        ├── inject_architecture_terrain()  机器算出的"已试架构 + 未试邻域（带实测 NMSE）"
+        │                                  以及分数分解（拟合 MSE ↔ 体检罚分）
         └── render_head()                  任务头（动态 PromptContext 或默认模板）
 
 超参数由 ``Config.experience_injection`` 提供，``None`` 或字段缺失时回落到
@@ -33,11 +34,14 @@ import traceback
 from drsr_420.core import config as config_lib
 from drsr_420.core import prompt_config as pc
 from drsr_420.core.console import print_block
+from drsr_420.core.sample_records import load_sample_records
 from drsr_420.evaluation.architecture_facts import (
     features_from_equation,
     render_terrain,
     sampling_terrain,
+    with_score_breakdown,
 )
+from drsr_420.evaluation.data_facts import load_facts
 
 
 def resolve_policy(exp_cfg) -> config_lib.ExperienceInjectionConfig:
@@ -142,9 +146,12 @@ class PromptInjector:
         # 跨轮采样复用，避免每次构造提示词都重读磁盘（大批量时是 IO 热点）；
         # CoordinatorAgent 以原子写（os.replace）更新这些文件，mtime 变化即失效重读。
         self._cache: dict = {}
-        # 架构地形缓存：(cache_key, terrain)；key 含 experiences.json 的 mtime 与条数，
-        # 条目数变即失效。逐样本注入时同一轮内复用同一次解析结果。
+        # 架构地形缓存：(cache_key, terrain)；key 含 experiences.json 的 mtime、条数
+        # 与数据表签名，任一变化即失效。逐样本注入时同一轮内复用同一次解析与拟合结果。
         self._terrain_cache: tuple | None = None
+        # 样本记录缓存：(samples 目录文件数, 最新 mtime) → 记录列表。分数分解要用它，
+        # 但必须反映**最新**样本，故只做"同一轮内不重复读盘"这一层缓存。
+        self._records_cache: tuple | None = None
 
     # ------------------------------------------------------------------
     # 对外入口
@@ -253,6 +260,16 @@ class PromptInjector:
 
         只在"自最优以来样本数"与"已解析样本数"都够（见该模块的两个闸门）时才注入：
         样本太少时"该架构已触底"没有证据支撑。
+
+        同数据 A/B（``110809`` → ``151008``）之后补两件事，缺了它们这一注反而有害：
+
+        * 未试邻域带**实测 NMSE**（同评估器口径真拟合一遍）——只列"没试过"时点名的
+          term set 一次都没被采纳（88 个样本 0 个），模型把结构性事实读成了"别回那个家族"；
+        * 分数的**分解**（拟合 MSE ↔ 体检罚分）——否则模型把"MSE 0.197 + 罚分 36.06"
+          当成胜利，在"低 MSE 高罚分 ↔ 高 MSE 零罚分"两模态间振荡（81 个样本 9 次翻转）。
+
+        结构地形（含拟合）按 ``(experiences mtime, 条数, 变量名, 数据表签名)`` 整轮缓存；
+        分数分解随每个新样本刷新。
         """
         experiences = self.load_json_cached(self._path("experiences.json"))
         if not experiences:
@@ -267,13 +284,22 @@ class PromptInjector:
         if not features:
             return content
 
-        # 同一个 experiences.json 在一轮内被多个样本复用：按 (mtime, 条数) 记忆计算结果，
-        # 避免每条采样提示都把整份历史重新解析一遍。
-        cache_key = (self._cache.get('mtime'), len(entries), tuple(features))
+        try:
+            facts = load_facts(self.base_dir)
+        except Exception:
+            facts = {}
+        if not isinstance(facts, dict):
+            facts = {}
+
+        cache_key = (self._cache.get('mtime'), len(entries), tuple(features),
+                     tuple(facts.get("table_columns") or []),
+                     len(facts.get("table_rows") or []))
         if self._terrain_cache is None or self._terrain_cache[0] != cache_key:
-            terrain = sampling_terrain(entries, features)
-            self._terrain_cache = (cache_key, terrain)
-        terrain = self._terrain_cache[1]
+            # 同一个 experiences.json 在一轮内被多个样本复用：缓存整份地形，避免每条
+            # 采样提示都把整份历史重新解析一遍、再跑几次 least_squares。
+            self._terrain_cache = (cache_key,
+                                   sampling_terrain(entries, features, facts=facts))
+        terrain = with_score_breakdown(self._terrain_cache[1], self._load_records())
 
         block = render_terrain(terrain, features, pc.architecture_block_title)
         if not block:
@@ -281,6 +307,29 @@ class PromptInjector:
         print_block(f"[架构地形] 注入架构地形块（已解析样本 {terrain['n_parsed']}，"
                     f"自最优以来 {terrain['stagnant_samples']} 个样本）")
         return block + content
+
+    def _load_records(self) -> list:
+        """读本实验的样本记录（``samples/*.json``），按目录文件数 + 最新 mtime 缓存。
+
+        分数分解必须反映**最新**样本（每写一个新样本目录就变一次，故缓存只挡"同一轮
+        内重复读盘"，不做整轮缓存）；否则每条采样提示都要 glob 并解析近百个小 JSON。
+        """
+        directory = os.path.join(self.base_dir or ".", "samples")
+        try:
+            count, newest = 0, 0.0
+            with os.scandir(directory) as items:
+                for item in items:
+                    if item.name.endswith(".json"):
+                        count += 1
+                        newest = max(newest, item.stat().st_mtime)
+        except OSError:
+            return []
+        key = (count, newest)
+        if self._records_cache is not None and self._records_cache[0] == key:
+            return self._records_cache[1]
+        records = load_sample_records(self.base_dir or ".")
+        self._records_cache = (key, records)
+        return records
 
     def _terrain_feature_names(self, entries: list) -> list | None:
         """定出架构地形的自变量名：优先 PromptContext，其次方程签名；非二元返回 None。"""

@@ -22,8 +22,10 @@ from drsr_420.agents.base import THREAD_PER_SAMPLER, AgentSpec, BaseAgent
 from drsr_420.agents.messages import ResidualInsight
 from drsr_420.evaluation.architecture_facts import (
     features_from_equation,
+    load_terrain_inputs,
     render_terrain,
     sampling_terrain,
+    with_score_breakdown,
 )
 from drsr_420.evaluation.data_facts import load_facts, render_facts
 
@@ -71,6 +73,10 @@ class ResidualAnalyzerAgent(BaseAgent):
         但 ``target`` 是**当前被分析的方程**：残差通道要说清"这个架构是不是已经触底、
         它最小的未试删项邻域是什么"，否则改进建议只会停留在局部改动上（实测该实验
         52/87 个样本是同一二阶响应面的重新参数化，删一个平方项的形式从未被提出）。
+
+        与采样通道同样带上两样东西（缺了它们这一注会被读成"别回那个家族"）：
+        未试邻域的**实测 NMSE**（同评估器口径拟合一遍）与分数的**分解**（拟合 MSE
+        与体检罚分分开——否则"MSE 0.197 + 罚分 36.06"会被当成胜利）。
         """
         try:
             path = os.path.join(self._results_root, "experiences.json")
@@ -92,7 +98,11 @@ class ResidualAnalyzerAgent(BaseAgent):
         entries = []
         for category in ("None", "Good", "Bad"):
             entries.extend(experiences.get(category) or [])
-        terrain = sampling_terrain(entries, features, target=str(sample or ""))
+        inputs = load_terrain_inputs(self._results_root)
+        terrain = with_score_breakdown(
+            sampling_terrain(entries, features, target=str(sample or ""),
+                             facts=inputs["facts"]),
+            inputs["records"])
         return render_terrain(terrain, features, pc.architecture_block_title)
 
     def analyze(self, sample, residual) -> ResidualInsight:
