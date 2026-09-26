@@ -112,6 +112,21 @@ class PruningPromptTest(unittest.TestCase):
         prompt = self._prompt(pruning=None)
         self.assertIn("本次没有得到剪枝结果", prompt)
 
+    def test_prompt_limits_what_may_be_attributed_to_a_reference(self):
+        """引用**范围**约束：不得把摘要没说的话升级成"强烈改变/非单调"。
+
+        实测反例（20260926-094330）：报告把"形状—MR 效应的非单调关系"归给一篇摘要只写
+        "纤维悬浮液 MR 效应增强"的文献，把"形状强烈改变 MR 效应"归给一篇摘要实测
+        屈服应力 1.88 kPa（球）vs 1.86 kPa（棒）、即形状无显著影响的文献。
+        """
+        prompt = self._prompt()
+        self.assertIn("引用**范围**规范（硬性）", prompt)
+        self.assertIn("不得超过该文献注入文本实际", prompt)
+        self.assertIn("非单调关系", prompt)
+        self.assertIn("1.88 kPa（球）vs 1.86 kPa（棒）", prompt)
+        # 原有"只允许引用清单内文献、不得编造"的约束不能被覆盖掉
+        self.assertIn("不得编造文献", prompt)
+
     def test_prompt_contains_numbered_reference_list(self):
         from drsr_420.analysis import explain as explain_mod
 
