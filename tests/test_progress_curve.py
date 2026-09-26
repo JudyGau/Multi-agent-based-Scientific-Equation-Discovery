@@ -244,11 +244,14 @@ class RenderProgressSectionTest(unittest.TestCase):
         text = pcur.render_progress_section(s)
         self.assertIn("没有 `penalty` 字段", text)
         self.assertIn("MSE (+ pathology penalty)", text)
+        # 旧口径下**不能**再声称纵轴的 MSE 是拟合本身（那是拆分后的口径）
+        self.assertNotIn("纵轴的 MSE 是**拟合本身**", text)
 
     def test_current_caliber_states_the_split(self):
         text = pcur.render_progress_section(self._summary())
-        self.assertIn("拟合本身", text)
+        self.assertIn("纵轴的 MSE 是**拟合本身**", text)
         self.assertIn("评分 = −(拟合 MSE + 罚分)", text)
+        self.assertNotIn("没有 `penalty` 字段", text)
 
     def test_missing_nmse_is_not_printed_as_none(self):
         s = self._summary()
