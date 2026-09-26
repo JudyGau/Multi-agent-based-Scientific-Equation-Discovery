@@ -81,7 +81,7 @@
 - `experiments/` 共 **490 个 run 目录、8 个问题**，其中 7 个是 MRF 系（Compress/Shear × Cuboid/Ellipsoid/-3/-2）+ BPG0。`[核验新增：原记 456]`
 - **基本只做了 MRF 一个物理域**；BPG0（LLM-SRBench 风格）**67** 次中仅 1 次产出 samples。`[核验新增：原记 56]`
 - **仅 4 个 run 有 `report.md`**：`MRFCompress-Cuboid_{20260925-134149, 20260925-152830, 20260926-094330, 20260926-110809}`。`[核验新增：原记 2 个，后两个属 20260926 批]`
-- `samples/` 只保留 top-10（`drsr_420/core/profile.py:87`）→ **绝大多数 run 的完整采样历史已丢失**。
+- `samples/` 只保留 top-10（`drsr_420/core/profile.py:87`）→ **绝大多数 run 的完整采样历史已丢失**。✅ `[已修 2026-09-26，commit 2072250]` 默认改为**全量落盘**（每样本一个 `samples_<order>.json`），并修掉 `find_best_sample` 只认 `*_samples_*.json`（读不到全量文件名）的隐患。
 - 代码中无 PySR/gplearn 等外部 baseline，只有内部"骨架基线表"；`seed` 默认 `None`，**无多种子重复**。
 - `[核验新增]` 各问题 run 数（存在 `samples/` 的个数）：Compress-Cuboid 145（76）、Shear-2 112（47）、BPG0 67（1）、Compress-Ellipsoid 61（61）、Shear-Ellipsoid 49（49）、Shear-Cuboid 34（33）、Shear-3 16（16）、MRFCompress-3 6（6）。
 
@@ -93,15 +93,15 @@
 | 无外部 baseline | 无 PySR / gplearn / DSR 实现 |
 | 无统计显著性 | `seed=None`，无均值±方差 |
 | 无消融框架 | 多岛/经验/残差/病理罚分/剪枝均可关，但无消融脚本与表格 |
-| 产物不支持结论 | 490 次运行仅 4 份 `report.md`；样本只留 top-10 |
+| 产物不支持结论 | 490 次运行仅 4 份 `report.md`；样本只留 top-10 —— ✅ `[已修 2026-09-26，commit 2072250]` 默认全量落盘 + 收尾报告必出 |
 | 可辨识性未闭环 | `data_facts.py:338` 只写进提示词与报告 |
 | 算力/成本 | 仅 run 级 `progress.json` 记 LLM token，**无报告级汇总**；`[核验新增]` 实测 `MRFCompress-Cuboid_20260926-110809`：**89 个评估样本 = 1,414,069 tokens**（prompt 988,658 / thinking 325,291 / content 100,120），墙钟 ≈4,120 s → **≈15.9k tokens、≈46 s 每样本**（可据此换算任何"题数 × 种子数"的预算，见 §8.3 成本行） |
 
 ### 2.5 方法论软肋（削弱结论可信度）
 
 1. **样本内极小 ≠ 泛化**：README 自述 8 点 10 参数、样本内 NMSE 1.4e-7，而 held-out 相对误差 7.95%——但该 held-out **只有 2 个点**（`data/MRFCompress-Cuboid/test.csv` = λ12∈{1.5, 4.5}，落在训练点 1,2,2.5,3,3.5,4,5 **之间**，是**插值**而非 OOD），故这条只能作"现象存在"的提示，**不能作统计结论**。`[核验新增]` 更硬的证据是 `.trae/documents/handoff.md` 记录的多次运行：样本外/内 NMSE 比 **7.9e3 ~ 8.8e9** 不等，并**存在 1.1× 的稳定反例**——"不稳定"与"稳定"两类都能观测到，因此 E3 必须把反例一并报告。
-2. **病理解仍被发布**：`experiments/.../20260925-134149/report.md` 的发布式自认"病理性器件"却仍然发布。
-3. **经验当事实注入**：残差有 `[unverified hypothesis]` 标注，但 Good/Bad 经验文本**无任何未校验标注**就直接进提示词（`drsr_420/agents/prompt_injection.py:378-404`，实测仅注入 `successful experience / needs improvement / failure lesson` 三个类别标签）。
+2. **病理解仍被发布**：`experiments/.../20260925-134149/report.md` 的发布式自认"病理性器件"却仍然发布。→ ✅ `[已修 2026-09-26，commit 2072250]` 收尾新增**病理门禁**：候选里优先发布体检罚分 == 0 的最高分样本，被降级的最高分样本连同它的分数与罚分写进 report.md 的「发布解选择」小节。
+3. **经验当事实注入**：残差有 `[unverified hypothesis]` 标注，但 Good/Bad 经验文本**无任何未校验标注**就直接进提示词（`drsr_420/agents/prompt_injection.py:378-404`，实测仅注入 `successful experience / needs improvement / failure lesson` 三个类别标签）。→ ✅ `[已修 2026-09-26，commit 2072250]` 经验块标题已改为 UNVERIFIED HYPOTHESES 口径。
 4. **经验多样性塌缩**：因 top-10 里 9/10 属同一族才事后加了 `_MAX_PER_SKELETON_FAMILY`（`prompt_injection.py:81`、`_dedupe_by_family` 359-377）→ 说明同质化是已发生事实。
 5. **早停阈值是绝对 batch 数、按单个 MRF 问题标定**：`drsr_420/core/config.py:105-111` 的四个默认值**全是 `None`**（并非硬编码数值），实际生效值写在 run 的 `config_snapshot.json`：`target_nmse=1e-6`、`early_stop_patience=20`、`min_batches_before_early_stop=10`、`max_failed_batches=3`。其中 `patience` / `min_batches` 与数据规模无关 → 有过拟合到该问题之嫌（`target_nmse` 运行时按 `var(outputs)` 换算，见 `config.py` 注释）。
 6. **体检结论的措辞边界**：只能写"未检出"某类病理，不能写"无病理"——判据是有限网格上的有限度量。
@@ -335,11 +335,11 @@ flowchart TB
 
 | 级别 | 事项 | 说明 |
 |---|---|---|
-| 🔴 | **完整轨迹未留存**（只留 top-10，`profile.py:87`） | 创新 3 的因果链与消融都做不了；**所有后续实验的前提** |
+| 🔴 → ✅ `[已修 2026-09-26, 2072250]` | **完整轨迹未留存**（只留 top-10，`profile.py:87`） | 默认改为**全量落盘**（`persist_all_samples=True`）。注意：**旧 run 仍只有 top-10**，创新 3 的因果链与消融只能从新 run 攒数据 |
 | 🔴 `[核验新增]` | **held-out 划分不可用 + benchmark 真值缺失**（§8.2 与下表项） | 两条合起来把 E1/E3 的 ID/OOD 指标**卡在起点**：跑 benchmark 之前必须先修，否则产出的数字写不进论文 |
-| 🟠 | **490 次运行仅 4 份 `report.md`** | 报告管线在多数启动路径上没跑到；批量实验前必须确保产物齐全 |
+| 🟠 → ✅ `[已修 2026-09-26, 2072250]` | **490 次运行仅 4 份 `report.md`** | ⚠️ 原诊断"报告管线在多数启动路径上没跑到"**不成立**——`pipeline.main` 必定调用 `find_best_eq`；真因是 `explain_best_sample` 在"没匹配到 Good 经验 / 提示词构造失败 / LLM 返回空"时**直接 return**，把体检、样本外、进度等纯机器小节一并丢掉。已改为照写报告并在开头写明原因（目录里已有报告时仍不覆盖） |
 | 🟠 | **benchmark 真值缺失** | 需取回 LLM-SRBench 元数据（SA 指标依赖它）；并决定全量 vs 子集 |
-| 🟠 | **病理解仍可发布**（`20260925-134149`） | 需要一道硬门禁，否则"本方法能治病理"会被自己的产物打脸 |
+| 🟠 → ✅ `[已修 2026-09-26, 2072250]` | **病理解仍可发布**（`20260925-134149`） | 已加病理门禁：候选里优先发布体检罚分 == 0 的最高分样本，被降级的最高分样本连同其分数与罚分写入 report.md 的「发布解选择」小节 |
 | 🟡 | **成本（已量化）`[核验新增]`** | 实测 **≈15.9k tokens / ≈46 s 每个评估样本**（`20260926-110809`：89 样本 = 1.41 M tokens / 1.14 h）。据此：现状预算下 10 题 × 3 种子 ≈ **42 M tokens / 34 h**（可跑）、239 题 × 3 种子 ≈ **1.0 G tokens / 约 34 天连续**（不可行）；官方 **1000 calls/题** 下 10 题 × 3 种子 ≈ **477 M tokens / 16 天**、239 题 × 3 种子 ≈ **11 G tokens / 约 1 年**（不可行）。→ **题数与种子数必须显式降到可跑区间**，预算差异写进 limitation；§6 的 E1"先取 200"应改写为**样本数**，并注明"一次采样 ≠ 一次 LLM 调用"（每轮还有经验总结 + 残差分析调用） |
 | 🟡 | **早停阈值按单个 MRF 标定** | 上 benchmark 前需重新标定或改为与数据规模相关的形式（阈值现状见 §2.5.5） |
 | 🟡 | **`README.md` 与现状不同步** | 见 §8.2 遗留动作（**2 个文件 + 1 条注释**） |
@@ -350,7 +350,7 @@ flowchart TB
 
 | 优先级 | 动作 | 理由 |
 |---|---|---|
-| **P0** | ~~换掉错配的 DORA PDF~~（**已核验不成立，撤下**，见 §8.1）；放开全量样本落盘（`profile.py`）；同步修补 `README.md:63` 与 `data/README.md:25` 的泄漏说明 | 不做后两件，后续所有实验都无法作为论文证据 |
+| **P0** | ✅ `[已做 2026-09-26，commit 2072250]` **全量样本落盘** + **收尾产物必出**（report.md）+ **病理解硬门禁**（优先发布干净解）+ **经验未校验标注** + 两处 README/holdout 注释同步；~~换掉错配的 DORA PDF~~（**核验不成立，撤下**，见 §8.1） | 这五项是"后续实验能否作为论文证据"的前提，现已全部落地；**旧 run 的轨迹仍只有 top-10**，因果链/消融只能从新 run 攒 |
 | **P0** | 把 `data/` 里已有的 8 个问题**真跑一遍**，产出完整 `report.md` 与指标 | 成本最低、收益最大——数据已就位却从未使用 |
 | **P0** `[核验新增]` | **修 benchmark 可评测性**：① 取回 LLM-SRBench 真值元数据（SA 依赖它）；② 重建 MRF 系 train/test 划分（现 test 仅 2 行且是插值点）；③ 把"1000 calls/题"换算成本项目自己的预算口径（≈15.9k tokens/样本，见 §8.3） | 不修这三条，"把 benchmark 跑一遍"产出的数字**无法写进论文**；是上一条 P0 的真前置 |
 | **P1** | 接入 PySR + DataBlind baseline，固定 3 个种子（**题数按 §8.3 的预算换算，取 10 题量级**），建 E1 主表 | 没有 baseline 与方差，论文不成立 |
@@ -409,6 +409,22 @@ flowchart TB
 | 引用转述偏差 `[第二轮新增]` | 同上 | 仅 1 处：2402.01680 §6.3 原句是 `They adjust agents in isolation`（"各自孤立地调整"），非 "evolve in isolation" → G5 行已按原句改写 |
 | **G1 缺位断言** `[第二轮新增]` | 18 篇关键词全扫（pathological / degenerate / ill-conditioned / numerical instability / extrapolation failure / gating / spike / cancellation） | **无一篇**把数值病理或退化检测写进**选择准则/奖励**：A-SR 仅在 Reviewer 查 numerical stability，其奖励 `λv·v+λb·b−λi·I_invalid−λp·I_param` 无病理项；DE 的 diagnosis 是数据完整性/奇点/残差/量纲（soft filter）→ **G1 成立，主创新 1 的空白为真** |
 | 架构地形统计 `[第二轮新增]` | 逐样本结构指纹（`evaluation/architecture_facts.py`） | 87 个有评分样本中 **52/87（60%）**同属"完整二阶响应面"（两平方 + 交叉）；"删一个平方项"的非对称形式 **0 例** → 见 §2.5.7 |
+
+---
+
+### 本轮实施（2026-09-26，commit `2072250`）
+
+针对 §2.3 / §2.4 / §2.5 / §8.3 里已确认的工程类风险，已落地代码改动并带回归测试（**879 tests OK**）：
+
+| 风险项 | 实施 |
+|---|---|
+| 轨迹只留 top-10 | `profile.persist_all_samples` 默认 True（每样本 `samples_<order>.json`）；新增 `find_best_eq.load_sample_records` 同时认两种文件命名并按 order 去重（旧 glob 读不到全量文件名，是本项的前置缺陷） |
+| report.md 缺失 | `explain.explain_best_sample` 在物理解释缺失时**照写报告** + 开头写明原因；已有报告则不覆盖（保留旧护栏） |
+| 病理解可发布 | 新增 `find_best_eq.select_published_sample`；report.md 新增「发布解选择」小节（`explain.render_selection_section`），被降级样本的分数与罚分一并记录 |
+| 经验无"未校验"标注 | `prompt_config.ideas_block_title` 改为 UNVERIFIED HYPOTHESES 口径 |
+| 注释过时 | `README.md:63`、`data/README.md:25`、`holdout.py` 的"逐行相同"与 2 行 held-out 说明同步 |
+
+> 仍未做的工程类前置（见 §9）：benchmark 真值元数据、MRF 系 train/test 划分重建、报告级成本汇总。
 
 ---
 
