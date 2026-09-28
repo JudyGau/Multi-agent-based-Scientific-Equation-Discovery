@@ -36,6 +36,25 @@
   → 分被吃掉"的对照，避免模型把"拟合 MSE 0.197 + 罚分 36.06"当成胜利（本轮 order 34
   就是这种样本，观测到的"低 MSE 高罚分 ↔ 高 MSE 零罚分"两模态振荡即源于此）。
 
+2026-09-28 补充：闸门被抖动锁死 + 加项方向缺失
+-----------------------------------------------
+多种子协议（6 跑，``ab-terrain-{only,measured}``）暴露本模块两处会让处置**在最需要它的
+时候静默失效**的设计：
+
+* **"自最优以来"用错了最优**。``max(records, key=score)`` 会让 refit 抖动（同一模型
+  重新拟合出的 1e-10 级差异）成为全局最大，把 ``best_order`` 顶到样本前沿。实测
+  T2-s33 撞地板后 order 49/62/65/73 的 4 次"刷新"累计只改善 8.6e-10，于是块内自报的
+  停滞被重置成 ``samples since that best: 8``（若锚在真正的最后进步应为 33）——闸门
+  恰好在该注入时关闭。现在最优由 :func:`significant_best` 定：改善必须超过
+  :data:`SIGNIFICANT_IMPROVEMENT_REL` / :data:`SIGNIFICANT_IMPROVEMENT_ABS`。
+* **未试邻域只枚举"删项"**。实测唯一成功的逃逸动作是**加项**（非对称二次 + λ23³，
+  T2-s22 的 order 79 → MSE 0.271565），而只列删项时该方向既不在列表里、也不可能被
+  点名——同一臂的 T2-s33 全程 85 个样本里 ``λ23³`` 一次都没出现，卡在地板上。
+  现在 :func:`addition_candidates` 从目标自己的项**升一阶**产生候选，与删项同口径
+  实测、同段渲染（``add λ23^3 -> …``）。为此结构指纹把三次单项式**单列标签**
+  （``λ23^3`` / ``λ12^2·λ23`` / ``λ12·λ23^2`` …），不再并进 ``higher``——否则
+  "这个 term set 从未试过"既认不出来、也无法从标签还原代表元去实测。
+
 ⚠️ 闭环约束**不得**写成"禁止该维引入 |指数|>k 的幂律"：本轮达到干净地板 NMSE 2.65e-3
 的形式 ``a*(λ23+p·λ12)^b+d·λ12^e+f`` 本身带参数指数，一刀切会把最优干净形式一起禁掉
 （且本仓已记录该手段不可泛化）。约束只能落在**可验证的量**上：输出跨度 / 局部斜率 /
@@ -100,6 +119,26 @@ MIN_PARSED_SAMPLES = 10
 #: 汇总块最多列出的"删一项"未试邻域个数（按被删项由高阶到低阶排序）。
 #: 每个邻域都要真拟合一遍，故这也是"每份地形最多几次 least_squares"的上界。
 MAX_UNTRY_DELETIONS = 3
+
+#: 汇总块最多列出的"加一项"未试邻域个数（按被加项由高阶到低阶排序）。
+#: 加项与删项是**两个方向**，不能只做一个：实测本仓唯一成功的逃逸动作就是**加项**
+#: （``{const, λ12, λ12·λ23, λ23, λ23²}`` 再加 ``λ23³``，T2-s22 的 order 79 →
+#: MSE 0.271565），而只枚举删项时该方向既不在列表里、也不可能被点名（同一臂的
+#: T2-s33 全程 85 个样本里 ``λ23³`` 一次都没出现，卡在 0.867473 的地板上）。
+#: 取 4 而不是 3：二次目标"升一阶"的全部候选正好是 4 个三次单项式
+#: （``λ12³`` / ``λ12²·λ23`` / ``λ12·λ23²`` / ``λ23³``），取 3 会按标签字典序
+#: 砍掉其中一个——那正是"按实现细节而不是按结构决定看哪个方向"的老毛病。
+MAX_UNTRY_ADDITIONS = 4
+
+#: "实质改善"的容差（相对 / 绝对，取二者较大者）。
+#: refit 微抖动不是进步：实测 T2-s33（``20260928-092926``）撞地板后 order 49/62/65/73
+#: 的 4 次"刷新"累计只改善 **8.6e-10**（相邻两点差 8.2e-10 / 2.1e-11 / 1.3e-11 /
+#: 2.5e-12），却把"最优"一路顶到样本前沿，于是地形块**自报的**停滞被重置成
+#: ``samples since that best: 8``（真值应为 33）——闸门恰好在该注入时关闭。
+#: 容差取 1e-6，与渲染精度（``round(..., 6)``）同量级：显示上完全相同的两个分数
+#: 不构成一次"刷新"。
+SIGNIFICANT_IMPROVEMENT_REL = 1e-6
+SIGNIFICANT_IMPROVEMENT_ABS = 1e-6
 
 #: 未试邻域实测 NMSE 的随机起点种子。与 :data:`~drsr_420.evaluation.data_facts.BASELINE_SEED`
 #: 同源：事实表里的数字必须可复现，多起点随机会让同一个 term set 在不同轮次给出不同
@@ -302,6 +341,17 @@ def _term_label(term: str, names: Sequence[str]) -> str:
         return f"{n1}^2"
     if (deg0, deg1) == (1, 1):
         return f"{n0}*{n1}"
+    # 三次单项式单列标签，不并进 ``higher``：实测唯一成功的逃逸解正是"非对称二次 +
+    # λ23³"，并进 ``higher`` 会让它与别的形状同标签 → 既认不出"这个 term set 从未
+    # 试过"，也无法从标签还原出代表元去实测（见模块 docstring 的 2026-09-28 补充）。
+    if (deg0, deg1) == (3, 0):
+        return f"{n0}^3"
+    if (deg0, deg1) == (0, 3):
+        return f"{n1}^3"
+    if (deg0, deg1) == (2, 1):
+        return f"{n0}^2*{n1}"
+    if (deg0, deg1) == (1, 2):
+        return f"{n0}*{n1}^2"
     return "higher"
 
 
@@ -413,15 +463,70 @@ def _family_phrase(family: str) -> str:
     }.get(family, family)
 
 
+def _cubic_labels(names: Sequence[str]) -> set[str]:
+    """三次单项式标签集合（供"高阶项"排序与加项候选共用）。"""
+    n0, n1 = names
+    return {f"{n0}^3", f"{n1}^3", f"{n0}^2*{n1}", f"{n0}*{n1}^2"}
+
+
 def _term_rank(label: str, names: Sequence[str]) -> int:
-    """删项建议的优先级：先动高阶/结构性项，最后才动线性项与常数项。"""
-    if label in ("higher",) or label.startswith("power("):
+    """删项/加项建议的优先级：先动高阶/结构性项，最后才动线性项与常数项。"""
+    if label in ("higher",) or label.startswith("power(") or label in _cubic_labels(names):
         return 3
     if label.endswith("^2") or label == f"{names[0]}*{names[1]}":
         return 2
     if label == "const":
         return 0
     return 1
+
+
+def _monomial_degree(label: str, names: Sequence[str]) -> tuple[int, int] | None:
+    """标签对应的 ``(λ12 的次数, λ23 的次数)``；不是单项式标签时返回 ``None``。
+
+    ``higher`` / ``power(...)`` 本身归并了多个形状，"升一阶"无从谈起 → 不产生加项候选。
+    """
+    n0, n1 = names
+    return {
+        "const": (0, 0),
+        n0: (1, 0), n1: (0, 1),
+        f"{n0}^2": (2, 0), f"{n1}^2": (0, 2), f"{n0}*{n1}": (1, 1),
+        f"{n0}^3": (3, 0), f"{n1}^3": (0, 3),
+        f"{n0}^2*{n1}": (2, 1), f"{n0}*{n1}^2": (1, 2),
+    }.get(label)
+
+
+def _monomial_label(degree: tuple[int, int], names: Sequence[str]) -> str | None:
+    """次数对 → 标签；三次以上没有独立标签，返回 ``None``（不猜）。"""
+    n0, n1 = names
+    return {
+        (0, 0): "const",
+        (1, 0): n0, (0, 1): n1,
+        (2, 0): f"{n0}^2", (0, 2): f"{n1}^2", (1, 1): f"{n0}*{n1}",
+        (3, 0): f"{n0}^3", (0, 3): f"{n1}^3",
+        (2, 1): f"{n0}^2*{n1}", (1, 2): f"{n0}*{n1}^2",
+    }.get(degree)
+
+
+def addition_candidates(terms: Sequence[str], names: Sequence[str]) -> list[str]:
+    """目标 term set 的"升一阶"加项候选，按次数降序 + 标签排序。
+
+    只从**目标自己的项**长候选（``λ23²`` → ``λ23³``、``λ12`` → ``λ12²``、
+    ``λ12·λ23`` → ``λ12²·λ23`` / ``λ12·λ23²``），不去枚举任意高阶单项式：实测唯一
+    成功的逃逸动作正是"把已有的 λ23² 再升一阶"，而全枚举三次单项式会让真正该看的
+    那一项被前几名挤掉。常数项在次数上无从升，故不产生候选。
+
+    排序按次数降序（高次优先）→ 与本仓"逃逸动作 = 给最高次项升阶"的实测一致。
+    """
+    found: list[str] = []
+    for label in terms:
+        degree = _monomial_degree(label, names)
+        if degree is None or degree == (0, 0):
+            continue
+        for raised in ((degree[0] + 1, degree[1]), (degree[0], degree[1] + 1)):
+            sibling = _monomial_label(raised, names)
+            if sibling and sibling not in terms and sibling not in found:
+                found.append(sibling)
+    return sorted(found, key=lambda label: (-sum(_monomial_degree(label, names)), label))
 
 
 # ── 未试邻域的代表元参数化与实测 NMSE ──────────────────────────
@@ -445,6 +550,10 @@ def _plan_terms(terms: Sequence[str], names: Sequence[str]):
         f"{n0}^2": ("square0", 1, f"p{{i}}*{n0}**2"),
         f"{n1}^2": ("square1", 1, f"p{{i}}*{n1}**2"),
         f"{n0}*{n1}": ("cross", 1, f"p{{i}}*{n0}*{n1}"),
+        f"{n0}^2*{n1}": ("mixed01", 1, f"p{{i}}*{n0}**2*{n1}"),
+        f"{n0}*{n1}^2": ("mixed10", 1, f"p{{i}}*{n0}*{n1}**2"),
+        f"{n0}^3": ("cubic0", 1, f"p{{i}}*{n0}**3"),
+        f"{n1}^3": ("cubic1", 1, f"p{{i}}*{n1}**3"),
         f"power({n0})": ("power0", 2, f"p{{i}}*{n0}**p{{e}}"),
         f"power({n1})": ("power1", 2, f"p{{i}}*{n1}**p{{e}}"),
     }
@@ -505,6 +614,14 @@ def _equation_from_terms(terms: Sequence[str], names: Sequence[str]):
                 value = coef * col1 ** 2
             elif kind == "cross":
                 value = coef * col0 * col1
+            elif kind == "mixed01":                 # λ12²·λ23
+                value = coef * col0 ** 2 * col1
+            elif kind == "mixed10":                 # λ12·λ23²
+                value = coef * col0 * col1 ** 2
+            elif kind == "cubic0":
+                value = coef * col0 ** 3
+            elif kind == "cubic1":
+                value = coef * col1 ** 3
             else:                                   # power0 / power1：带参数指数的幂律
                 with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
                     value = coef * (col0 if kind == "power0" else col1) ** params[item["exp"]]
@@ -646,6 +763,35 @@ def with_score_breakdown(terrain: dict, records: Sequence[dict]) -> dict:
     return merged
 
 
+def significant_improvement_tolerance(reference_score: float) -> float:
+    """判定"实质改善"的容差：``max(绝对, 相对 × |参考分|)``。
+
+    取二者较大者：本仓实测的分数跨 0.27~10³，纯绝对容差在小分上偏松、纯相对容差
+    在 0 附近恒为 0。与渲染精度（6 位小数）同量级 ⇒ 显示上分不出差别的两个分数
+    不会被当成一次"刷新"。
+    """
+    try:
+        magnitude = abs(float(reference_score))
+    except (TypeError, ValueError):
+        magnitude = 0.0
+    return max(SIGNIFICANT_IMPROVEMENT_ABS, SIGNIFICANT_IMPROVEMENT_REL * magnitude)
+
+
+def significant_best(records: Sequence[dict]) -> dict:
+    """按 ``order`` 走一遍，只在**实质**改善时推进"最优"（不做全局 ``max``）。
+
+    为什么不能用 ``max(records, key=score)``：refit 抖动会让**同一个模型**以 1e-10 的
+    优势成为全局最大，于是 ``best_order`` 被顶到样本前沿、"自最优以来" 归零——恰好在
+    真正卡住时把地形块关掉（实测见 :data:`SIGNIFICANT_IMPROVEMENT_REL` 的文档）。
+    """
+    ordered = sorted(records, key=lambda r: (r["order"], -r["score"]))
+    best = ordered[0]
+    for record in ordered[1:]:
+        if record["score"] > best["score"] + significant_improvement_tolerance(best["score"]):
+            best = record
+    return best
+
+
 def sampling_terrain(entries: Sequence[dict], features: Sequence[str],
                      *, target: str | None = None, facts=None) -> dict:
     """汇总已评估样本的架构地形。
@@ -665,7 +811,7 @@ def sampling_terrain(entries: Sequence[dict], features: Sequence[str],
     """
     names = list(features or [])
     empty = {"ok": False, "n_scored": 0, "n_parsed": 0, "n_unparsed": 0,
-             "target_terms": None, "untried_deletions": []}
+             "target_terms": None, "untried_deletions": [], "untried_additions": []}
     if len(names) != 2:
         return empty
 
@@ -685,7 +831,7 @@ def sampling_terrain(entries: Sequence[dict], features: Sequence[str],
     if not parsed:
         return empty
 
-    best = max(parsed, key=lambda r: r["score"])
+    best = significant_best(parsed)
     current_order = max(r["order"] for r in records)
     since = [r for r in parsed if r["order"] > best["order"]]
     best_family = family_of(best["terms"], names)
@@ -709,6 +855,17 @@ def sampling_terrain(entries: Sequence[dict], features: Sequence[str],
         deletions.append({"dropped": label, "terms": list(candidate),
                           "measurement": measure_term_set(candidate, names, facts)})
         if len(deletions) >= MAX_UNTRY_DELETIONS:
+            break
+
+    additions = []
+    for label in addition_candidates(target_terms, names):
+        candidate = tuple(sorted(list(target_terms) + [label]))
+        if candidate in tried:
+            continue
+        # 与删项同口径：加项邻域也要真拟合一遍，"加这项会变成什么分数"必须可验证。
+        additions.append({"added": label, "terms": list(candidate),
+                          "measurement": measure_term_set(candidate, names, facts)})
+        if len(additions) >= MAX_UNTRY_ADDITIONS:
             break
 
     return {
@@ -737,6 +894,7 @@ def sampling_terrain(entries: Sequence[dict], features: Sequence[str],
                                    if family_of(r["terms"], names) == target_family),
         "target_exact_count": sum(1 for r in parsed if r["terms"] == target_terms),
         "untried_deletions": deletions,
+        "untried_additions": additions,
     }
 
 
@@ -865,11 +1023,12 @@ def render_terrain(terrain: dict, features: Sequence[str], title: str) -> str:
     """把地形渲染成注入提示词的文本块；证据不足或无法判定时返回空串。
 
     两个闸门（任一不满足就不注入）：已解析样本数 ≥ :data:`MIN_PARSED_SAMPLES`、
-    自最优以来 ≥ :data:`MIN_STAGNANT_SAMPLES` 个样本。"该架构已触底"只在有足够
+    自最优以来 ≥ :data:`MIN_STAGNANT_SAMPLES` 个样本（"自最优"由
+    :func:`significant_best` 定，refit 抖动不算进步）。"该架构已触底"只在有足够
     样本时才说得出口。
 
-    三段内容（各段缺数据时自行省略）：结构事实（已试家族 / 这个 term set 被评估过几次）、
-    未试邻域的**实测 NMSE**、以及分数的分解（拟合 MSE ↔ 体检罚分）。
+    四段内容（各段缺数据时自行省略）：结构事实（已试家族 / 这个 term set 被评估过几次）、
+    未试邻域的**实测分数**（**两个方向**：删项与加项），以及分数的分解（拟合 MSE ↔ 体检罚分）。
     """
     if not terrain or not terrain.get("ok"):
         return ""
@@ -901,18 +1060,25 @@ def render_terrain(terrain: dict, features: Sequence[str], title: str) -> str:
 
     lines.extend(_render_breakdown(terrain))
 
-    if terrain["untried_deletions"]:
+    deletions = terrain["untried_deletions"]
+    additions = terrain.get("untried_additions") or []
+    if deletions or additions:
         lines.append("term sets NEVER evaluated that are ONE term away from it:")
-        for item in terrain["untried_deletions"]:
+        for item in deletions:
             lines.append(f"  drop {item['dropped']} -> {{{', '.join(item['terms'])}}}")
+            lines.extend(_render_measurement(item.get("measurement"),
+                                             terrain.get("best_score")))
+        for item in additions:
+            lines.append(f"  add {item['added']} -> {{{', '.join(item['terms'])}}}")
             lines.extend(_render_measurement(item.get("measurement"),
                                              terrain.get("best_score")))
         lines.append(
             "Another re-parameterization of the term set above stays at the same score "
-            "floor; the deletions listed above are structurally different and unexplored.")
+            "floor; the deletions and additions listed above are structurally different and "
+            "unexplored.")
     else:
         lines.append(
-            "Every one-term deletion of that term set has already been evaluated: the "
-            "next structural step must remove or replace TWO terms at once, or change the "
-            "functional form of an existing one.")
+            "Every one-term deletion AND every one-term addition of that term set has "
+            "already been evaluated: the next structural step must change TWO terms at "
+            "once, or change the functional form of an existing one.")
     return title + "\n".join(lines) + "\n"

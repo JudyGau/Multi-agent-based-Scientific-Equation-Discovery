@@ -242,11 +242,12 @@ residual_analysis_prompt = (
     # 架构锁死（20260926-110809 的实测教训）：87 个有评分样本里 52 个是同一个完整二阶
     # 响应面的重新参数化，而"删掉一个平方项"的非对称形式一次都没被提出——残差通道此前
     # 只会提"局部改动"，对"架构已触底"毫无反应，注入采样提示后等于让模型继续换记号。
-    # 这一条要求删项候选，且必须指向事实块里"从未评估过"的邻域（数字由代码给出）。
+    # 这一条要求删项/加项候选，且必须指向事实块里"从未评估过"的邻域（数字由代码给出）。
     "6. If the injected architecture facts report that the term set of the equation above has "
     "already been evaluated with no score improvement, `suggested_structural_change` MUST "
-    "include at least one DELETION: name the exact term to drop and the residual rows that "
-    "stop supporting it, and prefer one of the never-evaluated one-term deletions listed in "
+    "include at least one DELETION or ADDITION: name the exact term to drop or add and "
+    "the residual rows that stop supporting it (or the structural reason to add one), and "
+    "prefer one of the never-evaluated one-term deletions or additions listed in "
     "those facts. Re-parameterizing the same term set is not a structural change.\n\n"
     "7.##Output Format##:\n"
     "STRICTLY deliver results in the following structured format:\n\n"
@@ -592,13 +593,15 @@ class PromptContext:
             # 完整二阶响应面的重新参数化（换记号/平移），而"删掉一个平方项"的非对称
             # 形式一次都没被提出。残差通道此前只会提"局部改动"，对"架构已触底"没有
             # 反应——注入采样提示后等于让模型继续换记号。故要求：事实块报告该架构触底
-            # 时必须给出**删项**候选，且优先指向事实块里"从未评估过"的邻域。
+            # 时必须给出**删项或加项**候选，且优先指向事实块里"从未评估过"的邻域。
+            # 加项也要提：实测唯一成功的逃逸动作正是加项（非对称二次 + λ23³）。
             "If the injected architecture facts report that the term set of the equation above "
             "has already been evaluated with no score improvement, `suggested_structural_change` "
-            "MUST include at least one DELETION: name the exact term to drop and the residual "
-            "rows that stop supporting it, and prefer one of the never-evaluated one-term "
-            "deletions listed in those facts. Re-parameterizing the same term set is not a "
-            "structural change.",
+            "MUST include at least one DELETION or ADDITION: name the exact term to drop or "
+            "add and the residual rows that stop supporting it (or the structural reason to "
+            "add one), and prefer one of the never-evaluated one-term deletions or additions "
+            "listed in those facts. Re-parameterizing the same term set is not a structural "
+            "change.",
         )
 
     def _task_section(self, role_text: str, extra_requirements: tuple[str, ...] = ()) -> str:

@@ -63,6 +63,20 @@ def _eq(body: str) -> str:
     return "def equation_v1(lambda12, lambda23, params):\n" + body
 
 
+def _label_to_expr(label: str) -> str:
+    """term set 标签 → 恒等记号下的表达式片段（``lambda12^2*lambda23`` → ``lambda12**2*lambda23``）。"""
+    if label == "const":
+        return "1"
+    return label.replace("^2", "**2").replace("^3", "**3")
+
+
+def _terms_to_eq(terms) -> str:
+    """把 term set 标签写回一段方程——用于制造"这个 term set 已经试过"的样本。"""
+    body = " + ".join(f"params[{i}]*{_label_to_expr(label)}"
+                      for i, label in enumerate(terms))
+    return _eq(f"    return ({body})")
+
+
 #: 同一个"完整二阶响应面"的五种写法（原坐标 / 平移 / 括号换序+逐项解包 / 对数坐标 / 重复相乘）。
 FULL_QUADRATIC_VARIANTS = {
     "plain": _eq("    return (params[0] + params[1]*lambda12 + params[2]*lambda23\n"
@@ -109,6 +123,18 @@ def _stagnating_entries(count: int = 12, equation: str = FULL_QUADRATIC_VARIANTS
     """一批样本：最好分在第 1 个样本，其余都更差（用于"已触底"的判定）。"""
     entries = [_entry(1, -0.5, equation)]
     entries += [_entry(o, -2.0, equation) for o in range(2, count + 1)]
+    return entries
+
+
+#: T2-s33（``20260928-092926``）撞地板后的实际形态：4 次"刷新"累计只改善 8.6e-10。
+JITTER_BASE = -0.8674727964110894
+
+
+def _jittering_entries(count: int = 12, equation: str = ASYMMETRIC) -> list:
+    """一批样本：最好分在第 1 个，此后每个样本只"好" 1e-10——refit 抖动，不是进步。"""
+    entries = [_entry(1, JITTER_BASE, equation)]
+    entries += [_entry(o, JITTER_BASE + (o - 1) * 1e-10, equation)
+                for o in range(2, count + 1)]
     return entries
 
 
@@ -192,13 +218,26 @@ class FingerprintInvarianceTest(unittest.TestCase):
                          ("const", "lambda12", "lambda23^2"))
 
     def test_extra_cubic_terms_keep_the_second_order_family(self):
+        """三次项单列标签（不再并进 ``higher``），但族仍是完整二阶响应面。
+
+        2026-09-28：``higher`` 会把"非对称二次 + λ23³"这个**唯一成功的逃逸解**与别的
+        高阶形状合并 → 既认不出"这个 term set 从未试过"，也无法还原代表元去实测。
+        """
         text = _eq("    return (params[0] + params[1]*lambda12 + params[2]*lambda23\n"
                    "            + params[3]*lambda12**2 + params[4]*lambda23**2\n"
                    "            + params[5]*lambda12*lambda23 + params[6]*lambda12**3)")
         fingerprint = af.architecture_fingerprint(text, NAMES)
         self.assertTrue(set(FULL_TERMS) <= set(fingerprint))
-        self.assertIn("higher", fingerprint)
+        self.assertIn("lambda12^3", fingerprint)
+        self.assertNotIn("higher", fingerprint)
         self.assertEqual(af.family_of(fingerprint, NAMES), "second_order_surface")
+
+    def test_every_cubic_monomial_gets_its_own_label(self):
+        text = _eq("    return (params[0] + params[1]*lambda23**3 + params[2]*lambda12**2*lambda23\n"
+                   "            + params[3]*lambda12*lambda23**2 + params[4]*lambda12**3)")
+        self.assertEqual(af.architecture_fingerprint(text, NAMES),
+                         ("const", "lambda12*lambda23^2", "lambda12^2*lambda23",
+                          "lambda12^3", "lambda23^3"))
 
     def test_unparsable_and_wrong_arity_return_none(self):
         self.assertIsNone(af.architecture_fingerprint("just prose, no statement at all", NAMES))
@@ -252,6 +291,34 @@ class FingerprintInvarianceTest(unittest.TestCase):
                          ("const", "x", "x*y", "x^2", "y", "y^2"))
 
 
+class SignificantBestTest(unittest.TestCase):
+    """"最优"只在**实质**改善时推进：refit 抖动不是进步。
+
+    实测 T2-s33 撞地板后 order 49/62/65/73 的 4 次"刷新"累计只改善 8.6e-10，却把
+    ``best_order`` 顶到样本前沿，使地形块**自报的**停滞从 33 掉到 8。
+    """
+
+    def _records(self, scores: list) -> list:
+        return [{"order": i + 1, "score": s, "terms": ("const",)}
+                for i, s in enumerate(scores)]
+
+    def test_micro_jitter_does_not_advance_the_reference_best(self):
+        records = self._records([JITTER_BASE, JITTER_BASE + 8.2e-10, JITTER_BASE + 8.6e-10])
+        self.assertEqual(af.significant_best(records)["order"], 1)
+        # 对照：不做容差时，最新的抖动样本就是"全局最大"，停滞计数被清零
+        self.assertEqual(max(records, key=lambda r: r["score"])["order"], 3)
+
+    def test_a_substantial_improvement_does_advance_it(self):
+        self.assertEqual(af.significant_best(self._records([-0.867473, -0.5, -0.271565]))["order"], 3)
+
+    def test_a_worse_sample_never_becomes_the_reference(self):
+        self.assertEqual(af.significant_best(self._records([-0.5, -2.0, -3.0]))["order"], 1)
+
+    def test_tolerance_scales_with_the_score_magnitude(self):
+        self.assertLess(af.significant_improvement_tolerance(0.27), 1e-5)
+        self.assertGreater(af.significant_improvement_tolerance(-102.56), 1e-5)
+
+
 class TerrainTest(unittest.TestCase):
     """已试架构的汇总与"一阶删项邻域"的差集。"""
 
@@ -279,6 +346,31 @@ class TerrainTest(unittest.TestCase):
         self.assertNotIn("lambda12^2", dropped)
         self.assertIn("lambda23^2", dropped)
 
+    def test_untried_additions_include_the_cubic_extension(self):
+        """逃逸动作是**加项**：目标为非对称二次时，``+λ23³`` 必须在未试邻域里。
+
+        实测 T2-s22 的 order 79 正是靠它跳出地板（MSE 0.271565），而只枚举删项时
+        这一项既不会出现、也不可能被点名（T2-s33 的 85 个样本里它出现 0 次）。
+        """
+        terrain = af.sampling_terrain(_stagnating_entries(), NAMES, target=ASYMMETRIC)
+        added = [item["added"] for item in terrain["untried_additions"]]
+        self.assertIn("lambda23^3", added)
+        target = set(terrain["target_terms"])
+        for item in terrain["untried_additions"]:
+            self.assertEqual(set(item["terms"]), target | {item["added"]})
+
+    def test_a_tried_addition_disappears_from_the_untried_list(self):
+        """一旦有样本就是"非对称二次 + λ23³"，它不能再被报成"从未评估过"。"""
+        escaped = _eq("    u = lambda12 - 1.0\n    v = lambda23 - 1.0\n"
+                      "    return (params[0] + params[1]*u + params[2]*v + params[3]*v**2\n"
+                      "            + params[4]*u*v + params[5]*v**3)")
+        entries = _stagnating_entries() + [_entry(13, 0.5, escaped)]
+        terrain = af.sampling_terrain(entries, NAMES, target=ASYMMETRIC)
+        added = [item["added"] for item in terrain["untried_additions"]]
+        self.assertNotIn("lambda23^3", added)      # 已有样本就是这个（+ λ23³）
+        self.assertNotIn("lambda12^2", added)      # 加 λ12² 等于完整二次型，本批样本就是它
+        self.assertEqual(added, ["lambda12*lambda23^2", "lambda12^2*lambda23"])
+
     def test_entries_without_a_numeric_score_are_skipped_but_unparsed_are_counted(self):
         entries = _stagnating_entries() + [_entry(13, -3.0, "prose without return")]
         entries += [{"sample_order": 14, "score": None, "equation": ASYMMETRIC}]
@@ -292,6 +384,12 @@ class TerrainTest(unittest.TestCase):
         self.assertFalse(terrain["target_is_best"])
         self.assertEqual(terrain["target_terms"], sorted(
             af.architecture_fingerprint(ASYMMETRIC, NAMES)))
+
+    def test_jitter_does_not_reset_the_stagnation_gate(self):
+        """同一个模型被重新拟合出的 1e-10 级"刷新"不能把停滞计数清零。"""
+        terrain = af.sampling_terrain(_jittering_entries(), NAMES)
+        self.assertEqual(terrain["best_order"], 1)
+        self.assertEqual(terrain["stagnant_samples"], 11)
 
     def test_non_binary_features_yield_empty_terrain(self):
         terrain = af.sampling_terrain(_stagnating_entries(), ["x", "y", "z"])
@@ -337,6 +435,42 @@ class TerrainRenderTest(unittest.TestCase):
         self.assertTrue(terrain["untried_deletions"])
         block = af.render_terrain(terrain, NAMES, self.TITLE)
         self.assertIn("NEVER evaluated", block)
+
+    def test_renders_additions_alongside_deletions(self):
+        """两个方向都要给：删项之外还要给加项（本仓的逃逸动作正是加项）。"""
+        terrain = af.sampling_terrain(_stagnating_entries(), NAMES)
+        block = af.render_terrain(terrain, NAMES, self.TITLE)
+        self.assertIn("drop lambda12^2 ->", block)
+        self.assertIn("add lambda23^3 ->", block)
+        self.assertIn("deletions and additions listed above", block)
+
+    def test_a_jittered_run_still_gets_the_block(self):
+        """闸门不能因为 refit 抖动而关掉——实测 T2-s33 正是被这样关掉的。"""
+        terrain = af.sampling_terrain(_jittering_entries(), NAMES)
+        block = af.render_terrain(terrain, NAMES, self.TITLE)
+        self.assertTrue(block.startswith(self.TITLE))
+        self.assertIn("samples since that best: 11", block)
+
+    def test_additions_carry_a_measured_score_and_render_it(self):
+        """加项邻域与删项同口径：必须带实测分数，渲染时逐条写出。"""
+        terrain = af.sampling_terrain(_stagnating_entries(), NAMES, facts=_facts_payload())
+        items = [item for item in terrain["untried_additions"] if item["added"] == "lambda23^3"]
+        self.assertEqual(len(items), 1)
+        measurement = items[0]["measurement"]
+        self.assertIsNotNone(measurement.get("mse"))        # 真拟合过，不是"没测"
+        block = af.render_terrain(terrain, NAMES, self.TITLE)
+        self.assertIn("add lambda23^3 ->", block)
+        self.assertIn("measured on THIS run's training data", block)
+
+    def test_no_addition_is_listed_when_every_extension_is_tried(self):
+        """加项全试过时不能编一条出来（同删项的"穷尽"口径）。"""
+        terrain = af.sampling_terrain(_stagnating_entries(), NAMES)
+        tried = [tuple(sorted(list(terrain["target_terms"]) + [item["added"]]))
+                 for item in terrain["untried_additions"]]
+        entries = _stagnating_entries() + [_entry(20 + i, -3.0, _terms_to_eq(fingerprint))
+                                          for i, fingerprint in enumerate(tried)]
+        exhausted = af.sampling_terrain(entries, NAMES)
+        self.assertEqual(exhausted["untried_additions"], [])
 
 
 class SamplingInjectionTest(unittest.TestCase):
@@ -430,6 +564,28 @@ class ResidualChannelInjectionTest(unittest.TestCase):
         self.assertEqual(insight.analysis, "INSIGHT")
 
 
+class AdditionCandidatesTest(unittest.TestCase):
+    """加项候选：只从目标自己的项"升一阶"，不枚举任意高阶单项式。"""
+
+    def test_cubic_extensions_of_a_quadratic_target(self):
+        terms = af.architecture_fingerprint(FULL_QUADRATIC_VARIANTS["plain"], NAMES)
+        self.assertEqual(af.addition_candidates(terms, NAMES),
+                         ["lambda12*lambda23^2", "lambda12^2*lambda23", "lambda12^3",
+                          "lambda23^3"])
+
+    def test_terms_already_in_the_set_are_not_offered(self):
+        """``λ12`` 的升阶兄弟 ``λ12²`` 已在集合里 → 不再当候选。"""
+        candidates = af.addition_candidates(("const", "lambda12", "lambda12^2"), NAMES)
+        self.assertNotIn("lambda12^2", candidates)
+        self.assertIn("lambda12^3", candidates)
+
+    def test_constant_and_ambiguous_labels_produce_no_candidates(self):
+        """常数项无从升阶；``higher`` / ``power(...)`` 归并多个形状，升阶无从谈起。"""
+        self.assertEqual(af.addition_candidates(("const",), NAMES), [])
+        self.assertEqual(af.addition_candidates(("const", "higher"), NAMES), [])
+        self.assertEqual(af.addition_candidates(("const", "power(lambda12)"), NAMES), [])
+
+
 class TemplateFromTermsTest(unittest.TestCase):
     """由 term set 标签机械构造代表元模板（记号还原不唯一时显式拒绝）。"""
 
@@ -446,6 +602,12 @@ class TemplateFromTermsTest(unittest.TestCase):
     def test_variable_names_come_from_the_caller(self):
         self.assertEqual(af.template_from_terms(("const", "x^2"), ["x", "y"]),
                          ("p0 + p1*x**2", 2))
+
+    def test_cubic_labels_get_a_template(self):
+        self.assertEqual(af.template_from_terms(("const", "lambda23^3"), NAMES),
+                         ("p0 + p1*lambda23**3", 2))
+        self.assertEqual(af.template_from_terms(("const", "lambda12^2*lambda23"), NAMES),
+                         ("p0 + p1*lambda12**2*lambda23", 2))
 
     def test_ambiguous_labels_are_not_guessed(self):
         """``higher`` / ``power(a,b)`` 各自归并了多个不同形状，不猜。"""
