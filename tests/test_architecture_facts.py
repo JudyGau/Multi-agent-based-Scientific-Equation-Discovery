@@ -18,6 +18,11 @@
   因为"换个记号不是新架构"被读成了"别回那个家族"；
 * 故未试邻域必须带**同口径实测的分数**，提示里必须给出**分数分解**（拟合 MSE ↔
   体检罚分），否则"拟合 MSE 0.197 + 罚分 36.06"会被当成胜利。
+
+2026-09-28 的多种子协议又补了第 5 层：**"最优"必须按实质改善推进**（refit 抖动不算），
+且未试邻域必须给**两个方向**（删项 + 一阶加项）；当标签本身归并了多个形状
+（``higher`` / ``power(a,b)``）时，代表元要从**目标方程自己的项文本**还原、而不是猜标签
+——越界（白名单外的构造）一律降级成"未测量"，绝不执行。
 """
 from __future__ import annotations
 
@@ -615,6 +620,69 @@ class TemplateFromTermsTest(unittest.TestCase):
                       ("const", "no_such_label")):
             with self.subTest(terms=terms):
                 self.assertIsNone(af.template_from_terms(terms, NAMES))
+
+
+#: 参数指数幂律（T2-s33 整期漂进去的那一支）。
+POWER_LAW = _eq("    return params[0]*lambda12**params[1]*lambda23**params[2] + params[3]")
+
+
+class ReconstructFromTermTextTest(unittest.TestCase):
+    """``higher`` / ``power(...)`` 也要有实测：从**目标方程的实际项文本**还原，不是猜标签。
+
+    实测 T2-s33 的采样器整期落在参数指数幂律分支（``lambda23**params`` 出现在 23 个样本，
+    T2-s22 只有 3 个），其族标签 ``power(a,b)`` 不可还原 → 未试邻域整片降级成
+    "NOT measured here"（该 run 的 measured 行数 34，而同臂另两跑是 99/101）。
+    """
+
+    def test_term_texts_come_from_the_equation_itself(self):
+        texts = af.term_texts(POWER_LAW, NAMES)
+        self.assertEqual(set(texts), set(af.architecture_fingerprint(POWER_LAW, NAMES)))
+        self.assertEqual(texts["power(lambda12,lambda23)"],
+                         "params[0]*lambda12**params[1]*lambda23**params[2]")
+
+    def test_the_equation_s_own_notation_is_preserved(self):
+        """平移记号不被"归一化"掉：还原的是它写的那一项，不是我们替它挑的代表。"""
+        self.assertEqual(af.term_texts(ASYMMETRIC, NAMES)["lambda23^2"],
+                         "params[3]*(lambda23 - 1.0)**2")
+
+    def test_an_ambiguous_label_gets_a_template_only_when_the_text_is_given(self):
+        texts = af.term_texts(PRODUCT_QUADRATIC, NAMES)
+        self.assertEqual(af.template_from_terms(("const", "higher"), NAMES, texts),
+                         ("p0 + p1*(lambda12 * lambda23)**2", 2))
+        self.assertIsNone(af.template_from_terms(("const", "higher"), NAMES))
+
+    def test_measured_neighbourhoods_survive_a_power_law_family(self):
+        entries = [_entry(1, -8.5, POWER_LAW)]
+        entries += [_entry(o, -9.0, ASYMMETRIC) for o in range(2, 13)]
+        terrain = af.sampling_terrain(entries, NAMES, target=POWER_LAW, facts=_facts_payload())
+        kept = next(item for item in terrain["untried_deletions"] if item["dropped"] == "const")
+        self.assertIsNotNone(kept["measurement"].get("mse"))     # 从前这里是 None
+        self.assertIsNone(kept["measurement"].get("reason"))
+
+    def test_without_the_target_text_the_same_neighbourhood_still_degrades(self):
+        """没有目标文本时行为与从前一致：显式写"不可还原"，绝不编数字。"""
+        measurement = af.measure_term_set(("power(lambda12,lambda23)",), NAMES, _facts_payload())
+        self.assertIsNone(measurement.get("mse"))
+        self.assertIn("cannot be reconstructed", measurement["reason"])
+
+    def test_out_of_whitelist_term_texts_are_rejected_never_executed(self):
+        for text in ("__import__('os').system('echo hi')", "params[0]*lambda12[0]",
+                     "lambda12 if lambda23 > 0 else 0", "lambda12.__class__",
+                     "[c for c in [1]]", "open('x')", "math.gamma(lambda12)",
+                     "lambda12 ! lambda23"):
+            with self.subTest(text=text):
+                fn, _bound, _count, reason = af.representative_from_text(text, NAMES)
+                self.assertIsNone(fn)
+                self.assertTrue(reason)
+
+    def test_a_rejected_term_text_makes_that_neighbourhood_unmeasurable(self):
+        hostile = _eq("    return params[0]*math.gamma(lambda12*lambda23)**3 + params[1]")
+        self.assertIn("higher", af.architecture_fingerprint(hostile, NAMES))
+        terrain = af.sampling_terrain([_entry(1, -1.0, hostile)], NAMES, target=hostile,
+                                      facts=_facts_payload())
+        kept = next(item for item in terrain["untried_deletions"] if item["dropped"] == "const")
+        self.assertIsNone(kept["measurement"].get("mse"))
+        self.assertIn("cannot be evaluated", kept["measurement"]["reason"])
 
 
 class MeasureTermSetTest(unittest.TestCase):

@@ -36,9 +36,9 @@
   → 分被吃掉"的对照，避免模型把"拟合 MSE 0.197 + 罚分 36.06"当成胜利（本轮 order 34
   就是这种样本，观测到的"低 MSE 高罚分 ↔ 高 MSE 零罚分"两模态振荡即源于此）。
 
-2026-09-28 补充：闸门被抖动锁死 + 加项方向缺失
------------------------------------------------
-多种子协议（6 跑，``ab-terrain-{only,measured}``）暴露本模块两处会让处置**在最需要它的
+2026-09-28 补充：闸门被抖动锁死 + 加项方向缺失 + 归并标签整族无实测
+------------------------------------------------------------------
+多种子协议（6 跑，``ab-terrain-{only,measured}``）暴露本模块三处会让处置**在最需要它的
 时候静默失效**的设计：
 
 * **"自最优以来"用错了最优**。``max(records, key=score)`` 会让 refit 抖动（同一模型
@@ -54,6 +54,14 @@
   实测、同段渲染（``add λ23^3 -> …``）。为此结构指纹把三次单项式**单列标签**
   （``λ23^3`` / ``λ12^2·λ23`` / ``λ12·λ23^2`` …），不再并进 ``higher``——否则
   "这个 term set 从未试过"既认不出来、也无法从标签还原代表元去实测。
+* **归并标签（``higher`` / ``power(...)``）的邻域一条实测都给不出**。标签把多个形状并成
+  一个，代表元无从唯一还原 → 整族降级成"NOT measured here"。实测 T2-s33 的采样器整期
+  落在参数指数幂律分支：20 个 term set 里 ``power(...)`` 族占样本约 1/3，前 6 大族的
+  未试邻域覆盖率只有 21/24，该臂的处置**恰好在自己最需要的那一支上静默关闭**。
+  现在 :func:`term_texts` 从**目标方程自己的项文本**取出该项（别名按原式展开、参数保留
+  ``params[k]``），交给 :func:`representative_from_text` 的 AST 白名单求值器——**不是猜，
+  是读**；越界（白名单外的构造）仍降级成"未测量"并写明原因。覆盖率 21/24 → **24/24**
+  （T2-s22 同样 19/25 → 25/25，无回归）。
 
 ⚠️ 闭环约束**不得**写成"禁止该维引入 |指数|>k 的幂律"：本轮达到干净地板 NMSE 2.65e-3
 的形式 ``a*(λ23+p·λ12)^b+d·λ12^e+f`` 本身带参数指数，一刀切会把最优干净形式一起禁掉
@@ -100,6 +108,9 @@ NMSE 精确相同；但 ``log`` 记号不是同一空间，且 ``higher`` / ``po
 """
 from __future__ import annotations
 
+import ast
+import itertools
+import operator
 import re
 from typing import Sequence
 
@@ -318,6 +329,31 @@ def _token_power(term: str, token: str) -> int | str:
     return power
 
 
+def _alias_texts(code: str, features: Sequence[str]) -> dict[str, str]:
+    """别名 → **展开后的文本**（只用自变量名与 ``params[k]`` 表示）；迭代到不动点。
+
+    与 :func:`_alias_map`（别名 → 原子）相对：判标签只需要原子，但"从实际项文本还原
+    代表元"需要**能求值的原式**（见 :func:`term_texts`）。展开不完整的（循环引用等）
+    会留下别名名，下游 :func:`representative_from_text` 按越界降级，不会误执行。
+    """
+    raw = _assignments(code)
+    names = list(features)
+    texts: dict[str, str] = {}
+    for _ in range(6):
+        changed = False
+        for name, rhs in raw.items():
+            if name in _RESERVED or name in names:
+                continue
+            others = {n: f"({t})" for n, t in texts.items() if n != name}
+            candidate = _apply(rhs, others)
+            if texts.get(name) != candidate:
+                texts[name] = candidate
+                changed = True
+        if not changed:
+            break
+    return texts
+
+
 def _term_label(term: str, names: Sequence[str]) -> str:
     """一个加性项的标签（见模块 docstring 的指纹口径）。"""
     p0 = _token_power(term, _FEATURE_TOKENS[0])
@@ -403,26 +439,230 @@ def _split_terms(expr: str) -> list[str]:
     return terms
 
 
-def architecture_fingerprint(equation_text: str, features: Sequence[str]) -> tuple[str, ...] | None:
-    """结构指纹：加性项标签的排序去重元组；解析不出返回 ``None``。
+def _atom_terms(equation_text: str, features: Sequence[str]):
+    """把方程拆成加性项，返回 ``([标签], [原子文本], [原样文本])``；解析不出返回 ``None``。
 
-    只支持两个自变量（见模块 docstring 的"范围"）。
+    "原子文本"是 :func:`_term_label` 判定标签时用的那段（自变量成 ``U0``/``U1``、复合别名
+    成 ``W``、参数成 ``P``）；"原样文本"只做别名展开、**参数保留 ``params[k]``**，用于
+    :func:`term_texts`（显示与求值都要保留原下标：同一个 ``params[1]`` 出现两次仍是同一个
+    参数，压成 ``P`` 之后就分不出来了）。
+
+    两条文本**共用同一次遍历与同一套切分**（切分结果的项数不一致时整体放弃，而不是
+    返回错位的项）；指纹与代表元还原因此不会各切一次、最终对不上。
     """
-    if not equation_text or len(list(features)) != 2:
+    names = list(features)
+    if not equation_text or len(names) != 2:
         return None
     code = _COMMENT_RE.sub(" ", _DOCSTRING_RE.sub(" ", str(equation_text)))
     match = _RETURN_RE.search(code)
     if not match:
         return None
     tail = _DEF_RE.split(code[match.end():], maxsplit=1)[0]
-    mapping = {f: t for f, t in zip(features, _FEATURE_TOKENS)}
-    mapping.update(_substitution(_alias_map(code, features)))
-    text = _apply(tail, mapping)
-    text = _PARAM_INDEX_RE.sub(_CONST_TOKEN, text)
-    text = _PARAM_NAME_RE.sub(_CONST_TOKEN, text)
-    labels = [_term_label(term, list(features)) for term in _split_terms(text)]
-    labels = [label for label in labels if label]
-    return tuple(sorted(set(labels))) or None
+    mapping = {f: t for f, t in zip(names, _FEATURE_TOKENS)}
+    mapping.update(_substitution(_alias_map(code, names)))
+    expanded = _apply(tail, mapping)
+    collapsed = _PARAM_INDEX_RE.sub(_CONST_TOKEN, expanded)
+    collapsed = _PARAM_NAME_RE.sub(_CONST_TOKEN, collapsed)
+    atom_parts = [_term for _term in _split_terms(collapsed) if _term_label(_term, names)]
+    raw_parts = _split_terms(expanded)
+    if not atom_parts or len(atom_parts) != len(raw_parts):
+        return None
+    return [_term_label(_term, names) for _term in atom_parts], atom_parts, raw_parts
+
+
+def architecture_fingerprint(equation_text: str, features: Sequence[str]) -> tuple[str, ...] | None:
+    """结构指纹：加性项标签的排序去重元组；解析不出返回 ``None``。
+
+    只支持两个自变量（见模块 docstring 的"范围"）。
+    """
+    prepared = _atom_terms(equation_text, features)
+    if prepared is None:
+        return None
+    return tuple(sorted(set(prepared[0])))
+
+
+def atom_meanings(equation_text: str, features: Sequence[str]) -> dict[str, str]:
+    """``U0`` / ``U1`` / ``W`` 在这份方程里各自代表什么（可求值文本）。
+
+    没有别名指向某个原子时它就是自变量本身（``W`` 是两者的乘积）。多个别名指向同一
+    原子时取**源码里最先出现的那个**：那是这个方程的写法，代表元只需与它一致——而且
+    渲染时会把代表元一并写出来（``representative parameterization``），不是偷偷替换。
+    """
+    names = list(features)
+    meanings = {_FEATURE_TOKENS[0]: names[0] if names else _FEATURE_TOKENS[0],
+                _FEATURE_TOKENS[1]: names[1] if len(names) > 1 else _FEATURE_TOKENS[1],
+                _COMPOSITE_TOKEN: (f"({names[0]}*{names[1]})" if len(names) == 2
+                                   else _COMPOSITE_TOKEN)}
+    if len(names) != 2:
+        return meanings
+    code = _COMMENT_RE.sub(" ", _DOCSTRING_RE.sub(" ", str(equation_text or "")))
+    texts = _alias_texts(code, names)
+    taken: set[str] = set()
+    for alias, atom in _alias_map(code, names).items():
+        if atom in meanings and atom not in taken and alias in texts:
+            meanings[atom] = f"({texts[alias]})"
+            taken.add(atom)
+    return meanings
+
+
+def term_texts(equation_text: str, features: Sequence[str]) -> dict[str, str]:
+    """目标方程里每个标签对应的**实际项文本**（还原成自变量与 ``params`` 的可求值形式）。
+
+    这是缺陷 2 的修法。``higher`` / ``power(λ12,λ23)`` 这类标签把多个形状归并在一起，
+    **从标签猜代表元是不诚实的**；但它们的项在目标方程里写得明明白白。于是这里把该项
+    自己的文本取出来（``U0`` → 它的别名式、``W`` → 复合式、``P`` → ``params[k]``），
+    交给 :func:`representative_from_text` 求值——**不是猜，是读**。
+
+    同一标签出现多次时取第一次出现的那个项——与 :func:`architecture_fingerprint` 的
+    去重口径一致（标签相同即视为同一架构）。
+    """
+    names = list(features or [])
+    prepared = _atom_terms(equation_text, names)
+    if prepared is None:
+        return {}
+    labels, _atoms, raw = prepared
+    meanings = atom_meanings(equation_text, names)
+    out: dict[str, str] = {}
+    for label, term in zip(labels, raw):
+        if label in out:
+            continue
+        expanded = term
+        for token in (_COMPOSITE_TOKEN, _FEATURE_TOKENS[1], _FEATURE_TOKENS[0]):
+            expanded = re.sub(_bound(token), lambda _m, t=token: meanings[t], expanded)
+        out[label] = expanded.strip()
+    return out
+
+
+#: 代表元求值允许的函数（只认 ``np.<name>`` 形式；越界一律降级）。
+_ALLOWED_FUNCS = {
+    "log": np.log, "log10": np.log10, "exp": np.exp, "sqrt": np.sqrt,
+    "abs": np.abs, "sign": np.sign, "tanh": np.tanh, "power": np.power,
+}
+
+_ALLOWED_BINOPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+                   ast.Div: operator.truediv, ast.Pow: operator.pow}
+
+
+def _bind_params(text: str, *, offset: int = 0) -> tuple[str, int]:
+    """把文本里的参数改写成 ``p{offset}/p{offset+1}/...``，返回 ``(改写后的文本, 个数)``。
+
+    下标记号从 ``offset`` 起：多个项拼进同一个参数向量时（:func:`_plan_terms` 的
+    ``verbatim`` 片段）编号必须全局连续，否则求值时会读到别人的参数。
+
+    两种来源分开处理：
+
+    * ``params[k]``（:func:`term_texts` 给出的原样文本）：**按原文去重**——同一个
+      ``params[1]`` 出现两次仍是同一个参数，下标信息在这里是可信的；
+    * ``P``（原子化留下的记号，多个不同下标已被压成同一个）：只能**按出现次序**各给
+      一个。对常见写法（``P*U0``、``P*U0**P``、``P*W**2``）这次序正好是"系数 + 形状
+      参数"，个数是对的；只有"同一项里把同一个 ``params[k]`` 写两次"会多一个自由度
+      （罕见，且不影响"哪个方向更值得试"这一判断）。
+    """
+    seen: dict[str, str] = {}
+    counter = itertools.count(offset)
+
+    def repl(match):
+        key = match.group(0)
+        if key.startswith("params"):
+            if key not in seen:
+                seen[key] = f"p{next(counter)}"
+            return seen[key]
+        return f"p{next(counter)}"
+
+    bound = _PARAM_INDEX_RE.sub(repl, str(text))
+    bound = re.sub(_bound(_CONST_TOKEN), repl, bound)
+    return bound.strip(), next(counter) - offset
+
+
+def _compile_node(node, names: Sequence[str]):
+    """AST 节点 → 求值闭包 ``f(params, columns)``；越界返回 ``None``。
+
+    刻意**不用** :func:`eval` / ``exec``：文本来自 LLM 写的方程，虽然只取**一项**、且已
+    经别名展开，仍按白名单逐节点分派（数字 / 自变量 / ``p{k}`` / ``+ - * / **`` / 有限几个
+    ``np.*`` 函数）。下标、属性、其它调用、推导式、``lambda``、条件表达式等一律返回
+    ``None``，由调用方降级成"未测量"——绝不执行。
+    """
+    names = list(names or [])
+    if isinstance(node, ast.Expression):
+        return _compile_node(node.body, names)
+    if isinstance(node, ast.Constant):
+        value = node.value
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return lambda params, columns, v=float(value): v
+    if isinstance(node, ast.Name):
+        if node.id in names:
+            index = names.index(node.id)
+            return lambda params, columns, i=index: columns[i]
+        if len(node.id) > 1 and node.id[0] == "p" and node.id[1:].isdigit():
+            index = int(node.id[1:])
+            return lambda params, columns, i=index: params[i]
+        return None
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        operand = _compile_node(node.operand, names)
+        if operand is None:
+            return None
+        sign = 1.0 if isinstance(node.op, ast.UAdd) else -1.0
+        return lambda params, columns, f=operand, s=sign: s * f(params, columns)
+    if isinstance(node, ast.BinOp):
+        op = _ALLOWED_BINOPS.get(type(node.op))
+        left = _compile_node(node.left, names)
+        right = _compile_node(node.right, names)
+        if op is None or left is None or right is None:
+            return None
+        return lambda params, columns, l=left, r=right, o=op: o(l(params, columns),
+                                                                r(params, columns))
+    if isinstance(node, ast.Call):
+        func = node.func
+        if not isinstance(func, ast.Attribute) or not isinstance(func.value, ast.Name):
+            return None
+        if func.value.id not in ("np", "numpy") or node.keywords:
+            return None
+        allowed = _ALLOWED_FUNCS.get(func.attr)
+        if allowed is None or len(node.args) != 1:
+            return None
+        arg = _compile_node(node.args[0], names)
+        if arg is None:
+            return None
+        return lambda params, columns, f=arg, g=allowed: g(f(params, columns))
+    return None
+
+
+def _compile_text(bound_text: str, names: Sequence[str]):
+    """已绑好参数名的表达式 → 求值闭包；语法错或越界返回 ``None``。"""
+    try:
+        tree = ast.parse(bound_text, mode="eval")
+    except SyntaxError:
+        return None
+    return _compile_node(tree, names)
+
+
+def representative_from_text(text: str, names: Sequence[str], *, offset: int = 0):
+    """把一段项文本编译成 ``f(*columns, params)``；越界即降级（绝不执行）。
+
+    Returns:
+        ``(fn, bound_text, n_params, reason)``。成功时 ``reason`` 为 ``None``；
+        ``fn`` 吃**完整**参数向量，下标从 ``offset`` 起（便于把多个项拼进同一套编号）；
+        ``bound_text`` 是编号改写后的文本，可直接当"代表元参数化"写进提示。
+    """
+    bound, n_params = _bind_params(text, offset=offset)
+    if _compile_text(bound, names) is None:
+        try:
+            ast.parse(bound, mode="eval")
+        except SyntaxError as exc:
+            reason = f"the term text does not parse ({exc.msg})"
+        else:
+            reason = ("the term uses constructs outside the whitelist (numbers, the two "
+                      "independents, params, + - * / ** and a few np.* functions)")
+        return None, bound, n_params, reason
+    evaluator = _compile_text(bound, names)
+
+    def equation(*args):
+        columns, params = args[:-1], np.asarray(args[-1], dtype=float)
+        with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+            return evaluator(params, columns)
+
+    return equation, bound, n_params, None
 
 
 # ── 汇总 ────────────────────────────────────────────────────
@@ -530,17 +770,23 @@ def addition_candidates(terms: Sequence[str], names: Sequence[str]) -> list[str]
 
 
 # ── 未试邻域的代表元参数化与实测 NMSE ──────────────────────────
-def _plan_terms(terms: Sequence[str], names: Sequence[str]):
+def _plan_terms(terms: Sequence[str], names: Sequence[str], texts=None):
     """把标签序列变成"代表元"构造计划；无法唯一还原时返回 ``(None, 原因)``。
 
     计划项是 ``{kind, coef, exp, fmt}``：``coef`` 是该片段消费的**系数**参数下标，
-    ``exp`` 是它消费的**指数**参数下标（带参数指数的 ``power(...)`` 才用第二个）。
+    ``exp`` 是它消费的**指数**参数下标（带参数指数的 ``power(...)`` 才用第二个）；
+    ``kind == "verbatim"`` 的项额外带 ``used``（消费的参数个数，含系数）、``text``
+    与 ``fn``。
 
     为什么是"代表元"而不是原式：标签对记号不变（平移/取对数后的二次型与原坐标
     二次型同标签），故从标签还原必然要挑一个代表。多项式族挑恒等记号是精确的
     （仿射重参数化张成同一线性空间 → 最小二乘最优完全相同）；``log`` 记号与
-    ``higher`` / ``power(λ12,λ23)`` 不是——后者把多个形状归并成一个标签，
-    **不猜**，直接降级（见模块 docstring）。
+    ``higher`` / ``power(λ12,λ23)`` 不是——后者把多个形状归并成一个标签。
+
+    ``texts``（见 :func:`term_texts`）给出"该标签在**目标方程里**的实际项文本"。
+    白名单没有的标签**优先走它**：那不是猜标签，而是读模型自己写的那一项，于是
+    ``higher`` / ``power(...)`` 也能量出实数（缺陷 2）。文本越界（用了白名单外的
+    构造）时仍降级，并在原因里写明是"文本不可求值"而不是"标签不可还原"。
     """
     n0, n1 = names
     kinds = {
@@ -562,8 +808,18 @@ def _plan_terms(terms: Sequence[str], names: Sequence[str]):
     for label in terms:
         entry = kinds.get(label)
         if entry is None:
-            return None, (f"label '{label}' merges several different forms, so its term set "
-                          "cannot be reconstructed unambiguously")
+            text = (texts or {}).get(label)
+            if text is None:
+                return None, (f"label '{label}' merges several different forms, so its term "
+                              "set cannot be reconstructed unambiguously")
+            compiled, bound, used, reason = representative_from_text(text, names, offset=index)
+            if compiled is None:
+                return None, (f"label '{label}' was read from the equation's own term text, "
+                              f"but that text cannot be evaluated here: {reason}")
+            plan.append({"kind": "verbatim", "coef": index, "exp": None, "used": used,
+                         "text": bound, "fn": compiled, "fmt": "p{i}"})
+            index += used
+            continue
         kind, used, fmt = entry
         plan.append({"kind": kind, "coef": index,
                      "exp": index + 1 if used == 2 else None, "fmt": fmt})
@@ -573,25 +829,37 @@ def _plan_terms(terms: Sequence[str], names: Sequence[str]):
     return plan, index
 
 
-def template_from_terms(terms: Sequence[str], names: Sequence[str]) -> tuple[str, int] | None:
+def template_from_terms(terms: Sequence[str], names: Sequence[str],
+                        texts=None) -> tuple[str, int] | None:
     """由 term set 标签机械构造参数化模板与参数个数；无法唯一还原时返回 ``None``。
 
     例：``{const, λ12, λ23, λ23^2, λ12·λ23}`` → ``p0 + p1*λ12 + p2*λ23 + p3*λ23**2
     + p4*λ12*λ23``（5 个参数）。
+
+    ``texts`` 见 :func:`_plan_terms`：给了它，``higher`` / ``power(...)`` 就按**目标方程
+    里的实际项文本**写出模板，而不是因为"标签归并了多个形状"降级。
     """
-    plan, extra = _plan_terms(terms, names)
+    plan, extra = _plan_terms(terms, names, texts)
     if plan is None:
         return None
-    return " + ".join(p["fmt"].format(i=p["coef"], e=p["exp"]) for p in plan), extra
+    parts = []
+    for item in plan:
+        if item["kind"] == "verbatim":
+            # 该项文本已经带着自己的系数（编号是全局连续的），再加前缀会读成两个系数
+            parts.append(item["text"])
+        else:
+            parts.append(item["fmt"].format(i=item["coef"], e=item["exp"]))
+    return " + ".join(parts), extra
 
 
-def _equation_from_terms(terms: Sequence[str], names: Sequence[str]):
+def _equation_from_terms(terms: Sequence[str], names: Sequence[str], texts=None):
     """由标签构造 ``equation(*columns, params)``；返回 ``(equation, n_params, 原因)``。
 
-    指数是**连续参数**（不用 :func:`eval`/``exec``）：片段由上面的白名单生成、
-    变量名来自方程签名（调用方已校验是标识符），故直接按 kind 分派计算即可。
+    指数是**连续参数**（不用 :func:`eval`/``exec``）：白名单片段按 kind 分派计算；
+    ``verbatim`` 片段由 :func:`representative_from_text` 的 AST 白名单求值器提供，
+    同样不执行任意代码。
     """
-    plan, n_params = _plan_terms(terms, names)
+    plan, n_params = _plan_terms(terms, names, texts)
     if plan is None:
         return None, None, n_params
 
@@ -602,7 +870,10 @@ def _equation_from_terms(terms: Sequence[str], names: Sequence[str]):
         for item in plan:
             coef = params[item["coef"]]
             kind = item["kind"]
-            if kind == "const":
+            if kind == "verbatim":
+                # 编号已全局连续（见 _bind_params 的 offset），故吃完整参数向量
+                value = item["fn"](*columns, params)
+            elif kind == "const":
                 value = np.ones_like(col0) * coef
             elif kind == "linear0":
                 value = coef * col0
@@ -669,7 +940,7 @@ def _as_xy(data):
 
 
 def measure_term_set(terms: Sequence[str], names: Sequence[str], facts,
-                     *, seed: int = FIT_SEED) -> dict:
+                     *, seed: int = FIT_SEED, texts=None) -> dict:
     """用**评估器同口径**拟合某个 term set 的代表元，返回实测 NMSE 与体检。
 
     口径与 :func:`drsr_420.evaluation.problems.evaluate` 完全一致（同 bounds、多起点、
@@ -678,6 +949,9 @@ def measure_term_set(terms: Sequence[str], names: Sequence[str], facts,
     到 X"凭空抬高（见 :mod:`drsr_420.evaluation.data_facts` 的口径说明）。
 
     失败/不可还原一律落在 ``reason`` 上（调用方必须显式披露），不抛异常。
+    ``texts``（见 :func:`term_texts`）让 ``higher`` / ``power(...)`` 这类"标签归并了多个
+    形状"的项按**目标方程里的实际文本**被测——这是缺陷 2 的修法，缺它时最前沿的那个族
+    一条实测都给不出。
 
     Returns:
         dict：``terms`` / ``template`` / ``n_params`` / ``mse`` / ``nmse`` /
@@ -689,12 +963,12 @@ def measure_term_set(terms: Sequence[str], names: Sequence[str], facts,
     entry = {"terms": [str(t) for t in terms], "template": None, "n_params": None,
              "mse": None, "nmse": None, "penalty": None, "score": None, "flagged": None,
              "criteria": [], "reason": None}
-    equation, n_params, reason = _equation_from_terms(list(terms), list(names))
+    equation, n_params, reason = _equation_from_terms(list(terms), list(names), texts)
     if equation is None:
         entry["reason"] = reason
         return entry
     entry["n_params"] = n_params
-    entry["template"] = template_from_terms(terms, names)[0]
+    entry["template"] = template_from_terms(terms, names, texts)[0]
 
     inputs, outputs = _as_xy(facts)
     if inputs is None:
@@ -826,6 +1100,7 @@ def sampling_terrain(entries: Sequence[dict], features: Sequence[str],
         order = int(order) if isinstance(order, (int, float)) and not isinstance(order, bool) \
             else index + 1
         records.append({"score": float(score), "order": order,
+                        "equation": entry.get("equation"),
                         "terms": architecture_fingerprint(entry.get("equation"), names)})
     parsed = [r for r in records if r["terms"]]
     if not parsed:
@@ -845,6 +1120,9 @@ def sampling_terrain(entries: Sequence[dict], features: Sequence[str],
     target_family = family_of(target_terms, names)
 
     tried = {r["terms"] for r in parsed}
+    # 未试邻域的代表元还原以**目标方程自己的项文本**为准（缺陷 2）：``higher`` /
+    # ``power(...)`` 归并了多个形状，从标签猜是不诚实的，但它们的项在方程里写得很清楚。
+    target_texts = term_texts(target if target else best.get("equation"), names)
     deletions = []
     for label in sorted(target_terms, key=lambda x: (-_term_rank(x, names), x)):
         candidate = tuple(sorted(t for t in target_terms if t != label))
@@ -853,7 +1131,8 @@ def sampling_terrain(entries: Sequence[dict], features: Sequence[str],
         # 每个未试邻域真拟合一遍：光说"没试过"实测会被读成"别回那个家族"，
         # 配上可复现的 NMSE 才成为"可验证的改进方向"（见模块 docstring）。
         deletions.append({"dropped": label, "terms": list(candidate),
-                          "measurement": measure_term_set(candidate, names, facts)})
+                          "measurement": measure_term_set(candidate, names, facts,
+                                                          texts=target_texts)})
         if len(deletions) >= MAX_UNTRY_DELETIONS:
             break
 
@@ -864,7 +1143,8 @@ def sampling_terrain(entries: Sequence[dict], features: Sequence[str],
             continue
         # 与删项同口径：加项邻域也要真拟合一遍，"加这项会变成什么分数"必须可验证。
         additions.append({"added": label, "terms": list(candidate),
-                          "measurement": measure_term_set(candidate, names, facts)})
+                          "measurement": measure_term_set(candidate, names, facts,
+                                                          texts=target_texts)})
         if len(additions) >= MAX_UNTRY_ADDITIONS:
             break
 
