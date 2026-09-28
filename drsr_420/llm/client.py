@@ -24,6 +24,23 @@ from drsr_420.llm.tools_schema import tools
 LLM_REQUEST_MAX_RETRIES = 4
 LLM_REQUEST_BACKOFF_BASE = 2.0
 
+#: 连接超时（秒）。
+LLM_CONNECT_TIMEOUT = 10
+
+#: **逐块间隔**读超时（秒）——不是单次请求的总时长（见 :func:`_post_with_retry`）。
+#: 实测 ``MRFCompress-Cuboid_20260928-092926`` 一次调用在 10:23:12 之后**零字节 18+ 分钟**：
+#: 主进程 CPU 零增长、到 LLM 端点的连接仍是 ESTABLISHED——服务端不推流，客户端一直在等。
+#: 旧值 3600 意味着最坏要等 60 分钟才抛，一个样本就能把整批拖住。
+#: 取 300（5 分钟）：合法的慢调用是**持续推流**的——实测一次 23.0 分钟的成功调用
+#: （thinking 65483）全程有字节流动、约 47 token/s，块间隔是秒级；5 分钟的**零字节**
+#: 间隔没有合法解释。
+LLM_READ_TIMEOUT = 300
+
+#: 超时的重试次数上限（与其它可重试错误的 :data:`LLM_REQUEST_MAX_RETRIES` 分开）。
+#: 重试一个"服务端不推流"的调用，只是把"无限等"摊成更长的等（5 × 300s ≈ 25 分钟）；
+#: 一次足以区分"瞬时抖动"与"真的卡住"。
+LLM_TIMEOUT_MAX_RETRIES = 1
+
 
 def require_absolute_url(value: str, what: str = "base_url") -> str:
     """校验并返回绝对端点 URL（``http://`` 或 ``https://`` 开头），并去掉首尾空白。
@@ -47,9 +64,16 @@ def require_absolute_url(value: str, what: str = "base_url") -> str:
 def _post_with_retry(url, headers, payload,
                      max_retries=LLM_REQUEST_MAX_RETRIES,
                      backoff_base=LLM_REQUEST_BACKOFF_BASE,
-                     timeout=(10, 3600),
+                     timeout=(LLM_CONNECT_TIMEOUT, LLM_READ_TIMEOUT),
                      stream=False):
-    """带指数退避的 POST 请求：网络异常与 429/5xx 自动重试。"""
+    """带指数退避的 POST 请求：网络异常与 429/5xx 自动重试。
+
+    超时（``requests.exceptions.Timeout``）只重试 :data:`LLM_TIMEOUT_MAX_RETRIES` 次
+    ——见 :data:`LLM_READ_TIMEOUT`。超时最终会抛给调用方，而调用方（``ToolCaller``）
+    把异常降级成空响应 → 该样本评估失败；一批样本全失败会累加
+    ``coordinator_agent`` 的失败熔断计数（``max_failed_batches``）。也就是说**卡住
+    不会无限等**：先超时、再计失败、最后熔断。
+    """
     attempt = 0
     while True:
         try:
@@ -78,10 +102,12 @@ def _post_with_retry(url, headers, payload,
             return resp
         except requests.exceptions.RequestException as e:
             attempt += 1
-            if attempt > max_retries:
+            limit = (LLM_TIMEOUT_MAX_RETRIES if isinstance(e, requests.exceptions.Timeout)
+                     else max_retries)
+            if attempt > limit:
                 raise
             wait = backoff_base * (2 ** (attempt - 1))
-            print(f"[LLM] 请求异常: {e}，{wait:.1f}s 后重试（{attempt}/{max_retries}）")
+            print(f"[LLM] 请求异常: {e}，{wait:.1f}s 后重试（{attempt}/{limit}）")
             time.sleep(wait)
 
 
@@ -300,6 +326,7 @@ class LLMClient:
             acc_reasoning: List[str] = []
             acc_tool_calls: Dict[int, dict] = {}
             usage: dict = {}
+            finish_reason: str | None = None
 
             if 'text/event-stream' not in (response.headers.get('Content-Type') or ''):
                 # 个别网关忽略 stream 参数、直接返回完整 JSON：按单块处理
@@ -323,7 +350,10 @@ class LLMClient:
                 if isinstance(chunk, dict) and chunk.get('usage'):
                     usage = chunk['usage']
                 if isinstance(chunk, dict) and chunk.get('choices'):
-                    delta = chunk['choices'][0].get('delta') or {}
+                    choice = chunk['choices'][0]
+                    delta = choice.get('delta') or {}
+                    if choice.get('finish_reason'):
+                        finish_reason = choice['finish_reason']
                 else:
                     delta = {}
                 accumulate_stream_delta(acc_content, acc_reasoning, acc_tool_calls, delta)
@@ -335,7 +365,8 @@ class LLMClient:
 
             full = self._finalize_response(
                 ''.join(acc_content), ''.join(acc_reasoning),
-                assemble_tool_calls(acc_tool_calls), usage, start_time)
+                assemble_tool_calls(acc_tool_calls), usage, start_time,
+                finish_reason=finish_reason)
             yield {**full, 'final': True}
 
         except requests.exceptions.RequestException as e:
@@ -416,11 +447,19 @@ class LLMClient:
         reasoning_content = message.get('reasoning_content', '') or ''
         tool_calls = message.get('tool_calls', [])
         usage = response_data.get('usage', {})
-        return self._finalize_response(content, reasoning_content, tool_calls, usage, start_time)
+        return self._finalize_response(content, reasoning_content, tool_calls, usage, start_time,
+                                       finish_reason=response_data['choices'][0].get('finish_reason'))
 
     def _finalize_response(self, content: str, reasoning_content: str,
-                           tool_calls: list, usage: dict, start_time: float) -> dict:
-        """统计 token/耗时并构造统一返回 dict。"""
+                           tool_calls: list, usage: dict, start_time: float,
+                           finish_reason: str | None = None) -> dict:
+        """统计 token/耗时并构造统一返回 dict。
+
+        ``finish_reason == "length"`` 时**响亮地**打印一行：``max_tokens`` 是
+        thinking + content 的**总**上限（实测 thinking=65483 + content=53 = 65536 顶格），
+        thinking 会被无约束地吃光预算，正文只剩模板里的 docstring、``return`` 根本没写出来。
+        这一行让"尾部变慢 + 截断解"在 run.out 里可见，而不是只留一条全 null 的样本记录。
+        """
         prompt_tokens = usage.get('prompt_tokens', 0)
         completion_tokens = usage.get('completion_tokens', 0)
         total_tokens = usage.get('total_tokens', 0)
@@ -430,6 +469,11 @@ class LLMClient:
         # completion - reasoning 对"completion_tokens 不含 reasoning"的提供商会
         # 算出负数；统一 clamp 一次，三处累计（实例/全局/打印）共用该值。
         content_tokens = max(0, int(completion_tokens) - int(reasoning_tokens))
+
+        if finish_reason == 'length':
+            print(f"[LLM] 输出被 max_tokens 截断（finish_reason=length）："
+                  f"thinking={int(reasoning_tokens)} + content={content_tokens} 已用满单次上限，"
+                  f"正文很可能没有 return——该样本会被判为无效骨架并重采样")
 
         self.tokens['prompt'] += prompt_tokens
         self.tokens['content'] += content_tokens

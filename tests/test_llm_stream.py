@@ -6,17 +6,22 @@
 - stream=False 显式回退非流式
 - 网关忽略 stream 参数直接返回完整 JSON 时的单块兜底
 - 网关把错误包在 HTTP 200 里（``code``/``msg``/``success`` 信封）时的异常信息
+- 输出撞上 ``max_tokens`` 上限（``finish_reason=length``）时留一行可见的诊断
+- ``_post_with_retry`` 的重试预算：**超时只重试 LLM_TIMEOUT_MAX_RETRIES 次**
 
 全部通过 mock 定义处的 ``_post_with_retry`` 完成，不发起真实网络请求。
 （打桩必须落在定义该名字的 ``drsr_420.llm.client`` 上：``LLMClient.chat`` 在
 ``client`` 模块的全局命名空间里查找它，打在门面 ``drsr_420.llm`` 上等于没打。）
 """
+import contextlib
+import io
 import unittest
 from unittest import mock
 
 import requests
 
 from drsr_420 import llm
+from drsr_420.llm import client as client_mod
 
 
 class _FakeResponse:
@@ -77,6 +82,38 @@ class ChatStreamTest(unittest.TestCase):
         args = mock_post.call_args[0]
         self.assertTrue(args[2]['stream'])
         self.assertIs(mock_post.call_args.kwargs.get('stream'), True)
+
+    @mock.patch('drsr_420.llm.client._post_with_retry')
+    def test_finish_reason_length_is_reported(self, mock_post):
+        """撞上 max_tokens 上限必须在 run.out 里响亮地留一行（截断样本的定位依据）。
+
+        实测形态：thinking=65483 + content=53 正好等于 65536（``max_tokens`` 是
+        thinking + content 的**总**上限），正文只剩 docstring、没有 ``return``。
+        """
+        chunks = [
+            '{"choices":[{"delta":{"reasoning_content":"think"}}]}',
+            '{"choices":[{"delta":{"content":""},"finish_reason":"length"}],'
+            '"usage":{"prompt_tokens":4518,"completion_tokens":65536,"total_tokens":70575,'
+            '"completion_tokens_details":{"reasoning_tokens":65483}}}',
+        ]
+        mock_post.return_value = _FakeResponse(lines=_sse(*chunks))
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            out = list(self.client.chat_stream([]))
+        self.assertTrue(out[-1]['final'])
+        self.assertIn("输出被 max_tokens 截断", buf.getvalue())
+        self.assertIn("finish_reason=length", buf.getvalue())
+
+    @mock.patch('drsr_420.llm.client._post_with_retry')
+    def test_a_normal_finish_does_not_print_the_truncation_line(self, mock_post):
+        chunks = ['{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}']
+        mock_post.return_value = _FakeResponse(lines=_sse(*chunks))
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            list(self.client.chat_stream([]))
+        self.assertNotIn("截断", buf.getvalue())
 
     @mock.patch('drsr_420.llm.client._post_with_retry')
     def test_stream_accumulates_reasoning(self, mock_post):
@@ -275,6 +312,43 @@ class GatewayErrorEnvelopeTest(unittest.TestCase):
         for value in (None, "text", [], 3):
             with self.subTest(value=value):
                 self.assertEqual(gateway_error_detail(value), "")
+
+
+class PostWithRetryPolicyTest(unittest.TestCase):
+    """``_post_with_retry`` 的重试预算：**超时**与其它可重试错误分开。
+
+    实测 ``MRFCompress-Cuboid_20260928-092926`` 在 10:23:12 之后零字节 18+ 分钟、
+    主进程零 CPU、到端点的连接仍是 ESTABLISHED——服务端不推流。旧实现是"读超时 3600s
+    × 最多 5 次"，一个样本最坏能把整批拖住几个小时。超时重试一次就够：区分"瞬时抖动"
+    与"真的卡住"，把"无限等"变成有界失败（失败会走 ``max_failed_batches`` 熔断）。
+    """
+
+    URL = 'http://test-host/v1/chat/completions'
+
+    @mock.patch('drsr_420.llm.client.requests.post')
+    def test_a_timeout_is_retried_only_a_few_times(self, mock_post):
+        mock_post.side_effect = requests.exceptions.ReadTimeout("no bytes for a long time")
+        with self.assertRaises(requests.exceptions.ReadTimeout):
+            client_mod._post_with_retry(self.URL, {}, {}, backoff_base=0.0)
+        self.assertEqual(mock_post.call_count, 1 + client_mod.LLM_TIMEOUT_MAX_RETRIES)
+
+    @mock.patch('drsr_420.llm.client.requests.post')
+    def test_other_network_errors_keep_the_original_budget(self, mock_post):
+        mock_post.side_effect = requests.exceptions.ConnectionError("boom")
+        with self.assertRaises(requests.exceptions.ConnectionError):
+            client_mod._post_with_retry(self.URL, {}, {}, backoff_base=0.0)
+        self.assertEqual(mock_post.call_count, 1 + client_mod.LLM_REQUEST_MAX_RETRIES)
+
+    @mock.patch('drsr_420.llm.client.requests.post')
+    def test_the_default_timeout_is_bounded_far_below_an_hour(self, mock_post):
+        """逐块间隔超时必须远小于 3600（旧值意味着最坏等 60 分钟）。"""
+        mock_post.return_value = _FakeResponse(lines=_sse(
+            '{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}'))
+        client_mod._post_with_retry(self.URL, {}, {}, stream=True)
+        connect, read = mock_post.call_args.kwargs['timeout']
+        self.assertEqual(connect, client_mod.LLM_CONNECT_TIMEOUT)
+        self.assertEqual(read, client_mod.LLM_READ_TIMEOUT)
+        self.assertLessEqual(read, 600)
 
 
 if __name__ == '__main__':

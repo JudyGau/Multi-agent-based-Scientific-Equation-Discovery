@@ -67,7 +67,47 @@ def extract_code_fragment(text: str) -> str | None:
     return None
 
 
+#: 只有注释/docstring、没有可执行语句的"骨架"不算骨架（理由见 :func:`has_executable_statement`）。
+_DOCSTRING_RE = re.compile(r'"""[\s\S]*?"""|\'\'\'[\s\S]*?\'\'\'')
+_COMMENT_RE = re.compile(r"#[^\n]*")
+_RETURN_LINE_RE = re.compile(r"(?m)^[ \t]*return\b")
+
+
+def has_executable_statement(body: str) -> bool:
+    """骨架里有没有**可执行语句**——至少要有一个 ``return``。
+
+    为什么单看"非空"不够：实测 ``MRFCompress-Cuboid_20260928-092926`` 的
+    ``samples_92/93.json``——那次输出撞上 ``max_tokens`` 上限（thinking=65483 + content=53
+    正好 65536），正文只剩提示模板里那段 docstring，``return`` 根本没写出来。原逻辑看到
+    ``def`` 之后"有带缩进的内容"就把这几行 docstring 当骨架返回（**非空**）→ 上游
+    ``MAX_BODY_RETRIES`` 的重采样**没被触发** → 样本一路走到评估，留下一条
+    ``mse/penalty/score`` 全 null 的记录。
+
+    判据只看 ``return``：本项目的骨架不返回预测就没有评估价值，而"有没有 return"是唯一
+    不依赖具体写法就能判准的量。注释与 docstring 先剥掉，免得正文里那句
+    "return the stress"被当成语句（截断时 docstring 可能没有闭合的三引号、剥离不生效，
+    但判据要求 ``return`` 出现在**行首**，误判概率很低）。
+    """
+    code = _COMMENT_RE.sub(" ", _DOCSTRING_RE.sub(" ", str(body or "")))
+    return bool(_RETURN_LINE_RE.search(code))
+
+
 def extract_body(sample: str) -> str:
+    """切出可直接执行的函数体；**没有可执行语句时返回空串**。
+
+    空串让 SamplerAgent 走既有的重采样（``MAX_BODY_RETRIES``），而不是把一段只有 docstring
+    的"骨架"送去评估（见 :func:`has_executable_statement` 的实测）。剪切规则本身见
+    :func:`_extract_body_raw`。
+    """
+    body = _extract_body_raw(sample)
+    if body and not has_executable_statement(body):
+        print("[Skeleton] 骨架里没有可执行语句（只有 docstring/注释，常见于输出被截断）"
+              " → 视为空骨架，交由上层重采样")
+        return ''
+    return body
+
+
+def _extract_body_raw(sample: str) -> str:
     """
     Extract the function body from a response sample, removing any preceding descriptions
     and the function signature. Preserves indentation.

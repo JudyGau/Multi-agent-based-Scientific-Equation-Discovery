@@ -20,7 +20,7 @@ from drsr_420.agents import sampler_agent as sampler_mod
 from drsr_420.agents.base import BaseAgent
 from drsr_420.agents.prompt_injection import PromptInjector, resolve_policy
 from drsr_420.agents.sampler_agent import SamplerAgent
-from drsr_420.agents.skeleton import extract_body, extract_code_fragment
+from drsr_420.agents.skeleton import extract_body, extract_code_fragment, has_executable_statement
 from drsr_420.agents.tool_caller_agent import ToolCallerAgent
 from drsr_420.core import config as config_lib
 from drsr_420.core import prompt_config as pc
@@ -29,6 +29,20 @@ from drsr_420.core import prompt_config as pc
 GOOD_REPLY = "推理过程...\n```python\ndef equation(x1, params):\n    return params[0] * x1\n```\n补充说明"
 # 一次"抽不出代码"的回复
 EMPTY_REPLY = "我认为应该先观察数据分布，再决定方程形式。"
+
+#: 实测的**截断解**形态（``MRFCompress-Cuboid_20260927-164553`` 的 ``samples_92/93.json``）：
+#: 输出撞上 ``max_tokens`` 上限（thinking=65483 + content=53 正好 65536），正文只剩提示模板
+#: 里那段 docstring，``return`` 根本没写出来 —— 这两条样本的 mse/penalty/score 全 null。
+TRUNCATED_REPLY = (
+    "推理过程...\n```python\n"
+    "def equation(lambda12, lambda23, params):\n"
+    '    """Equation to be evolved.\n\n'
+    "    Variables:\n"
+    "    - Independents: lambda12, lambda23\n\n"
+    "    Parameters:\n"
+    "    - params (np.ndarray): Trainable coefficients used by the equation skeleton.\n"
+    '    """\n'
+    "```\n")
 
 
 # ----------------------------------------------------------------------
@@ -91,6 +105,22 @@ class ExtractBodyTest(unittest.TestCase):
 
     def test_no_code_returns_empty_string(self):
         self.assertEqual(extract_body(EMPTY_REPLY), "")
+
+    def test_a_docstring_only_body_is_not_a_skeleton(self):
+        """截断解必须**判为空骨架**，好让上游重采样（而不是变成一条全 null 的样本）。"""
+        self.assertEqual(extract_body(TRUNCATED_REPLY), "")
+
+    def test_a_body_without_a_return_is_treated_as_empty(self):
+        self.assertEqual(extract_body("def eq(x1, params):\n    sigma = params[0]*x1\n"), "")
+        self.assertEqual(extract_body("    # 只有注释\n"), "")
+
+    def test_a_docstring_mentioning_return_is_not_a_statement(self):
+        self.assertFalse(has_executable_statement('def eq(x1, params):\n    """Return the stress."""\n'))
+        self.assertFalse(has_executable_statement('    """Return sigma = a*x1."""\n'))
+        self.assertTrue(has_executable_statement("    return params[0]*x1\n"))
+
+    def test_a_normal_body_is_untouched(self):
+        self.assertIn("return params[0] * x1", extract_body(GOOD_REPLY))
 
 
 # ----------------------------------------------------------------------
@@ -559,6 +589,23 @@ class SamplerDrawSamplesTest(unittest.TestCase):
         self.assertEqual(samples, [])
         self.assertEqual(thinking, [])
         self.assertEqual(len(fake.calls), 1 + sampler_mod.MAX_BODY_RETRIES)
+
+    def test_a_truncated_skeleton_is_resampled_instead_of_becoming_a_null_sample(self):
+        """实测的截断解（只剩 docstring）必须触发重采样。
+
+        从前 ``extract_body`` 把"``def`` 之后有缩进内容"当骨架返回（非空），重采样没被
+        触发，该样本一路走到评估、留下一条 ``mse/penalty/score`` 全 null 的记录
+        （``MRFCompress-Cuboid_20260927-164553`` 的 ``samples_92/93.json``）。
+        """
+        sampler, fake = _make_sampler([
+            ([TRUNCATED_REPLY], ["long-think"]),                # 批量采样：被截断
+            (["```\nreturn params[0]\n```"], ["retry-think"]),  # 重采样拿到了骨架
+        ], samples_per_prompt=1)
+        samples, thinking = sampler.draw_samples("PROMPT", self.config)
+
+        self.assertEqual([c["repeat"] for c in fake.calls], [1, 1])
+        self.assertEqual(samples, ["    return params[0]"])
+        self.assertEqual(thinking, ["retry-think"])
 
     def test_retry_gives_up_after_max_body_retries(self):
         """重采样次数有上界：不会无限向 LLM 讨要骨架。"""
