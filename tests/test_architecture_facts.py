@@ -447,7 +447,7 @@ class TerrainRenderTest(unittest.TestCase):
         block = af.render_terrain(terrain, NAMES, self.TITLE)
         self.assertIn("drop lambda12^2 ->", block)
         self.assertIn("add lambda23^3 ->", block)
-        self.assertIn("deletions and additions listed above", block)
+        self.assertIn("deletions, additions and two-term moves listed above", block)
 
     def test_a_jittered_run_still_gets_the_block(self):
         """闸门不能因为 refit 抖动而关掉——实测 T2-s33 正是被这样关掉的。"""
@@ -761,16 +761,76 @@ class TerrainMeasurementTest(unittest.TestCase):
         self.assertIn("WOULD BEAT your current best score", block)
 
     def test_render_says_so_when_the_measured_neighbour_is_worse(self):
-        # 最高分 −0.5 比未对称二次的实测分数（约 −0.87）更好 → 不该喊"能超过"
+        # 最高分 −0.5 比非对称二次的实测分数（约 −0.87）更好 → **一阶**邻域不该喊"能超过"
         terrain = af.sampling_terrain(_stagnating_entries(), NAMES, facts=_facts_payload())
         block = af.render_terrain(terrain, NAMES, self.TITLE)
-        self.assertIn("is below your current best score", block)
-        self.assertNotIn("WOULD BEAT", block)
+        one_term = block.split("are TWO terms away")[0]
+        self.assertIn("is below your current best score", one_term)
+        self.assertNotIn("WOULD BEAT", one_term)
+
+    def test_the_two_term_section_is_where_the_improvement_shows_up(self):
+        """一阶全不如当前最好时，真正的改进只可能出现在"改两项"那一族里。
+
+        实测 ``20260928-141337``：那一跑从 order 42（0.271565）卡到 83 才改善，而它唯一
+        有效的逃逸动作 ``-λ12·λ23 +λ12²`` 距离当时最优**两项**——一阶列表结构上点不到。
+        """
+        terrain = af.sampling_terrain(_stagnating_entries(), NAMES, facts=_facts_payload())
+        block = af.render_terrain(terrain, NAMES, self.TITLE)
+        two_term = block.split("are TWO terms away")[1]
+        self.assertIn("WOULD BEAT your current best score", two_term)
 
     def test_render_lists_the_degradation_reason_without_a_number(self):
         terrain = af.sampling_terrain(_stagnating_entries(), NAMES)
         block = af.render_terrain(terrain, NAMES, self.TITLE)
         self.assertIn("NOT measured here", block)
+
+
+class TwoTermNeighbourhoodTest(unittest.TestCase):
+    """镜像加项 + 对角（删一加一）邻域：一阶点不到的那一步必须在这里被点名。
+
+    实测 ``20260928-141337``（首个带全部修复的 run）：order 42 撞上 0.271565 后**卡了 41
+    个样本**才在 order 83 改善到 0.257394，而那一跑唯一有效的逃逸动作
+    ``-λ12·λ23 +λ12²`` 距离当时最优**两项**；同口径枚举对角邻域后，该族另有 4 个干净解
+    优于当时最好（最好的 ``-const +λ12³`` 实测 −0.002248，已接近该 run 的早停目标）。
+    另一处更便宜：加项生成器漏"镜像项"（目标里有 ``λ23³`` 却没有 ``λ12³`` 时不生成
+    ``λ12³``），而 ``+λ12³`` 的实测分是 −0.000058。
+    """
+
+    def test_mirror_siblings_are_generated(self):
+        terms = ("const", "lambda12", "lambda12*lambda23", "lambda23",
+                 "lambda23^2", "lambda23^3")
+        self.assertIn("lambda12^3", af.addition_candidates(terms, NAMES))
+
+    def test_best_measured_prefers_the_better_score_and_puts_untested_last(self):
+        items = [{"measurement": {"score": None}}, {"measurement": {"score": -29.0}},
+                 {"measurement": {"score": -0.5}}, {"measurement": {"score": -293.9}}]
+        picked = af._best_measured(items, 3)
+        self.assertEqual([i["measurement"]["score"] for i in picked], [-0.5, -29.0, -293.9])
+
+    def test_diagonals_are_measured_with_the_same_caliber(self):
+        terrain = af.sampling_terrain(_stagnating_entries(), NAMES, facts=_facts_payload())
+        diagonals = terrain["untried_diagonals"]
+        self.assertTrue(diagonals)
+        for item in diagonals:
+            self.assertIsNotNone(item["measurement"].get("mse"), item)
+            self.assertIn(item["added"], item["terms"])                 # 加项应当在结果里
+            self.assertNotIn(item["dropped"], item["terms"])            # 删项必不在结果里
+
+    def test_score_breakdown_can_pin_the_best_to_a_given_order(self):
+        """抖动级分歧时按显著最优的 order 渲染；取不到该 order 时退回原始 argmax。"""
+        records = [{"sample_order": 42, "score": -0.2715652502080008},
+                   {"sample_order": 47, "score": -0.2715652502079998}]
+        default = af.score_breakdown(records)["best"]["sample_order"]
+        pinned = af.score_breakdown(records, best_order=42)["best"]["sample_order"]
+        missing = af.score_breakdown(records, best_order=99)["best"]["sample_order"]
+        self.assertEqual((default, pinned, missing), (47, 42, 47))
+
+    def test_a_clean_diagonal_can_beat_the_current_best(self):
+        terrain = af.sampling_terrain(_stagnating_entries(), NAMES, facts=_facts_payload())
+        winners = [i for i in terrain["untried_diagonals"]
+                   if i["measurement"].get("penalty") == 0
+                   and i["measurement"]["score"] > terrain["best_score"]]
+        self.assertTrue(winners, "对角邻域里应当有干净解优于当前最好")
 
 
 class ScoreBreakdownRenderTest(unittest.TestCase):

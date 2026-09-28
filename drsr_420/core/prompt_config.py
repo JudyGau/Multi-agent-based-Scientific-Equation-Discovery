@@ -245,10 +245,13 @@ residual_analysis_prompt = (
     # 这一条要求删项/加项候选，且必须指向事实块里"从未评估过"的邻域（数字由代码给出）。
     "6. If the injected architecture facts report that the term set of the equation above has "
     "already been evaluated with no score improvement, `suggested_structural_change` MUST "
-    "include at least one DELETION or ADDITION: name the exact term to drop or add and "
-    "the residual rows that stop supporting it (or the structural reason to add one), and "
-    "prefer one of the never-evaluated one-term deletions or additions listed in "
-    "those facts. Re-parameterizing the same term set is not a structural change.\n\n"
+    "include at least one DELETION, ADDITION or TWO-TERM move: name the exact term to drop "
+    "or add and the residual rows that stop supporting it (or the structural reason to add "
+    "one), and prefer one of the never-evaluated deletions, additions or two-term (drop one "
+    "+ add one) combinations listed in those facts. The two-term entries are listed exactly "
+    "when every one-term step already measures worse than your current best, so they are the "
+    "only structural moves left that are not re-parameterizations. "
+    "Re-parameterizing the same term set is not a structural change.\n\n"
     "7.##Output Format##:\n"
     "STRICTLY deliver results in the following structured format:\n\n"
     "  \"output_format\": {{\n"
@@ -597,10 +600,12 @@ class PromptContext:
             # 加项也要提：实测唯一成功的逃逸动作正是加项（非对称二次 + λ23³）。
             "If the injected architecture facts report that the term set of the equation above "
             "has already been evaluated with no score improvement, `suggested_structural_change` "
-            "MUST include at least one DELETION or ADDITION: name the exact term to drop or "
-            "add and the residual rows that stop supporting it (or the structural reason to "
-            "add one), and prefer one of the never-evaluated one-term deletions or additions "
-            "listed in those facts. Re-parameterizing the same term set is not a structural "
+            "MUST include at least one DELETION, ADDITION or TWO-TERM move: name the exact "
+            "term to drop or add and the residual rows that stop supporting it (or the "
+            "structural reason to add one), and prefer one of the never-evaluated deletions, "
+            "additions or two-term (drop one + add one) combinations listed in those facts "
+            "(two-term entries appear exactly when every one-term step measures worse than "
+            "your current best). Re-parameterizing the same term set is not a structural "
             "change.",
         )
 

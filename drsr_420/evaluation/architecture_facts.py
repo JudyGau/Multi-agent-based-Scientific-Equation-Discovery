@@ -63,6 +63,24 @@
   是读**；越界（白名单外的构造）仍降级成"未测量"并写明原因。覆盖率 21/24 → **24/24**
   （T2-s22 同样 19/25 → 25/25，无回归）。
 
+2026-09-28（午后）补充：一阶邻域点不到"改两项"，镜像项被漏掉
+--------------------------------------------------------------
+第一个带全部修复的 run（``20260928-141337``）从 order 42（0.271565）卡到 order 83 才
+改善到 **0.257394**（当时最好的干净解，已写进已知解清单）。它的逃逸动作
+``-λ12·λ23 +λ12²`` 距离当时最优**两项**——而一阶邻域（删项/加项）里**没有一个**比
+当时最好更好，模型收到的信息等于"你已到顶"。用同口径枚举"删一加一"对角邻域后，该族
+另有 4 个干净解优于当时最好（最好的 ``-const +λ12³`` 实测 −0.002248，已接近那次实验的
+早停目标 −0.00201208）。另有一处更便宜：加项生成器漏**镜像项**（目标里有 ``λ23³`` 却
+没有 ``λ12³`` 时不生成 ``λ12³``），而 ``+λ12³`` 实测 −0.000058——旧规则因为目标里没有
+``λ12²`` 从不生成它。故本模块补三件事：
+
+* 加项候选加**镜像规则**（``(a,b) → (b,a)``），并**候选全测**、渲染前按**实测分**取前
+  几名（旧的"按次数排序只测前 4 个"会把有用的那项挤掉）；
+* 新增**对角邻域**（同时删一 + 加一），与删/加项同口径真拟合；一阶全都不如当前最好时
+  它往往是唯一还有改进的地方；
+* 分数分解的 "best" 与地形块标题的 order 对齐（同容差档位时按显著最优取），消掉同一段
+  文字里出现两个 ``sample_order`` 的双口径（实测 42 vs 47 差 1e-11）。
+
 ⚠️ 闭环约束**不得**写成"禁止该维引入 |指数|>k 的幂律"：本轮达到干净地板 NMSE 2.65e-3
 的形式 ``a*(λ23+p·λ12)^b+d·λ12^e+f`` 本身带参数指数，一刀切会把最优干净形式一起禁掉
 （且本仓已记录该手段不可泛化）。约束只能落在**可验证的量**上：输出跨度 / 局部斜率 /
@@ -140,6 +158,15 @@ MAX_UNTRY_DELETIONS = 3
 #: （``λ12³`` / ``λ12²·λ23`` / ``λ12·λ23²`` / ``λ23³``），取 3 会按标签字典序
 #: 砍掉其中一个——那正是"按实现细节而不是按结构决定看哪个方向"的老毛病。
 MAX_UNTRY_ADDITIONS = 4
+
+#: 汇总块最多列出的"删一 + 加一"（**同时改两项**）未试邻域个数，按实测分取前几名。
+#: 为什么需要这一族：一阶邻域给不出比当前最好更优的候选时，模型收到的信息等于"你已到顶"
+#: ——实测 ``20260928-141337`` 正是这样从 order 42 卡到 83（41 个样本），而它唯一有效的
+#: 逃逸动作 ``-λ12·λ23 +λ12²``（order 83 → 0.257394）**距离当时的最优两项**，一阶列表
+#: 结构上点不到；用同口径枚举对角邻域后，该族另有 **4 个干净解**优于当时最好——最好的
+#: ``-const +λ12³`` 实测 **−0.002248**（MSE 0.002248、罚分 0），已接近该实验的早停目标
+#: （−0.00201208）。
+MAX_UNTRY_DIAGONALS = 3
 
 #: "实质改善"的容差（相对 / 绝对，取二者较大者）。
 #: refit 微抖动不是进步：实测 T2-s33（``20260928-092926``）撞地板后 order 49/62/65/73
@@ -750,23 +777,52 @@ def _monomial_label(degree: tuple[int, int], names: Sequence[str]) -> str | None
 def addition_candidates(terms: Sequence[str], names: Sequence[str]) -> list[str]:
     """目标 term set 的"升一阶"加项候选，按次数降序 + 标签排序。
 
-    只从**目标自己的项**长候选（``λ23²`` → ``λ23³``、``λ12`` → ``λ12²``、
-    ``λ12·λ23`` → ``λ12²·λ23`` / ``λ12·λ23²``），不去枚举任意高阶单项式：实测唯一
-    成功的逃逸动作正是"把已有的 λ23² 再升一阶"，而全枚举三次单项式会让真正该看的
-    那一项被前几名挤掉。常数项在次数上无从升，故不产生候选。
+    两条规则，都在"目标自己的项"上长候选（不枚举任意高阶单项式）：
 
-    排序按次数降序（高次优先）→ 与本仓"逃逸动作 = 给最高次项升阶"的实测一致。
+    * **升一阶**：``λ23²`` → ``λ23³``、``λ12`` → ``λ12²``、``λ12·λ23`` →
+      ``λ12²·λ23`` / ``λ12·λ23²``；
+    * **镜像**：把已有的项**交换两个自变量的指数**（``(a,b) → (b,a)``，``λ23³`` → ``λ12³``）。
+
+    镜像规则是 2026-09-28 实测补的：``20260928-141337`` 的 order-42 族
+    ``{const, λ12, λ12·λ23, λ23, λ23², λ23³}`` 在 λ23 上一路升到三次、在 λ12 上只到一次，
+    而"加 ``λ12³``"的实测分是 **−0.000058（罚分 0）**——已越过那次实验的早停目标
+    （``score ≥ −0.00201208``）；旧的"只升一阶"规则因为目标里没有 ``λ12²``，**从不生成
+    ``λ12³``**，模块当时给出的三个加项全是罚分陷阱（−29.0 / −293.9 / −228.8）。漏的不是
+    "高阶"本身，而是**两个自变量上的不对称**，镜像恰好补这一维。
+
+    常数项在次数上无从升、镜像又是它自己，故不产生候选。排序按次数降序（高次优先）→ 与
+    本仓"逃逸动作 = 给最高次项升阶"的实测一致；渲染前会再按**实测分**重排
+    （见 :func:`_best_measured`），故这里的顺序只在预算截断时起作用。
     """
     found: list[str] = []
+
+    def push(label: str | None) -> None:
+        if label and label not in terms and label not in found:
+            found.append(label)
+
     for label in terms:
         degree = _monomial_degree(label, names)
         if degree is None or degree == (0, 0):
             continue
         for raised in ((degree[0] + 1, degree[1]), (degree[0], degree[1] + 1)):
-            sibling = _monomial_label(raised, names)
-            if sibling and sibling not in terms and sibling not in found:
-                found.append(sibling)
+            push(_monomial_label(raised, names))
+        push(_monomial_label((degree[1], degree[0]), names))              # 镜像
     return sorted(found, key=lambda label: (-sum(_monomial_degree(label, names)), label))
+
+
+def _best_measured(items: list, limit: int) -> list:
+    """按**实测分**取前 ``limit`` 个；没测出分数的排最后，同分保持原有顺序（稳定排序）。
+
+    为什么按实测分而不是按次数或字典序：候选"次数高"不等于"更值得试"——实测
+    ``20260928-141337`` 里被机械排到前面的三个三次项全是罚分陷阱（−29.0 / −293.9 /
+    −228.8），而漏掉的那个三次项实测 −0.000058、已越过早停目标。分数由评估器按同一口径
+    算出，比任何先验排序都更接近"这一步值不值"。
+    """
+    def key(item):
+        score = (item.get("measurement") or {}).get("score")
+        return (score is None, -(score if score is not None else 0.0))
+
+    return sorted(items, key=key)[:limit]
 
 
 # ── 未试邻域的代表元参数化与实测 NMSE ──────────────────────────
@@ -1033,7 +1089,22 @@ def with_score_breakdown(terrain: dict, records: Sequence[dict]) -> dict:
     而分数分解随每个新样本变化，必须每轮刷新。
     """
     merged = dict(terrain or {})
-    merged["breakdown"] = score_breakdown(list(records or []))
+    breakdown = score_breakdown(list(records or []))
+    # 两套"最优"口径的对齐**只在抖动级别**做：原始 argmax 与"显著最优"若落在同一个分数档
+    # （差异在容差内），就按显著最优那个 order 渲染——否则同一段文字里会出现两个
+    # sample_order（实测 ``20260928-141337`` 的块：标题说 42、分解行说 47，差 1e-11）。
+    # 差异是真的时（典型情形：分数更高但结构解析不出、因而进不了显著最优的样本）**保留**
+    # 原始 argmax——"存在一个分数更好但读不出结构的样本"是必须披露的信息，不能抹掉。
+    significant_order = merged.get("best_order")
+    significant_score = merged.get("best_score")
+    best = breakdown.get("best") or {}
+    raw_score = best.get("score")
+    if (significant_order is not None and significant_score is not None
+            and raw_score is not None
+            and abs(float(raw_score) - float(significant_score))
+            <= significant_improvement_tolerance(float(significant_score))):
+        breakdown = score_breakdown(list(records or []), best_order=significant_order)
+    merged["breakdown"] = breakdown
     return merged
 
 
@@ -1085,7 +1156,8 @@ def sampling_terrain(entries: Sequence[dict], features: Sequence[str],
     """
     names = list(features or [])
     empty = {"ok": False, "n_scored": 0, "n_parsed": 0, "n_unparsed": 0,
-             "target_terms": None, "untried_deletions": [], "untried_additions": []}
+             "target_terms": None, "untried_deletions": [], "untried_additions": [],
+             "untried_diagonals": []}
     if len(names) != 2:
         return empty
 
@@ -1136,6 +1208,9 @@ def sampling_terrain(entries: Sequence[dict], features: Sequence[str],
         if len(deletions) >= MAX_UNTRY_DELETIONS:
             break
 
+    # 加项：**候选全测**、再按**实测分**取前几名渲染。先前是"按次数排序后只测前 4 个"，
+    # 会把有用的那项挤掉：实测 ``20260928-141337`` 的 order-42 族，被机械排在前面的三个
+    # 加项全是罚分陷阱（−29.0 / −293.9 / −228.8），而漏掉的 ``+λ12³`` 实测 −0.000058。
     additions = []
     for label in addition_candidates(target_terms, names):
         candidate = tuple(sorted(list(target_terms) + [label]))
@@ -1145,8 +1220,21 @@ def sampling_terrain(entries: Sequence[dict], features: Sequence[str],
         additions.append({"added": label, "terms": list(candidate),
                           "measurement": measure_term_set(candidate, names, facts,
                                                           texts=target_texts)})
-        if len(additions) >= MAX_UNTRY_ADDITIONS:
-            break
+    additions = _best_measured(additions, MAX_UNTRY_ADDITIONS)
+
+    # 对角（**同时删一项 + 加一项**）：一阶邻域全都不如当前最好时，模型收到的信息等于
+    # "你已到顶"——实测 ``20260928-141337`` 就这样从 order 42 卡到 83，而它唯一有效的
+    # 逃逸动作 ``-λ12·λ23 +λ12²`` 距离当时最优**两项**，一阶列表结构上点不到。
+    diagonals = []
+    for label in sorted(target_terms, key=lambda x: (-_term_rank(x, names), x)):
+        for added in addition_candidates(target_terms, names):
+            candidate = tuple(sorted([t for t in target_terms if t != label] + [added]))
+            if len(candidate) != len(target_terms) or candidate in tried:
+                continue
+            diagonals.append({"dropped": label, "added": added, "terms": list(candidate),
+                              "measurement": measure_term_set(candidate, names, facts,
+                                                              texts=target_texts)})
+    diagonals = _best_measured(diagonals, MAX_UNTRY_DIAGONALS)
 
     return {
         "ok": True,
@@ -1175,6 +1263,7 @@ def sampling_terrain(entries: Sequence[dict], features: Sequence[str],
         "target_exact_count": sum(1 for r in parsed if r["terms"] == target_terms),
         "untried_deletions": deletions,
         "untried_additions": additions,
+        "untried_diagonals": diagonals,
     }
 
 
@@ -1342,7 +1431,8 @@ def render_terrain(terrain: dict, features: Sequence[str], title: str) -> str:
 
     deletions = terrain["untried_deletions"]
     additions = terrain.get("untried_additions") or []
-    if deletions or additions:
+    diagonals = terrain.get("untried_diagonals") or []
+    if deletions or additions or diagonals:
         lines.append("term sets NEVER evaluated that are ONE term away from it:")
         for item in deletions:
             lines.append(f"  drop {item['dropped']} -> {{{', '.join(item['terms'])}}}")
@@ -1352,13 +1442,23 @@ def render_terrain(terrain: dict, features: Sequence[str], title: str) -> str:
             lines.append(f"  add {item['added']} -> {{{', '.join(item['terms'])}}}")
             lines.extend(_render_measurement(item.get("measurement"),
                                              terrain.get("best_score")))
+        if diagonals:
+            lines.append("term sets NEVER evaluated that are TWO terms away (ONE dropped AND "
+                         "ONE added at the same time) - listed because every one-term step "
+                         "above was measured, so the useful move may live here:")
+            for item in diagonals:
+                lines.append(f"  drop {item['dropped']} + add {item['added']} -> "
+                             f"{{{', '.join(item['terms'])}}}")
+                lines.extend(_render_measurement(item.get("measurement"),
+                                                 terrain.get("best_score")))
         lines.append(
             "Another re-parameterization of the term set above stays at the same score "
-            "floor; the deletions and additions listed above are structurally different and "
-            "unexplored.")
+            "floor; the deletions, additions and two-term moves listed above are "
+            "structurally different and unexplored.")
     else:
         lines.append(
-            "Every one-term deletion AND every one-term addition of that term set has "
-            "already been evaluated: the next structural step must change TWO terms at "
-            "once, or change the functional form of an existing one.")
+            "Every one-term deletion, every one-term addition AND every two-term (drop one + "
+            "add one) combination of that term set has already been evaluated: the next "
+            "structural step must change the functional form of an existing term, or leave "
+            "this family.")
     return title + "\n".join(lines) + "\n"

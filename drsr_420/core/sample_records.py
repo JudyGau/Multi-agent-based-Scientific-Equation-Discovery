@@ -93,17 +93,23 @@ def _row(record: dict) -> dict:
     }
 
 
-def score_breakdown(records: Sequence[dict]) -> dict:
+def score_breakdown(records: Sequence[dict], *, best_order: int | None = None) -> dict:
     """把样本记录汇总成"分数是怎么来的"分解（纯函数，不做 IO）。
 
     ``penalty`` 字段是 20260926-094330 之后才落盘的（此前 ``mse`` 里含着罚分）。
     旧目录缺该字段时**不能**把罚分当 0：那会把"未知"读成"干净"，于是
     ``penalty_known=False``，渲染方据此显式降级披露而不是给出假的分解。
 
+    ``best_order`` 指定"最高分"取哪一条（按 ``sample_order`` 匹配）；不给时取原始
+    argmax。为什么需要它：refit 抖动（同一模型重新拟合出的 1e-10 级优势）会把原始 argmax
+    顶到样本前沿，而地形块的"自最优以来"用的是**显著最优**——两者不一致时同一段文字里会
+    出现两个 ``sample_order``（实测 ``20260928-141337``：标题行说 42，分解行说 47）。
+    取不到该 order 时退回原始 argmax（旧目录/半截记录不至于渲染成空）。
+
     Returns:
         dict：``n_scored`` / ``n_penalty_known`` / ``n_clean`` / ``n_penalized`` /
-        ``best``（最高分，不论罚分）/ ``best_clean``（罚分为 0 的最高分）/
-        ``best_penalized``（带罚分的最高分——干净解最强的对手）/
+        ``best``（最高分，不论罚分；``best_order`` 给了就按它取）/ ``best_clean``（罚分
+        为 0 的最高分）/ ``best_penalized``（带罚分的最高分——干净解最强的对手）/
         ``best_fit``（拟合 MSE 最低，可能带罚分）。
     """
     scored = [r for r in (records or []) if _finite(r.get("score")) is not None]
@@ -121,7 +127,10 @@ def score_breakdown(records: Sequence[dict]) -> dict:
     if not scored:
         return breakdown
 
-    breakdown["best"] = _row(max(scored, key=lambda r: _finite(r["score"])))
+    chosen = (next((r for r in scored if r.get("sample_order") == best_order), None)
+              if best_order is not None else None)
+    breakdown["best"] = _row(chosen if chosen is not None
+                             else max(scored, key=lambda r: _finite(r["score"])))
     known = [r for r in scored if _finite(r.get("penalty")) is not None]
     breakdown["n_penalty_known"] = len(known)
     breakdown["penalty_known"] = bool(known)
