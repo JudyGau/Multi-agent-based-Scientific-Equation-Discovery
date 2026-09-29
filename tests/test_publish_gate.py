@@ -196,9 +196,21 @@ class SelectionSectionTest(unittest.TestCase):
                              "rejected": [], "n_rejected": 0, "n_unknown_skipped": 0})
         self.assertIn("没有任何无病理候选", text)
 
-    def test_missing_selection_renders_nothing(self):
-        self.assertEqual(self._render(None), "")
-        self.assertEqual(self._render({}), "")
+    def test_missing_selection_renders_the_reason_instead_of_nothing(self):
+        """缺选解信息时必须**留下标题 + 一行原因**，不能让整节消失（缺陷 ②）。
+
+        实测 `ab-fix6-control/...20260928-154613` 与 `ab-iso6-no6/...20260929-091844`
+        两份报告整节不见，读者与收尾脚本会把「没这一节」读成「这次没做体检门禁」；
+        真实成因是选解所用 best 样本的 return 表达式无法解析（同目录 run.out 里有
+        `[WARN] return 表达式解析失败`）。故缺失态要显式点名去查 WARN。
+        """
+        for empty in (None, {}):
+            with self.subTest(selection=empty):
+                block = self._render(empty)
+                self.assertTrue(block.startswith(explain_mod.SELECTION_HEADING))
+                self.assertIn("本节没有选解信息", block)
+                self.assertIn("不等于", block)                     # 不是"没做门禁"
+                self.assertIn("[WARN] return 表达式解析失败", block)  # 指向真正原因
 
 
 class ReportAlwaysWrittenTest(unittest.TestCase):

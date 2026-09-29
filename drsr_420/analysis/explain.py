@@ -666,13 +666,29 @@ SELECTION_HEADING = "## 发布解选择"
 
 
 def render_selection_section(selection: dict | None) -> str:
-    """渲染 report.md 的「发布解选择」小节（机器生成；无选择信息时整节不出现）。
+    """渲染 report.md 的「发布解选择」小节（机器生成）。
 
-    只有 `find_best_eq` 走完病理门禁才会带上 ``selection``；单独重跑 explain 或旧产物
-    没有这一段时返回空串，报告其余小节不受影响。
+    只有 `find_best_eq` 走完病理门禁才会带上 ``selection``；旧产物或单独重跑 explain
+    时没有这一段。
+
+    **没有 selection 时也渲染**——渲染标题加一行原因，而不是让整节消失（缺陷 ②）：
+    实测 ``ab-fix6-control/MRFCompress-Cuboid_20260928-154613`` 与
+    ``ab-iso6-no6/MRFCompress-Cuboid_20260929-091844`` 两份报告的整节不见，读者与收尾
+    脚本会把「没这一节」读成「这次没做体检门禁」。真实的成因是**选解所用的那条 best
+    样本的 return 表达式无法解析**（同一目录的 ``run.out`` 里同时有
+    ``[WARN] return 表达式解析失败`` 或 ``[WARN] 表达式含未定义符号``），所以缺失态
+    必须显式点名去查 WARN，并说明「本节缺失」不等于「没做门禁」。
     """
     if not selection or not selection.get("chosen"):
-        return ""
+        return "\n".join([
+            SELECTION_HEADING, "",
+            "**本节没有选解信息**：收尾未取得「发布解 vs 病理解候选」的对照，因此"
+            "**无法说明本次发布的是不是最高分、是否发生过降级**。"
+            "这**不等于**没有做体检门禁——门禁跑了，但没能给出对照。"
+            "最常见的原因是选解所用样本的 return 表达式无法解析："
+            "请查同目录 `run.out` 里的 `[WARN] return 表达式解析失败` 或 "
+            "`[WARN] 表达式含未定义符号`，那里会写明是哪一个符号、哪一行。",
+        ])
     chosen = selection["chosen"]
     best = selection.get("best") or chosen
     lines = [SELECTION_HEADING, ""]
