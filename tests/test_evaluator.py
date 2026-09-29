@@ -214,6 +214,33 @@ class WorkerStderrCaptureTest(unittest.TestCase):
                     out_fp.close()
                     err_fp.close()
 
+    def test_cli_tee_refuses_a_non_empty_experiment_dir(self):
+        """同一 ``--experiment_dir`` 被两跑写入时必须**立即失败**，而不是静默交织。
+
+        实测 2026-09-28：并行启动多个 run 时 ``Get-Date -Format 'yyyyMMdd-HHmmss'`` 在
+        同一秒取到同一时间戳，5 个 run 落进 2 个目录；而 run.out/run.err 是 append 打开
+        的，两跑不会报错，只会把两条轨迹混成一份"看似存在、实际不可用"的产物。
+        """
+        from drsr_420.cli import main as cli_main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "run.out"), "w", encoding="utf-8") as fp:
+                fp.write("上一跑的遗留输出\n")
+            with self.assertRaises(SystemExit) as ctx:
+                cli_main.setup_output_tee(tmp)
+            self.assertIn("拒绝复用非空实验目录", str(ctx.exception))
+
+            # 空目录仍然放行（本仓无 --resume，每个 run 的产物应是该目录唯一一条轨迹）
+            empty = os.path.join(tmp, "fresh")
+            os.makedirs(empty)
+            stdout, stderr = sys.stdout, sys.stderr
+            try:
+                out_fp, err_fp = cli_main.setup_output_tee(empty)
+            finally:
+                sys.stdout, sys.stderr = stdout, stderr
+            out_fp.close()
+            err_fp.close()
+
     def test_worker_process_writes_into_run_err(self):
         """端到端：worker 里方程向 stderr 写的内容出现在实验 run.err。"""
         with tempfile.TemporaryDirectory() as tmp:

@@ -235,7 +235,26 @@ def resolve_results_root(problem_name: str, experiment_dir: str | None) -> str:
 
 
 def setup_output_tee(results_root: str):
-    """把 stdout/stderr 同时写入 ``run.out`` / ``run.err``，返回两个文件句柄。"""
+    """把 stdout/stderr 同时写入 ``run.out`` / ``run.err``，返回两个文件句柄。
+
+    **拒绝复用非空的实验目录**（2026-09-28 实测的静默坏产物）：这两个文件是 append
+    打开的，若两跑指向同一个 ``--experiment_dir``，它们不会报错，而是把两条轨迹
+    **静默交织**成一份"看起来存在、实际不可用"的产物，``config_snapshot.json`` 还会被
+    后写者覆盖。触发方式很现实：并行启动多个 run 时 ``Get-Date -Format
+    'yyyyMMdd-HHmmss'`` 会在同一秒取到同一时间戳（实测 5 个 run 落进 2 个目录）。
+    这里直接拒绝启动，把"静默的坏产物"换成"立即失败并说清原因"。
+
+    没有任何正当路径需要复用非空目录：本 CLI 无 ``--resume``（全仓无 checkpoint 恢复
+    入口），每个 run 的产物都应是该目录里唯一一条轨迹。
+    """
+    for name in ("run.out", "run.err", "config_snapshot.json", "progress.json"):
+        path = os.path.join(results_root, name)
+        if os.path.exists(path) and os.path.getsize(path) > 0:
+            raise SystemExit(
+                f"[FATAL] 拒绝复用非空实验目录：{path} 已有内容。\n"
+                f"        同一 --experiment_dir 被两跑写入时，run.out/run.err 是 append "
+                f"打开的，产物会静默交织成混合轨迹。\n"
+                f"        请换一个目录名，或确认该目录确实是空的后重试：{results_root}")
     out_fp = open(os.path.join(results_root, "run.out"), "a", encoding="utf-8")
     err_fp = open(os.path.join(results_root, "run.err"), "a", encoding="utf-8")
     sys.stdout = _Tee(sys.stdout, out_fp)
