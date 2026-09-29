@@ -440,6 +440,9 @@ def _normalize_statements(func: str, params: list) -> str:
        :func:`strip_type_cast_wrappers`。
     """
     name_map: dict[str, str] = {}
+    #: **整体别名**（``p = params`` / ``p = params[:10]``）：左侧只有一个名字、右侧是整个
+    #: 数组。它不是解包，值要**按下标**取（见函数尾部的展开），不能当成"第一个参数"。
+    array_aliases: set[str] = set()
     out_lines: list[str] = []
     # ③ **反斜杠续行**（Python 语义：行尾 ``\`` 后接换行等于一行）：
     #    ``p0, p1, p2 = params[0], params[1], \\n    params[2]`` 的第一行以
@@ -480,6 +483,19 @@ def _normalize_statements(func: str, params: list) -> str:
         if m:
             names = [n.strip() for n in m.group(1).split(",")]
             items = [s.strip() for s in m.group(2).split(",")]
+            if len(names) == 1 and (items[0] == "params"
+                                    or re.fullmatch(r"params\s*\[[^\]]*:[^\]]*\]", items[0])):
+                # ⑤ **整体/切片别名**（``p = params``、``p = params[:10]``）——**不是解包**：
+                # 左侧只有一个名字、右侧是**整个数组**。旧逻辑把它按"名字按位置对应 params
+                # 列表"处理，于是 p 被绑成 params[0] 的**值**，后续 ``p[3]`` 经名字替换变成
+                # ``193.05[3]``（数字被索引）→ sympy 报内部错
+                # ``Integer.__new__() missing 1 required positional argument: 'i'``。
+                # 实测 ab-fix6-control/..._20260928-154613 的 best 样本正是这种写法
+                # （``p = params`` + ``return p[0] + p[1]*a12 + …``）。
+                # 注意与 ``p = params[0]``（**标量**，无冒号、走下面的逐项分支）区分。
+                array_aliases.add(names[0])
+                i += 1
+                continue
             if len(items) == 1 and not _TUPLE_ITEM_NUMBER_RE.match(items[0]):
                 # 单一 params / params[slice]：名字按位置对应 params 列表
                 for j, name in enumerate(names):
@@ -520,6 +536,16 @@ def _normalize_statements(func: str, params: list) -> str:
         out_lines.append(merged)
         i += 1
     text = "\n".join(out_lines)
+    # ⑤ 整体别名先按**下标**展开成对应参数值。顺序不能反：若先走下面的名字替换，
+    # ``p`` 会变成"第一个参数的值"，``p[3]`` 就成了"数字[3]"（syntactically 合法但语义全错，
+    # 且 sympy 只报内部 TypeError，极难反查）。
+    for alias in array_aliases:
+        def _expand_index(mm, _alias=alias):
+            k = int(mm.group(1))
+            return str(params[k]) if k < len(params) else mm.group(0)
+        text = re.sub(rf"\b{re.escape(alias)}\s*\[\s*(\d+)\s*\]", _expand_index, text)
+    # 展开后若仍残留裸的别名名字（例如 ``return p * 2`` 这种用法），留给函数尾部的
+    # 自由符号护栏拒绝——**安全失败**，不带病求值。
     for name, value in name_map.items():
         text = re.sub(rf"\b{re.escape(name)}\b", value, text)
     return text

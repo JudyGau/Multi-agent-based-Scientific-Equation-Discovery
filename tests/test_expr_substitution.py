@@ -278,6 +278,41 @@ class TypeCastWrapperTest(_ExprTestCase):
                 self.assertEqual(strip_type_cast_wrappers(text), text)
 
 
+class ParameterArrayAliasTest(_ExprTestCase):
+    """``p = params`` 是**整体别名**、不是解包（2026-09-29 确证）。
+
+    旧逻辑把它按"名字按位置对应 params 列表"处理 → ``p`` 被绑成 ``params[0]`` 的**值** →
+    后续 ``p[3]`` 经名字替换变成 ``193.05[3]``（数字被索引）→ sympy 只报内部错误
+    ``Integer.__new__() missing 1 required positional argument: 'i'``，没有任何可读线索。
+    实测 ``ab-fix6-control/..._20260928-154613`` 的 best 样本正是这种写法（``p = params``
+    + ``return p[0] + p[1]*a12 + …``），后果是 contains：该样本解析不出 → find_best_eq
+    拿不到选解信息 → 报告缺「发布解选择」小节。
+    """
+
+    def test_whole_array_alias_indexes_by_position(self):
+        func = _spec(["p = params", "return p[1]*x1 + p[0]"])
+        expr = expr_substitution(func, [10.0, 20.0])
+        self.assertIsNotNone(expr)                      # 修复前恒为 None
+        self.assertEqual(sp.simplify(expr - (20 * X1 + 10)), 0)
+
+    def test_slice_alias_too(self):
+        func = _spec(["p = params[:2]", "return p[1]*x1 + p[0]"])
+        expr = expr_substitution(func, [10.0, 20.0])
+        self.assertEqual(sp.simplify(expr - (20 * X1 + 10)), 0)
+
+    def test_a_scalar_binding_is_still_supported(self):
+        """``q = params[0]``（标量、无冒号）必须仍走逐项分支绑成参数值。"""
+        func = _spec(["q = params[0]", "return q*x1"])
+        expr = expr_substitution(func, [7.0])
+        self.assertEqual(sp.simplify(expr - 7 * X1), 0)
+
+    def test_unpacking_is_still_supported(self):
+        """真解包（左侧多个名字）必须不受影响。"""
+        func = _spec(["p0, p1 = params[:2]", "return p1*x1 + p0"])
+        expr = expr_substitution(func, [10.0, 20.0])
+        self.assertEqual(sp.simplify(expr - (20 * X1 + 10)), 0)
+
+
 class WherePiecewiseHelpersTest(_ExprTestCase):
     """`where(...)` -> `Piecewise((a, cond), (b, True))` 改写所用的括号/切分工具。"""
 
