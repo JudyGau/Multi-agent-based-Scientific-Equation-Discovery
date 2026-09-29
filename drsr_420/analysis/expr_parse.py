@@ -378,6 +378,43 @@ def _resolve_tuple_assignment(lhs: str, rhs: str, params: list) -> dict[str, str
     return _resolve_tuple_items(names, items, params)
 
 
+#: 纯类型转换包装：``np.asarray(x, dtype=float)`` / ``np.array(x)`` / ``x.astype(float)``。
+#: 符号层只关心**值**，dtype 不改变值 → 去掉包装是保语义的（只删这三类，不碰
+#: ``where``/``maximum``/``power`` 这些会改变值的调用）。
+_TYPE_CAST_CALL_RE = re.compile(
+    r'(?<![\w.])(?:np\.|numpy\.)?(?:asarray|array)\s*\(\s*([^(),]+?)\s*(?:,\s*[^()]*)?\)')
+_ASTYPE_RE = re.compile(r'([A-Za-z_]\w*|\([^()]+\))\s*\.astype\s*\(\s*[^()]*\)')
+
+
+def strip_type_cast_wrappers(text: str) -> str:
+    """去掉**纯类型转换**包装：``asarray(x, dtype=…)`` → ``x``、``x.astype(…)`` → ``x``。
+
+    为什么必须做：sympy 1.14 的 ``parse_expr`` **不认 numpy 的关键字参数**，会抛
+    ``ValueError: Unknown options: {'dtype': float}``。最小复现（2026-09-29 实测）::
+
+        asarray(lambda12, dtype=float)      -> ValueError: Unknown options: {'dtype': float}
+        asarray(lambda12)                   -> 通过
+        asarray(lambda12, dtype=np.float64) -> AttributeError: 'Symbol' object has no attribute 'float64'
+
+    于是一行中间变量解析失败被 ``continue`` 跳过 → 它定义的符号成了**孤儿** → ``return``
+    无法求值 → 整条样本返回 ``None`` → ``find_best_eq`` 拿不到选解信息 → 报告缺
+    「发布解选择」小节。实测 ``ab-iso6-no6/MRFCompress-Cuboid_20260929-091844`` 的 best
+    样本正是这个链条（``l12 = np.asarray(lambda12, dtype=float)`` → 三次 WARN → None）。
+
+    实测分布：四臂 **1024** 条样本里 **28** 条含这类包装、**全部带 ``dtype=``**（形态单一）。
+    只做**保语义**的删除；括号内是复合表达式（如 ``asarray((a+b))``）时正则不命中、
+    原样保留——宁可少删也不误改。连续/嵌套包装迭代到不动点。
+    """
+    out = str(text or "")
+    for _ in range(4):
+        new = _TYPE_CAST_CALL_RE.sub(r'\1', out)
+        new = _ASTYPE_RE.sub(r'\1', new)
+        if new == out:
+            break
+        out = new
+    return out
+
+
 def _normalize_statements(func: str, params: list) -> str:
     """语句级预处理，替 return 的符号消解扫清三种 LLM 常见写法：
 
@@ -396,6 +433,11 @@ def _normalize_statements(func: str, params: list) -> str:
     ② **多行赋值** ``sigma = (\\n  p0\\n  + p1 ...)``：赋值正则按单行匹配，
        只能看到 ``sigma = (`` 就 EOF 报错被跳过，同样退化为裸符号。
        按括号配对把续行合并回单行（对多行 ``return (`` 同样生效）。
+    ④ **纯类型转换包装** ``l12 = np.asarray(lambda12, dtype=float)``：sympy 不认 numpy 的
+       关键字参数，该行抛 ``Unknown options`` 被跳过 → ``l12`` 成孤儿 → ``return`` 无法
+       求值 → 整条样本返回 None（实测 ``ab-iso6-no6/..._20260929-091844`` 的 best 样本，
+       后果是报告缺「发布解选择」小节）。dtype 不改变值，去掉包装保语义，见
+       :func:`strip_type_cast_wrappers`。
     """
     name_map: dict[str, str] = {}
     out_lines: list[str] = []
@@ -421,7 +463,9 @@ def _normalize_statements(func: str, params: list) -> str:
         pending = ""
     if pending:
         joined.append(pending)
-    lines = joined
+    # ④ 纯类型转换包装先去掉（np. 前缀在上游还没剥，故正则自带 np./numpy. 可选前缀）：
+    # 不去掉的话 asarray(x, dtype=float) 会抛 Unknown options，该行被跳过、符号成孤儿。
+    lines = [strip_type_cast_wrappers(line) for line in joined]
     i = 0
     while i < len(lines):
         line = lines[i]

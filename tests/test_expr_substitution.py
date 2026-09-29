@@ -244,6 +244,45 @@ class ExprSubstitutionTest(_ExprTestCase):
         self.assertEqual(sp.simplify(expr - (1 * X1 + 10)), 0)
 
 
+class TypeCastWrapperTest(_ExprTestCase):
+    """numpy 纯类型转换包装必须去掉（缺陷 2 的根因，2026-09-29 确证）。
+
+    最小复现：``asarray(lambda12, dtype=float)`` 让 sympy 1.14 抛
+    ``ValueError: Unknown options: {'dtype': float}`` → 中间变量行被跳过 → 符号成孤儿 →
+    ``return`` 无法求值 → 样本返回 None → ``find_best_eq`` 拿不到选解信息 → 报告缺
+    「发布解选择」小节（实测 ``ab-iso6-no6/..._20260929-091844`` 的 best 样本）。
+    实测分布：四臂 1024 条样本里 **28** 条含这类包装、**全部带 dtype=**。
+    """
+
+    def test_the_failing_form_now_substitutes(self):
+        func = (
+            "def equation(x1, x2, params):\n"
+            "    l12 = np.asarray(x1, dtype=float)\n"
+            "    l23 = np.asarray(x2, dtype=float)\n"
+            "    return params[0]*l12 + params[1]*l23 + params[2]\n"
+        )
+        expr = expr_substitution(func, [2.0, 3.0, 1.0])
+        self.assertIsNotNone(expr)                      # 修复前恒为 None
+        self.assertEqual(sp.simplify(expr - (2 * X1 + 3 * X2 + 1)), 0)
+
+    def test_astype_and_array_wrappers_too(self):
+        func = (
+            "def equation(x1, params):\n"
+            "    a = x1.astype(float)\n"
+            "    return params[0]*np.array(a) + params[1]\n"
+        )
+        expr = expr_substitution(func, [2.0, 1.0])
+        self.assertEqual(sp.simplify(expr - (2 * X1 + 1)), 0)
+
+    def test_value_changing_calls_are_left_alone(self):
+        """只删**纯类型转换**：``maximum`` / ``where`` 会改变值，必须原样保留。"""
+        from drsr_420.analysis.expr_parse import strip_type_cast_wrappers
+
+        for text in ("maximum(x1, x2)", "where(x1 >= 0, p0, p1)", "power(x1, x2)"):
+            with self.subTest(text=text):
+                self.assertEqual(strip_type_cast_wrappers(text), text)
+
+
 class WherePiecewiseHelpersTest(_ExprTestCase):
     """`where(...)` -> `Piecewise((a, cond), (b, True))` 改写所用的括号/切分工具。"""
 
