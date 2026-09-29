@@ -255,22 +255,17 @@ class TypeCastWrapperTest(_ExprTestCase):
     """
 
     def test_the_failing_form_now_substitutes(self):
-        func = (
-            "def equation(x1, x2, params):\n"
-            "    l12 = np.asarray(x1, dtype=float)\n"
-            "    l23 = np.asarray(x2, dtype=float)\n"
-            "    return params[0]*l12 + params[1]*l23 + params[2]\n"
-        )
+        func = _spec(["l12 = np.asarray(x1, dtype=float)",
+                      "l23 = np.asarray(x2, dtype=float)",
+                      "return params[0]*l12 + params[1]*l23 + params[2]"],
+                     independents="x1, x2", sig="equation(x1, x2, params)")
         expr = expr_substitution(func, [2.0, 3.0, 1.0])
         self.assertIsNotNone(expr)                      # 修复前恒为 None
         self.assertEqual(sp.simplify(expr - (2 * X1 + 3 * X2 + 1)), 0)
 
     def test_astype_and_array_wrappers_too(self):
-        func = (
-            "def equation(x1, params):\n"
-            "    a = x1.astype(float)\n"
-            "    return params[0]*np.array(a) + params[1]\n"
-        )
+        func = _spec(["a = x1.astype(float)",
+                      "return params[0]*np.array(a) + params[1]"])
         expr = expr_substitution(func, [2.0, 1.0])
         self.assertEqual(sp.simplify(expr - (2 * X1 + 1)), 0)
 
