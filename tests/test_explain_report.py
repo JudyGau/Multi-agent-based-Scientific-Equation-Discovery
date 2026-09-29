@@ -433,5 +433,104 @@ class ExplainReActToolCapTest(unittest.TestCase):
         self.assertEqual(out, "PARTIAL")
 
 
+class ParseAuditSectionTest(unittest.TestCase):
+    """report.md 的「表达式解析自检」小节（机器生成）。
+
+    收尾解析失败从前只在 run.out 留 WARN、报告不提示；本小节把全部已落盘样本的解析
+    结果摊开，并**分两类**计数（截断样本 / 解析器不支持的写法），否则一个总百分比
+    读不出该修采样侧还是解析器侧。
+    """
+
+    _AUDIT = {
+        "n_total": 3, "n_ok": 1, "n_failed": 2, "n_truncated": 1, "n_unsupported": 1,
+        "failure_rate": 2 / 3,
+        "truncated": [{"file": "samples_2.json", "sample_order": 2, "score": None}],
+        "unsupported": [{"file": "samples_3.json", "sample_order": 3, "score": -5.0,
+                         "warn": "[WARN] 表达式含未定义符号 ['c']：无法求值，返回 None"}],
+    }
+
+    def test_section_splits_two_failure_classes(self):
+        from drsr_420.analysis import explain as explain_mod
+
+        section = explain_mod.render_parse_audit_section(self._AUDIT)
+        self.assertIn(explain_mod.PARSE_AUDIT_HEADING, section)
+        self.assertIn("截断", section)
+        self.assertIn("解析器不支持的写法", section)
+        self.assertIn("samples_2.json", section)          # 截断样本明细
+        self.assertIn("samples_3.json", section)          # 解析器失败明细
+        self.assertIn("未定义符号", section)               # 带上 WARN
+
+    def test_zero_failure_is_self_explaining(self):
+        from drsr_420.analysis import explain as explain_mod
+
+        section = explain_mod.render_parse_audit_section(dict(
+            self._AUDIT, n_ok=3, n_failed=0, n_truncated=0, n_unsupported=0,
+            failure_rate=0.0, truncated=[], unsupported=[]))
+        self.assertIn("全部样本均可解析", section)
+
+    def test_no_samples_is_self_explaining(self):
+        from drsr_420.analysis import explain as explain_mod
+
+        section = explain_mod.render_parse_audit_section(dict(
+            self._AUDIT, n_total=0, n_ok=0, n_failed=0, n_truncated=0,
+            n_unsupported=0, failure_rate=None, truncated=[], unsupported=[]))
+        self.assertIn("没有可自检的样本", section)
+
+    def test_none_means_no_section(self):
+        from drsr_420.analysis import explain as explain_mod
+
+        self.assertEqual(explain_mod.render_parse_audit_section(None), "")
+
+    def test_assemble_places_audit_before_references(self):
+        from drsr_420.analysis import explain as explain_mod
+
+        text = explain_mod._assemble_explain(
+            "正文", [{"title": "T", "doi": "10.1/x"}], parse_audit=self._AUDIT)
+        self.assertIn(explain_mod.PARSE_AUDIT_HEADING, text)
+        self.assertLess(text.index(explain_mod.PARSE_AUDIT_HEADING),
+                        text.index(explain_mod.REFERENCE_HEADING))
+
+    def test_assemble_strips_llm_authored_audit_section(self):
+        from drsr_420.analysis import explain as explain_mod
+
+        body = "正文\n\n## 表达式解析自检\nLLM 编造的数字 999\n\n## 其他\n内容"
+        text = explain_mod._assemble_explain(body, [], parse_audit=self._AUDIT)
+        self.assertEqual(text.count(explain_mod.PARSE_AUDIT_HEADING), 1)
+        self.assertNotIn("999", text)
+
+    def test_upsert_is_idempotent(self):
+        from drsr_420.analysis import explain as explain_mod
+
+        base = "正文\n\n## 参考文献\n- 条目\n"
+        section = explain_mod.render_parse_audit_section(self._AUDIT)
+        once = explain_mod.upsert_parse_audit_section(base, section)
+        twice = explain_mod.upsert_parse_audit_section(once, section)
+        self.assertEqual(once, twice)
+        self.assertEqual(once.count(explain_mod.PARSE_AUDIT_HEADING), 1)
+        self.assertLess(once.index(explain_mod.PARSE_AUDIT_HEADING),
+                        once.index(explain_mod.REFERENCE_HEADING))
+
+    def test_backfill_updates_existing_report(self):
+        from drsr_420.analysis import explain as explain_mod
+
+        func = ("Variables:\n- Independents: x1\n- Dependent: y\n"
+                "def equation(x1, params):\n    return params[0]*x1\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "samples").mkdir()
+            (root / "samples" / "samples_1.json").write_text(
+                json.dumps({"sample_order": 1, "score": -1.0, "function": func,
+                            "params": [2.0]}), encoding="utf-8")
+            (root / "report.md").write_text("正文\n\n## 参考文献\n- x\n", encoding="utf-8")
+            audit = explain_mod.backfill_parse_audit(str(root))
+            text = (root / "report.md").read_text(encoding="utf-8")
+            self.assertEqual(audit["n_total"], 1)
+            self.assertIn(explain_mod.PARSE_AUDIT_HEADING, text)
+            # 再回填一次：仍只有一节（幂等）
+            explain_mod.backfill_parse_audit(str(root))
+            again = (root / "report.md").read_text(encoding="utf-8")
+            self.assertEqual(again.count(explain_mod.PARSE_AUDIT_HEADING), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

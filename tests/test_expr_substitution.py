@@ -1,10 +1,15 @@
 """expr_parse.expr_substitution 单元测试：参数代入、变量替换、中间变量消解与边界。"""
+import json
+import pathlib
+import tempfile
 import unittest
 
 import sympy as sp
 
 from drsr_420.analysis.expr_parse import (
     WhereArityError,
+    audit_parse_failures,
+    classify_sample,
     expr_substitution,
     find_matching_paren,
     fold_constant_comparisons,
@@ -311,6 +316,78 @@ class ParameterArrayAliasTest(_ExprTestCase):
         func = _spec(["p0, p1 = params[:2]", "return p1*x1 + p0"])
         expr = expr_substitution(func, [10.0, 20.0])
         self.assertEqual(sp.simplify(expr - (20 * X1 + 10)), 0)
+
+
+class ComprehensionUnpackTest(_ExprTestCase):
+    """``p0, p1, ... = (params[i] for i in range(n))``：与 ``params[:n]`` 等价的解包。
+
+    实测 ``ab-fix6-treatment/..._20260928-154609`` samples_42 的 best 样本用了生成器
+    表达式，RHS 既非单一 ``params[...]``、也非逐项逗号列表，两套既有识别全部落空 →
+    p0..p5 沦为自由符号 → 整条样本返回 None（find_best_eq 拿不到选解信息）。
+    """
+
+    def test_generator_expression_unpack(self):
+        func = _spec([
+            "p0, p1, p2 = (params[i] for i in range(3))",
+            "return p0 + p1*x1 + p2*x1**2",
+        ])
+        expr = expr_substitution(func, [5.0, 3.0, 2.0])
+        self.assertIsNotNone(expr)                      # 修复前恒为 None
+        self.assertEqual(sp.simplify(expr - (5 + 3 * X1 + 2 * X1**2)), 0)
+
+    def test_list_comprehension_unpack(self):
+        func = _spec([
+            "p0, p1 = [params[i] for i in range(2)]",
+            "return p0 + p1*x1",
+        ])
+        expr = expr_substitution(func, [7.0, 4.0])
+        self.assertEqual(sp.simplify(expr - (7 + 4 * X1)), 0)
+
+    def test_range_len_params(self):
+        func = _spec([
+            "p0, p1 = (params[i] for i in range(len(params)))",
+            "return p1*x1 + p0",
+        ])
+        expr = expr_substitution(func, [10.0, 20.0])
+        self.assertEqual(sp.simplify(expr - (20 * X1 + 10)), 0)
+
+    def test_count_mismatch_is_safely_rejected(self):
+        """名字数多于 range 上界（运行时会 ValueError）：安全失败，不猜。"""
+        func = _spec([
+            "p0, p1, p2 = (params[i] for i in range(2))",
+            "return p0 + p1*x1 + p2",
+        ])
+        self.assertIsNone(expr_substitution(func, [1.0, 2.0, 3.0]))
+
+
+class NumpyPowerCollisionTest(_ExprTestCase):
+    """``power`` 既是 sympy 全局函数、又被模型用作中间变量名：显式 ``np.power`` 必须
+    仍解析成幂，而不是那个**符号**。
+
+    实测 ``ab-iso6-head/..._20260929-091848`` samples_12：先 ``power = np.power(aspect, p1)``
+    定义了中间变量 ``power``，后又写 ``np.power(lambda23, p4)``。剥掉 ``np.`` 后裸
+    ``power(...)`` 命中 local_dict 里的符号 → ``'Symbol' object is not callable`` →
+    该行被跳过 → ``l23_term`` 成孤儿 → 整条样本返回 None。
+    """
+
+    def test_power_variable_then_np_power_call(self):
+        func = _spec([
+            "power = np.power(x1, params[1])",
+            "saturating = params[0] * power / (1.0 + params[2] * power)",
+            "return saturating + params[3] * np.power(x1, params[4])",
+        ])
+        expr = expr_substitution(func, [2.0, 3.0, 0.5, 4.0, 2.0])
+        self.assertIsNotNone(expr)                      # 修复前恒为 None
+        self.assertEqual(expr.free_symbols, {X1})
+        pw = X1**3
+        expected = 2.0 * pw / (1.0 + 0.5 * pw) + 4.0 * X1**2
+        self.assert_expr_close(expr, expected)
+
+    def test_nested_np_power_is_rewritten(self):
+        func = _spec(["return params[0] * np.power(np.power(x1, params[1]), params[2])"])
+        expr = expr_substitution(func, [5.0, 2.0, 3.0])
+        self.assertIsNotNone(expr)
+        self.assert_expr_close(expr, 5 * X1**6)     # (x1**2)**3 == x1**6
 
 
 class WherePiecewiseHelpersTest(_ExprTestCase):
@@ -691,6 +768,64 @@ class SympyNameCollisionTest(_ExprTestCase):
         self.assertIsNotNone(expr)
         self.assertEqual(expr.free_symbols, {sp.Symbol("beta")})
         self.assertAlmostEqual(float(expr.subs(sp.Symbol("beta"), 3.0)), 6.0)
+
+
+class ParseAuditTest(unittest.TestCase):
+    """收尾自检：解析失败率必须分「截断样本」与「解析器不支持的写法」两类计数。
+
+    否则一个总百分比读不出该修采样侧（max_tokens 截断）还是解析器侧（写法不支持）。
+    """
+
+    _OK = _spec(["return params[0]*x1 + params[1]"])
+    #: 正文无 return —— 模拟 max_tokens 截断的不完整样本（评估器未打分，score 为 None）
+    _TRUNCATED = "def equation(x1, params):\n    \"\"\"只有 docstring，正文被截断\"\"\"\n"
+    #: 有 return 但引用了未定义符号 —— 解析器不支持的写法
+    _UNSUPPORTED = _spec(["return params[0]*unknown_symbol"])
+
+    def _write(self, root: pathlib.Path, order, func, score, name=None):
+        samples = root / "samples"
+        samples.mkdir(parents=True, exist_ok=True)
+        (samples / (name or f"samples_{order}.json")).write_text(
+            json.dumps({"sample_order": order, "score": score,
+                        "function": func, "params": [1.0, 2.0]}), encoding="utf-8")
+
+    def test_classify_three_kinds(self):
+        self.assertEqual(classify_sample(self._OK, [1.0, 2.0])[0], "ok")
+        self.assertEqual(classify_sample(self._TRUNCATED, [1.0])[0], "truncated")
+        kind, warn = classify_sample(self._UNSUPPORTED, [1.0, 2.0])
+        self.assertEqual(kind, "unsupported")
+        self.assertIn("未定义符号", warn)
+
+    def test_audit_splits_two_failure_classes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self._write(root, 1, self._OK, -1.0)
+            self._write(root, 2, self._TRUNCATED, None)
+            self._write(root, 3, self._UNSUPPORTED, -5.0)
+            audit = audit_parse_failures(str(root))
+            self.assertEqual(audit["n_total"], 3)
+            self.assertEqual(audit["n_ok"], 1)
+            self.assertEqual(audit["n_failed"], 2)
+            self.assertEqual(audit["n_truncated"], 1)
+            self.assertEqual(audit["n_unsupported"], 1)
+            self.assertAlmostEqual(audit["failure_rate"], 2 / 3)
+            self.assertEqual(audit["truncated"][0]["sample_order"], 2)
+            self.assertEqual(audit["unsupported"][0]["sample_order"], 3)
+
+    def test_audit_of_empty_dir_has_zero_and_none_rate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            audit = audit_parse_failures(tmp)
+            self.assertEqual(audit["n_total"], 0)
+            self.assertIsNone(audit["failure_rate"])
+
+    def test_top_k_copy_is_deduplicated_preferring_full_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self._write(root, 5, self._TRUNCATED, None, name="top3_samples_5.json")
+            self._write(root, 5, self._OK, -1.0, name="samples_5.json")
+            audit = audit_parse_failures(str(root))
+            self.assertEqual(audit["n_total"], 1)
+            self.assertEqual(audit["n_ok"], 1)      # 全量文件优先，截断副本被替换
 
 
 if __name__ == "__main__":

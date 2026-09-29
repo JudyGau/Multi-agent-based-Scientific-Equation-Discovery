@@ -13,8 +13,8 @@
 * LLM：通过 ReAct 循环（``explain_re_act``）调用，模型可自行发起 MCP 检索工具；
 * 增强：RAG 知识库注入相关文献摘要（库为空或检索失败则静默跳过）；
 * 产物：``<results_root>/report.md`` = LLM 正文（含剪枝分析）+ **由本模块附加的
-  权威参考文献清单** + 机器生成的「样本外验证」「动态范围体检」「训练进度」小节
-  （后三者只有拿到对应数据时才出现）。
+  权威参考文献清单** + 机器生成的「发布解选择」「样本外验证」「动态范围体检」
+  「表达式解析自检」「训练进度」小节（除解析自检外，其余只有拿到对应数据时才出现）。
 
 两条硬性要求（用户明确指定，见下面对应的实现与测试）
 ----------------------------------------------------
@@ -44,6 +44,7 @@ from drsr_420.knowledge.tool_runner import mcp_call_tool
 from drsr_420.analysis.holdout import (in_sample_metrics, render_holdout_section,
                                        strip_holdout_section)
 from drsr_420.analysis.progress_curve import render_progress_section
+from drsr_420.analysis.expr_parse import audit_parse_failures
 # 体检判据的参数：小节里要写明探针偏移口径（数字必须与机器判定同一来源，
 # 不能在文本里另写一份——那正是"两处各判一次"的翻版）。
 from drsr_420.core.range_check import RANGE_PROBE_REL
@@ -855,13 +856,160 @@ def render_range_section(range_check: dict | None) -> str:
     return "\n".join(lines)
 
 
+#: 「表达式解析自检」小节标题（机器生成）。
+PARSE_AUDIT_HEADING = "## 表达式解析自检"
+
+#: 每类失败在小节里最多列出的明细条数（其余只报数量，避免报告被几十行 WARN 淹没）。
+PARSE_AUDIT_MAX_LISTED = 20
+
+
+def render_parse_audit_section(audit: dict | None) -> str:
+    """渲染 report.md 的「表达式解析自检」小节（机器生成，数字不由 LLM 转述）。
+
+    收尾要把选出的样本公式解析成 SymPy 表达式；解析失败时只在同目录 ``run.out`` 留一行
+    ``[WARN]``，报告里从前的完全不提示（读者看不到"这次有多少样本解释不了"，也看不出
+    该修采样侧还是解析器侧）。本小节把全部已落盘样本的解析结果摊开，并**分两类**计数：
+    "样本本身不完整（无 ``return``，多为截断）"与"解析器不支持的写法"。
+
+    ``audit`` 为 ``None``（未运行自检）时返回空串，不插入小节；只要拿到结果（哪怕样本
+    数为 0、或失败数为 0）都渲染，保证"这一节为什么长这样"可自解释——与
+    :func:`render_selection_section` 的接法一致。
+    """
+    if audit is None:
+        return ""
+    n_total = audit.get("n_total", 0)
+    lines = [PARSE_AUDIT_HEADING, ""]
+    if not n_total:
+        lines.append("**本次没有可自检的样本**：实验目录的 `samples/` 下没有已落盘的 "
+                     "`*.json`。这**不等于**解析全部成功——只是没有样本可判。")
+        return "\n".join(lines)
+
+    n_failed = audit.get("n_failed", 0)
+    rate = audit.get("failure_rate")
+    rate_txt = "—" if rate is None else f"{rate:.1%}"
+    lines.append(f"全部已落盘样本 **{n_total}** 个：可解析 **{audit.get('n_ok', 0)}** 个，"
+                 f"解析失败 **{n_failed}** 个（失败率 {rate_txt}）。")
+    if not n_failed:
+        lines.append("")
+        lines.append("本次**全部样本均可解析**，收尾的物理解释 / 剪枝 / 预览图不会因解析"
+                     "失败被跳过。")
+        return "\n".join(lines)
+
+    lines += [
+        "",
+        "失败**分两类**计数——这是本小节存在的意义：一个总百分比读不出该修采样侧还是"
+        "解析器侧：",
+        "",
+        f"- **样本本身不完整（无 `return`，多为 `max_tokens` 截断）**："
+        f"**{audit.get('n_truncated', 0)}** 个。属于**采样侧**问题（这些样本未被评估、"
+        f"`score` 为 None），**不是**解析器缺陷。",
+        f"- **解析器不支持的写法**：**{audit.get('n_unsupported', 0)}** 个。有 `return` "
+        f"但解析不出，是解析器需要补的写法。",
+    ]
+
+    truncated = audit.get("truncated") or []
+    if truncated:
+        lines += ["", f"截断样本（最多列 {PARSE_AUDIT_MAX_LISTED} 个）："]
+        for rec in truncated[:PARSE_AUDIT_MAX_LISTED]:
+            lines.append(f"- `{rec.get('file')}`（sample_order={rec.get('sample_order')}，"
+                         f"score={rec.get('score')}）")
+        if len(truncated) > PARSE_AUDIT_MAX_LISTED:
+            lines.append(f"- 另有 {len(truncated) - PARSE_AUDIT_MAX_LISTED} 个未列出")
+
+    unsupported = audit.get("unsupported") or []
+    if unsupported:
+        lines += ["", f"解析器不支持的写法（最多列 {PARSE_AUDIT_MAX_LISTED} 个）："]
+        for rec in unsupported[:PARSE_AUDIT_MAX_LISTED]:
+            lines.append(f"- `{rec.get('file')}`（sample_order={rec.get('sample_order')}，"
+                         f"score={rec.get('score')}）：{rec.get('warn') or '解析返回 None'}")
+        if len(unsupported) > PARSE_AUDIT_MAX_LISTED:
+            lines.append(f"- 另有 {len(unsupported) - PARSE_AUDIT_MAX_LISTED} 个未列出")
+
+    lines += [
+        "",
+        "> 口径：本自检只读 `samples/*.json`，对每个样本调用收尾所用的 "
+        "`expr_substitution` 判定能否解析——判定与收尾实际使用的解析器是**同一份代码**，"
+        "故这里的失败率即收尾会遇到的失败率。",
+    ]
+    return "\n".join(lines)
+
+
+def _strip_parse_audit_section(text: str) -> str:
+    """去掉正文里自带的「表达式解析自检」小节（与 range/holdout 的 strip 同形）。"""
+    if not text or PARSE_AUDIT_HEADING not in text:
+        return text
+    kept: list[str] = []
+    skipping = False
+    for line in text.splitlines():
+        if line.strip().startswith(PARSE_AUDIT_HEADING):
+            skipping = True
+            continue
+        if skipping and line.startswith("#"):
+            skipping = False
+        if not skipping:
+            kept.append(line)
+    return "\n".join(kept).rstrip()
+
+
+def upsert_parse_audit_section(text: str, section: str) -> str:
+    """把解析自检小节写进报告正文：已有同名小节则**整节替换**，否则插到参考文献之前。
+
+    幂等：先整节剥掉旧小节再按固定锚点插回，最后把连续空行收敛成一行——重复回填得到
+    逐字节相同的结果（同一个报告不会出现两节，也不会每次多一个空行）。锚点缺失
+    （正文没有参考文献小节）时追加到末尾，保证小节不丢。与
+    :func:`drsr_420.analysis.progress_curve.upsert_progress_section` 同形。
+    """
+    if not section:
+        return text
+    lines = _strip_parse_audit_section(text).splitlines()
+    anchor_at = next((i for i, line in enumerate(lines)
+                      if line.strip().startswith(REFERENCE_HEADING)), None)
+    if anchor_at is None:
+        head, tail = "\n".join(lines).rstrip(), ""
+    else:
+        head = "\n".join(lines[:anchor_at]).rstrip()
+        tail = "\n".join(lines[anchor_at:]).rstrip()
+    merged = f"{head}\n\n{section}" if head else section
+    if tail:
+        merged += f"\n\n{tail}"
+    return re.sub(r"\n{3,}", "\n\n", merged).rstrip() + "\n"
+
+
+def backfill_parse_audit(results_root: str, report_name: str = REPORT_FILENAME) -> dict:
+    """对已有实验目录补出「表达式解析自检」小节（只读样本 + 改写报告，不触发 LLM）。
+
+    报告不存在时只打印小节文本、不创建文件。返回 :func:`audit_parse_failures` 的结果。
+    """
+    audit = audit_parse_failures(results_root)
+    path = os.path.join(results_root, report_name)
+    if not os.path.exists(path):
+        print(f"[INFO] 未找到 {report_name}，只输出小节文本")
+        print(render_parse_audit_section(audit))
+        return audit
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+        updated = upsert_parse_audit_section(text, render_parse_audit_section(audit))
+        if updated != text:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(updated)
+            print(f"[INFO] 已更新 {path}")
+        else:
+            print(f"[INFO] {path} 无需改动（小节已是最新）")
+    except Exception as e:
+        print(f"[WARN] 更新 {report_name} 失败: {e}")
+    return audit
+
+
 def _assemble_explain(answer: str | None, refs: list[dict],
                       holdout: dict | None = None, fit: dict | None = None,
                       range_check: dict | None = None,
                       progress: dict | None = None,
+                      parse_audit: dict | None = None,
                       selection: dict | None = None,
                       note: str | None = None) -> str:
-    """正文 + 权威「发布解选择」「样本外验证」「动态范围体检」「训练进度」小节 + 参考文献。
+    """正文 + 权威「发布解选择」「样本外验证」「动态范围体检」「表达式解析自检」「训练进度」
+    小节 + 参考文献。
 
     正文自带的同名小节会被替换（数字一律由系统算，避免 LLM 转述出两套数字）。
     没有训练进度记录（``best_history`` 为空）时该小节整节不出现，而不是写一句
@@ -873,10 +1021,12 @@ def _assemble_explain(answer: str | None, refs: list[dict],
     """
     body = strip_holdout_section(answer or "")
     body = _strip_range_section(body)
+    body = _strip_parse_audit_section(body)
     body = _strip_reference_section(body).rstrip()
     sections = [render_selection_section(selection),
                 render_holdout_section(holdout, fit),
                 render_range_section(range_check),
+                render_parse_audit_section(parse_audit),
                 render_progress_section(progress),
                 render_reference_section(refs)]
     tail = "\n\n".join(s for s in sections if s)
@@ -999,10 +1149,14 @@ def explain_best_sample(results_root: str, func: str, sample_order: str,
     refs = merge_references(references, tool_refs)
     holdout_result = holdout if holdout is not None else (pruning or {}).get("holdout")
     progress_result = progress if progress is not None else (pruning or {}).get("progress")
+    # 收尾自检：这次全部已落盘样本的解析失败率（分「截断样本」/「解析器不支持的写法」）。
+    # 解析失败从前只在 run.out 里留 WARN、报告不提示，读者看不到总体失败率。
+    parse_audit_result = audit_parse_failures(results_root)
     final_text = _assemble_explain(explain, refs, holdout=holdout_result,
                                    fit=(pruning or {}).get("fit"),
                                    range_check=(pruning or {}).get("range_check"),
                                    progress=progress_result,
+                                   parse_audit=parse_audit_result,
                                    selection=(pruning or {}).get("selection"),
                                    note=note)
     if not final_text.strip():

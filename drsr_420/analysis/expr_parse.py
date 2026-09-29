@@ -3,7 +3,8 @@
 角色归属
 --------
 收尾分析（analysis）阶段的**第一步**：参数代入 + 语法归一化 + 表达式解析。
-无状态、不调用 LLM、不写磁盘。
+无状态、不调用 LLM、不写磁盘（末尾的 :func:`audit_parse_failures` 是收尾自检，
+只**读** ``samples/*.json`` 统计解析失败率，不落盘）。
 
 为什么要单独一个模块
 --------------------
@@ -29,7 +30,12 @@ LLM 写出来的"类 Python"骨架与 SymPy 的语义有三处系统性偏差，
 from __future__ import annotations
 
 import ast
+import contextlib
+import glob
+import io
+import json
 import math
+import os
 import re
 
 import sympy as sp
@@ -326,6 +332,13 @@ _TUPLE_ITEM_NUMBER_RE = re.compile(
 #: 通用多目标赋值（LHS 至少两个名字）：用于兜底识别 RHS 带包裹括号的逐项解包。
 _TUPLE_ASSIGN_RE = re.compile(
     r"^\s*([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)+)\s*=\s*(.+)$")
+#: 生成器/列表推导式解包 ``p0, p1, ... = (params[i] for i in range(n))``（可带外壳括号）。
+#: 与切片解包 ``= params[:n]`` 语义等价，但 RHS 既非单一 ``params[...]``（_TUPLE_UNPACK_RE
+#: 不认括号），也非逐项逗号列表（_resolve_tuple_assignment 只得到 1 项）——两套既有识别
+#: 全部落空，p0..pn 沦为自由符号（实测 ab-fix6-treatment/..._20260928-154609 samples_42）。
+_COMPREHENSION_UNPACK_RE = re.compile(
+    r"^params\s*\[\s*([A-Za-z_]\w*)\s*\]\s*for\s+\1\s+in\s+"
+    r"range\s*\(\s*(?:(\d+)|len\s*\(\s*params\s*\))\s*\)$")
 _PAREN_OPEN = re.compile(r"[(\[{]")
 _PAREN_CLOSE = re.compile(r"[)\]}]")
 
@@ -378,6 +391,39 @@ def _resolve_tuple_assignment(lhs: str, rhs: str, params: list) -> dict[str, str
     return _resolve_tuple_items(names, items, params)
 
 
+def _resolve_comprehension_unpack(lhs: str, rhs: str, params: list) -> dict[str, str] | None:
+    """``p0, p1, ... = (params[i] for i in range(n))``：按位置代参。
+
+    生成器/列表推导式是 ``params[:n]`` 的等价写法，但 RHS 不是单一 ``params[...]``、
+    也不是逐项逗号列表，既有两套识别都不命中 → p0..pn 全部沦为自由符号 → ``return``
+    得不到替换目标 → 整条样本返回 None（实测 ab-fix6-treatment/..._20260928-154609
+    samples_42 的 best 样本）。剥掉可选的外壳括号/中括号后，按 comprehension 的索引
+    变量与 ``range`` 上界映射为 ``params[0..n-1]``。
+
+    上界支持字面量 ``range(n)`` 与 ``range(len(params))``。名字数多于上界（Python 运行
+    时会 ValueError 的不齐形态）时返回 None——安全失败，不猜。
+    """
+    rhs = rhs.strip()
+    while rhs and rhs[0] in "([":
+        closer = ")" if rhs[0] == "(" else "]"
+        if not rhs.endswith(closer):
+            return None
+        rhs = rhs[1:-1].strip()
+    m = _COMPREHENSION_UNPACK_RE.match(rhs)
+    if m is None:
+        return None
+    names = [n.strip() for n in lhs.split(",")]
+    upper = int(m.group(2)) if m.group(2) is not None else len(params)
+    if len(names) > upper:
+        return None
+    mapping: dict[str, str] = {}
+    for j, name in enumerate(names):
+        if j >= len(params):
+            return None
+        mapping[name] = str(params[j])
+    return mapping
+
+
 #: 纯类型转换包装：``np.asarray(x, dtype=float)`` / ``np.array(x)`` / ``x.astype(float)``。
 #: 符号层只关心**值**，dtype 不改变值 → 去掉包装是保语义的（只删这三类，不碰
 #: ``where``/``maximum``/``power`` 这些会改变值的调用）。
@@ -413,6 +459,45 @@ def strip_type_cast_wrappers(text: str) -> str:
             break
         out = new
     return out
+
+
+#: 显式 numpy 幂调用：``np.power(a, b)`` / ``numpy.power(a, b)``。
+_NP_POWER_RE = re.compile(r'(?<![\w.])(?:np|numpy)\s*\.\s*power\s*\(')
+
+
+def rewrite_numpy_power_calls(text: str) -> str:
+    """把显式 ``np.power(a, b)`` 改写为 ``((a)**(b))``。
+
+    为什么必须在**剥离 ``np.`` 前缀之前**做：模型可能先用 ``power`` 命名一个中间变量
+    （``power = np.power(aspect, p1)``），随后又写 ``np.power(lambda23, p4)``。一旦剥掉
+    ``np.``，两处都成了裸 ``power``；而 :func:`_parse_expr_with_symbols` 会把已知中间
+    变量名注入 ``local_dict``，于是后一处 ``power(...)`` 命中的是**那个符号**而不是 sympy
+    的 ``power`` 函数 → ``'Symbol' object is not callable`` → 该行被跳过 → ``l23_term``
+    成孤儿 → 整条样本返回 None（实测 ab-iso6-head/..._20260929-091848 samples_12）。
+
+    numpy 的 ``power`` 就是逐元素幂，改写为 ``(a)**(b)`` 与 sympy 的 ``Pow`` 语义完全
+    一致。参数个数不是 2 时（numpy 本就会报错）原样保留，交给下游按解析失败处理。
+    """
+    out, pos = [], 0
+    while True:
+        m = _NP_POWER_RE.search(text, pos)
+        if m is None:
+            out.append(text[pos:])
+            return ''.join(out)
+        open_idx = m.end() - 1               # 正则末尾 '(' 的下标
+        close_idx = find_matching_paren(text, open_idx)
+        out.append(text[pos:m.start()])
+        if close_idx < 0:                    # 括号不闭合：原样保留，交由下游报错
+            out.append(text[m.start():])
+            return ''.join(out)
+        args = split_top_level(text[open_idx + 1:close_idx])
+        if len(args) == 2:
+            a = rewrite_numpy_power_calls(args[0].strip())   # 递归处理嵌套 np.power
+            b = rewrite_numpy_power_calls(args[1].strip())
+            out.append(f"(({a})**({b}))")
+        else:
+            out.append(text[m.start():close_idx + 1])
+        pos = close_idx + 1
 
 
 def _normalize_statements(func: str, params: list) -> str:
@@ -529,6 +614,11 @@ def _normalize_statements(func: str, params: list) -> str:
         if assign:
             resolved = _resolve_tuple_assignment(assign.group(1),
                                                  assign.group(2), params)
+            if resolved is None:
+                # 生成器/列表推导式 ``p0, p1, ... = (params[i] for i in range(n))``：
+                # 与切片解包等价，见 _resolve_comprehension_unpack。
+                resolved = _resolve_comprehension_unpack(assign.group(1),
+                                                         assign.group(2), params)
             if resolved is not None:
                 name_map.update(resolved)
                 i += 1
@@ -587,6 +677,11 @@ def expr_substitution(func: str, params: list) -> sp.Expr | None:
     # 后果都是 return 的符号无处可解、最终"表达式"退化为裸符号 sigma——
     # 剪枝率 0%、曲线报 Cannot convert expression to float）：
     func = _normalize_statements(func, params)
+
+    # 显式 np.power(...) 必须在剥离 np. 前缀**之前**改写为 ((a)**(b))：模型可能已用
+    # power 命名中间变量，剥掉前缀后裸 power(...) 会被解析成那个符号（Symbol 不可调用）。
+    # 见 :func:`rewrite_numpy_power_calls`。
+    func = rewrite_numpy_power_calls(func)
 
     # 去掉 numpy 前缀，并把 maximum/minimum 别名映射到 SymPy 的 Max/Min。
     # 用 \b 限定标识符边界：原来的 str.replace 会把 `maximum_likelihood` 之类的
@@ -671,3 +766,105 @@ def expr_substitution(func: str, params: list) -> sp.Expr | None:
 
     print(f"代入中间变量后的表达式: {expr}")
     return expr
+
+
+# ── 收尾自检：解析失败率（分「截断样本」与「解析器不支持的写法」两类） ──────
+
+def _parse_capturing(func: str, params: list) -> tuple[sp.Expr | None, str]:
+    """调用 :func:`expr_substitution` 并捕获其 stdout（WARN 文本），返回 (表达式, WARN)。
+
+    自检要拿到"为什么解析不了"的那行 WARN，而它目前是 ``print`` 到 stdout 的——
+    直接调用会让自检把几百行 WARN 刷进 run.out。这里把 stdout 重定向到缓冲，
+    既保留诊断文本，又不污染日志。
+    """
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        expr = expr_substitution(func, params)
+    return expr, buf.getvalue().strip()
+
+
+def classify_sample(func: str | None, params: list) -> tuple[str, str]:
+    """把一个样本函数体归为 ``ok`` / ``truncated`` / ``unsupported`` 之一，并给出 WARN。
+
+    * ``"ok"``          —— :func:`expr_substitution` 得到表达式；WARN 为空；
+    * ``"truncated"``   —— 函数体没有 ``return``：多为 ``max_tokens`` 截断的**不完整
+      样本**（评估器未打分，``score`` 为 None）。属于**采样侧**问题，不是解析器缺陷，
+      报告里必须与下一类分开计数，否则"失败率"读不出该修采样侧还是解析器侧；
+    * ``"unsupported"`` —— 有 ``return`` 但 :func:`expr_substitution` 仍返回 None，
+      即**解析器不支持的写法**，是解析器（本模块）要补的形态；WARN 说明卡在哪。
+
+    Returns:
+        ``(kind, warn)``。
+    """
+    if not func or "return" not in func:
+        return "truncated", ""
+    expr, warn = _parse_capturing(func, params or [])
+    return ("ok" if expr is not None else "unsupported"), warn
+
+
+def audit_parse_failures(results_root: str) -> dict:
+    """扫 ``<results_root>/samples/*.json``，统计表达式**解析失败率**并分两类。
+
+    为什么要有它：收尾阶段要把选出的样本公式解析成 SymPy 表达式；解析失败时只在同目录
+    ``run.out`` 里留一行 ``[WARN]``，``report.md`` 完全不提示——读者拿不到"这一次
+    有多少样本根本解释不了"的总体数字，也看不出该修采样侧还是解析器侧。本函数把
+    **全部已落盘样本**逐个过 :func:`expr_substitution`，按 :func:`classify_sample`
+    拆成"截断样本"与"解析器不支持的写法"两类给出。
+
+    只读磁盘、不写盘、不调 LLM。文件名带 ``top`` 的 Top-K 副本与全量文件按
+    ``sample_order`` 去重（优先全量），口径与
+    :func:`drsr_420.core.sample_records.load_sample_records` 一致，但**不过滤
+    ``score`` 为 None 的样本**——截断样本正是要计数的对象。
+
+    Returns:
+        dict：``n_total`` / ``n_ok`` / ``n_failed`` / ``n_truncated`` / ``n_unsupported`` /
+        ``failure_rate``（失败数/总数；总数为 0 时 ``None``）/ ``truncated`` 与
+        ``unsupported``（失败明细，各含 ``file`` / ``sample_order`` / ``score``，
+        后者另含 ``warn``）。
+    """
+    pattern = os.path.join(results_root or ".", "samples", "*.json")
+    unique: dict = {}
+    for path in sorted(glob.glob(pattern)):
+        name = os.path.basename(path)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            print(f"[WARN] 解析自检：读取样本失败，跳过 {name}: {e}")
+            continue
+        order = data.get("sample_order")
+        key = order if order is not None else name
+        is_top = name.startswith("top")
+        prev = unique.get(key)
+        if prev is not None and not (prev["is_top"] and not is_top):
+            continue
+        unique[key] = {"file": name, "is_top": is_top, "sample_order": order,
+                       "score": data.get("score"),
+                       "function": data.get("function") or "",
+                       "params": data.get("params") or []}
+
+    truncated, unsupported = [], []
+    for rec in unique.values():
+        kind, warn = classify_sample(rec["function"], rec["params"])
+        if kind == "truncated":
+            truncated.append(rec)
+        elif kind == "unsupported":
+            unsupported.append({**rec, "warn": warn})
+
+    def _order_key(rec: dict):
+        return (rec["sample_order"] is None, rec["sample_order"] or 0)
+
+    truncated.sort(key=_order_key)
+    unsupported.sort(key=_order_key)
+    n_total = len(unique)
+    n_failed = len(truncated) + len(unsupported)
+    return {
+        "n_total": n_total,
+        "n_ok": n_total - n_failed,
+        "n_failed": n_failed,
+        "n_truncated": len(truncated),
+        "n_unsupported": len(unsupported),
+        "failure_rate": (n_failed / n_total) if n_total else None,
+        "truncated": truncated,
+        "unsupported": unsupported,
+    }
