@@ -485,6 +485,7 @@ def build_explain_content(func: str, exp: dict, background: str | None = None,
                           pruning: dict | None = None,
                           references: list | None = None,
                           holdout: dict | None = None,
+                          holdout_ood: dict | None = None,
                           facts: dict | None = None) -> str | None:
     """从样本函数、匹配的经验条目、剪枝摘要与文献构造解释提示词；失败返回 None。
 
@@ -537,7 +538,8 @@ def build_explain_content(func: str, exp: dict, background: str | None = None,
         "并在结论里说明剪枝分析缺失。")
 
     # 样本外验证块：泛化性数字（机器算的），并明确"样本内 NMSE 不是泛化误差"
-    holdout_block = _format_holdout_block(holdout, (pruning or {}).get("fit"))
+    holdout_block = _format_holdout_block(holdout, (pruning or {}).get("fit"),
+                                          ood=holdout_ood)
 
     # 代码实测的数据事实块：候选骨架基线与可辨识性告警，用于对质物理先验
     facts_block = _format_facts_block(facts)
@@ -557,34 +559,58 @@ def build_explain_content(func: str, exp: dict, background: str | None = None,
             + "请你根据以上内容对这个公式从力学角度进行详细的解释")
 
 
-def _format_holdout_block(holdout: dict | None, fit: dict | None = None) -> str:
+def _format_holdout_block(holdout: dict | None, fit: dict | None = None,
+                          ood: dict | None = None) -> str:
     """渲染样本外验证块：只给数字与口径，禁止把样本内 NMSE 当泛化误差来谈。
+
+    ``holdout`` 是**同分布（ID）**、``ood`` 是**分布外（OOD）** 的指标，两者都给时
+    分别列出并标明——ID/OOD 分开报是论文的硬要求，混成一个数字看不出外推是否失效。
 
     数字由 :mod:`drsr_420.analysis.holdout` 算出并会**另行**写成 report.md 的
     「样本外验证」小节；这里进提示词是为了让模型在谈泛化时只能依据这些量，
     而不是拿样本内 NMSE 说事。模型自己写的小节会被 ``strip_holdout_section`` 去掉。
     """
-    if not holdout:
+    if not holdout and not ood:
         return ("\n\n### 样本外（held-out）验证 ###\n\n"
                 "本次没有可用的 held-out 数据，因此没有任何样本外指标。"
                 "正文里出现的 MSE/NMSE 一律是样本内指标（评估器在同一批点上拟合参数并打分），"
                 "不得把它们说成泛化能力或预测精度。")
-    in_nmse = in_sample_metrics(fit)["nmse"]
-    lines = ["\n\n### 样本外（held-out）验证 ###\n",
-             f"held-out 数据：{_clip(holdout.get('path'), 300)}"
-             f"（{holdout['n_points']} 个点，未参与参数拟合、打分与样本选择）",
-             f"样本外 MSE={holdout['mse']:.6g}"]
-    if holdout.get("nmse") is not None:
-        lines.append(f"样本外 NMSE={holdout['nmse']:.6g}")
-    lines.append(f"样本外最大绝对误差={holdout['max_abs_err']:.6g}，"
-                 f"最大相对误差={holdout['max_rel_err']:.2%}")
-    if in_nmse:
-        lines.append(f"（对照）样本内 NMSE={in_nmse:.6g}")
+    lines: list[str] = []
+    if holdout:
+        in_nmse = in_sample_metrics(fit)["nmse"]
+        lines = ["\n\n### 样本外（held-out）验证 ###\n",
+                 f"held-out 数据：{_clip(holdout.get('path'), 300)}"
+                 f"（{holdout['n_points']} 个点，未参与参数拟合、打分与样本选择）",
+                 f"样本外 MSE={holdout['mse']:.6g}"]
         if holdout.get("nmse") is not None:
-            lines.append(f"样本外/样本内 NMSE 之比={holdout['nmse'] / in_nmse:.3g} 倍")
-    lines.append("谈泛化时只能以上述数字为依据：样本内 NMSE 不是泛化误差，"
-                 "held-out 点也很少时只能说\"通过/未通过这次样本外检查\"，"
-                 "不得据此声称公式已具备预测能力。")
+            lines.append(f"样本外 NMSE={holdout['nmse']:.6g}")
+        lines.append(f"样本外最大绝对误差={holdout['max_abs_err']:.6g}，"
+                     f"最大相对误差={holdout['max_rel_err']:.2%}")
+        if in_nmse:
+            lines.append(f"（对照）样本内 NMSE={in_nmse:.6g}")
+            if holdout.get("nmse") is not None:
+                lines.append(f"样本外/样本内 NMSE 之比={holdout['nmse'] / in_nmse:.3g} 倍")
+        lines.append("谈泛化时只能以上述数字为依据：样本内 NMSE 不是泛化误差，"
+                     "held-out 点也很少时只能说\"通过/未通过这次样本外检查\"，"
+                     "不得据此声称公式已具备预测能力。")
+    else:
+        lines = ["\n\n### 样本外（held-out）验证 ###\n",
+                 "本次没有同分布（ID）的 held-out 数据。"]
+    if ood:
+        o_in = in_sample_metrics(fit)["nmse"]
+        lines += ["", "### 分布外（OOD）held-out ###",
+                  f"OOD 数据：{_clip(ood.get('path'), 300)}"
+                  f"（{ood['n_points']} 个点，未参与参数拟合、打分与样本选择）",
+                  f"OOD MSE={ood['mse']:.6g}"]
+        if ood.get("nmse") is not None:
+            lines.append(f"OOD NMSE={ood['nmse']:.6g}")
+        lines.append(f"OOD 最大绝对误差={ood['max_abs_err']:.6g}，"
+                     f"最大相对误差={ood['max_rel_err']:.2%}")
+        if o_in and ood.get("nmse") is not None:
+            lines.append(f"（对照）样本内 NMSE={o_in:.6g}，"
+                         f"OOD/样本内 NMSE 之比={ood['nmse'] / o_in:.3g} 倍")
+        lines.append("OOD 是分布外外推：若它明显差于同分布 held-out，必须在正文里如实"
+                     "说明外推失效，不得用样本内或 ID 的数字替代 OOD。")
     return "\n".join(lines)
 
 
@@ -897,14 +923,17 @@ def render_parse_audit_section(audit: dict | None) -> str:
 
     lines += [
         "",
-        "失败**分两类**计数——这是本小节存在的意义：一个总百分比读不出该修采样侧还是"
-        "解析器侧：",
+        "失败**分类**计数——这是本小节存在的意义：一个总百分比读不出该修采样侧还是"
+        "解析器侧（**只有最后一类**需要在解析器侧动手）：",
         "",
         f"- **样本本身不完整（无 `return`，多为 `max_tokens` 截断）**："
         f"**{audit.get('n_truncated', 0)}** 个。属于**采样侧**问题（这些样本未被评估、"
         f"`score` 为 None），**不是**解析器缺陷。",
+        f"- **样本无参数（有 `return` 但 `params` 为空，评估器从未拟合）**："
+        f"**{audit.get('n_no_params', 0)}** 个。属于**样本状态**问题（`score` 为 None），"
+        f"**不是**解析器缺陷——`params[k]` 无从代换，任何解析器都解不了。",
         f"- **解析器不支持的写法**：**{audit.get('n_unsupported', 0)}** 个。有 `return` "
-        f"但解析不出，是解析器需要补的写法。",
+        f"且有 `params` 但解析不出，这才是解析器需要补的写法。",
     ]
 
     truncated = audit.get("truncated") or []
@@ -915,6 +944,15 @@ def render_parse_audit_section(audit: dict | None) -> str:
                          f"score={rec.get('score')}）")
         if len(truncated) > PARSE_AUDIT_MAX_LISTED:
             lines.append(f"- 另有 {len(truncated) - PARSE_AUDIT_MAX_LISTED} 个未列出")
+
+    no_params = audit.get("no_params") or []
+    if no_params:
+        lines += ["", f"无参数样本（最多列 {PARSE_AUDIT_MAX_LISTED} 个）："]
+        for rec in no_params[:PARSE_AUDIT_MAX_LISTED]:
+            lines.append(f"- `{rec.get('file')}`（sample_order={rec.get('sample_order')}，"
+                         f"score={rec.get('score')}）")
+        if len(no_params) > PARSE_AUDIT_MAX_LISTED:
+            lines.append(f"- 另有 {len(no_params) - PARSE_AUDIT_MAX_LISTED} 个未列出")
 
     unsupported = audit.get("unsupported") or []
     if unsupported:
@@ -1003,6 +1041,7 @@ def backfill_parse_audit(results_root: str, report_name: str = REPORT_FILENAME) 
 
 def _assemble_explain(answer: str | None, refs: list[dict],
                       holdout: dict | None = None, fit: dict | None = None,
+                      holdout_ood: dict | None = None,
                       range_check: dict | None = None,
                       progress: dict | None = None,
                       parse_audit: dict | None = None,
@@ -1024,7 +1063,7 @@ def _assemble_explain(answer: str | None, refs: list[dict],
     body = _strip_parse_audit_section(body)
     body = _strip_reference_section(body).rstrip()
     sections = [render_selection_section(selection),
-                render_holdout_section(holdout, fit),
+                render_holdout_section(holdout, fit, ood=holdout_ood),
                 render_range_section(range_check),
                 render_parse_audit_section(parse_audit),
                 render_progress_section(progress),
@@ -1044,6 +1083,7 @@ def _assemble_explain(answer: str | None, refs: list[dict],
 def explain_best_sample(results_root: str, func: str, sample_order: str,
                         role_clients=None, pruning: dict | None = None,
                         holdout: dict | None = None,
+                        holdout_ood: dict | None = None,
                         progress: dict | None = None) -> None:
     """按 sample_order 匹配 Good 经验，调用 LLM 生成物理解释并落盘 report.md。
 
@@ -1113,6 +1153,8 @@ def explain_best_sample(results_root: str, func: str, sample_order: str,
                                         pruning=pruning, references=references,
                                         holdout=holdout if holdout is not None
                                         else (pruning or {}).get("holdout"),
+                                        holdout_ood=holdout_ood if holdout_ood is not None
+                                        else (pruning or {}).get("holdout_ood"),
                                         facts=_load_facts(results_root))
         if content is None:
             note = "构造物理解释提示词失败"
@@ -1148,12 +1190,15 @@ def explain_best_sample(results_root: str, func: str, sample_order: str,
     # 失败原因只留在 run.out 里没人看；现在把原因写在报告开头，照写不会掩盖故障。
     refs = merge_references(references, tool_refs)
     holdout_result = holdout if holdout is not None else (pruning or {}).get("holdout")
+    holdout_ood_result = (holdout_ood if holdout_ood is not None
+                          else (pruning or {}).get("holdout_ood"))
     progress_result = progress if progress is not None else (pruning or {}).get("progress")
     # 收尾自检：这次全部已落盘样本的解析失败率（分「截断样本」/「解析器不支持的写法」）。
     # 解析失败从前只在 run.out 里留 WARN、报告不提示，读者看不到总体失败率。
     parse_audit_result = audit_parse_failures(results_root)
     final_text = _assemble_explain(explain, refs, holdout=holdout_result,
                                    fit=(pruning or {}).get("fit"),
+                                   holdout_ood=holdout_ood_result,
                                    range_check=(pruning or {}).get("range_check"),
                                    progress=progress_result,
                                    parse_audit=parse_audit_result,

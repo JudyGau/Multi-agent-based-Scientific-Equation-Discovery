@@ -14,11 +14,18 @@ NMSE 1.45e-7，而两个同分布 held-out 点上最大相对误差 **7.95%**（
 因此这里的指标只写进 run.out / report.md，**绝不**回灌进评分、早停或样本选择：一旦
 参与选择，它就不再是 held-out，实验之间也不再可比。
 
-数据来源
---------
-``test.csv`` 按优先级解析（见 :func:`resolve_test_csv`）：``--test_csv`` 显式指定 →
-``config_snapshot.json`` 记录的路径 → 训练数据同目录的 ``test.csv`` → 按目录名推断的
-``data/<问题名>/test.csv``（历史目录）。都找不到就跳过，老实验目录行为不变。
+数据来源：ID 与 OOD 两条通道
+----------------------------
+**同分布（ID）** 由 :func:`resolve_test_csv` 解析：``--test_csv`` 显式指定 →
+``config_snapshot.json`` 记录的路径 → 训练数据同目录自动探测 ``test.csv`` →
+``test_id.csv`` → 按目录名推断的 ``data/<问题名>/test.csv``（历史目录）。
+
+**分布外（OOD）** 由 :func:`resolve_ood_csv` 解析，语义相同，自动探测 ``ood_test.csv``
+→ ``test_ood.csv``（LSR-Synth 四域与 LLM-SR 真实任务各自的命名）。旧实现只探测同分布的
+``test.csv``，于是 benchmark 数据里那批 OOD 文件**从未被评估**——论文要求 ID 与 OOD
+分开报，缺了 OOD 这一列就看不出一维外推是否失效。
+
+两者都找不到就跳过，老实验目录行为不变。
 """
 from __future__ import annotations
 
@@ -32,9 +39,10 @@ from drsr_420.analysis.prune_report import (_warn_once, infer_data_csv,
                                             resolve_columns, resolve_csv)
 
 __all__ = [
-    "resolve_test_csv", "load_test_data", "evaluate_holdout", "in_sample_metrics",
-    "format_holdout_summary", "HOLDOUT_HEADING", "render_holdout_section",
-    "strip_holdout_section",
+    "resolve_test_csv", "resolve_ood_csv", "load_test_data", "load_ood_data",
+    "evaluate_holdout", "in_sample_metrics", "format_holdout_summary",
+    "HOLDOUT_HEADING", "render_holdout_section", "strip_holdout_section",
+    "ID_HOLDOUT_NAMES", "OOD_HOLDOUT_NAMES",
 ]
 
 #: report.md 里样本外验证小节的标题（机器生成，正文若自带同名小节会被替换）。
@@ -43,102 +51,151 @@ HOLDOUT_HEADING = "## 样本外验证"
 #: 关闭自动探测的取值：``--test_csv none``。
 _DISABLED = ("", "none", "null", "off", "no", "false")
 
+#: **同分布** held-out 的候选文件名（按优先级自动探测）。``test_id.csv`` 是
+#: LLM-SR 真实任务（oscillator/stressstrain/bactgrow）的命名。
+ID_HOLDOUT_NAMES = ("test.csv", "test_id.csv")
+
+#: **分布外（OOD）** held-out 的候选文件名。``ood_test.csv`` 是 LSR-Synth 四域
+#: （BPG0/CRK0/PO0/MatSci0）的命名，``test_ood.csv`` 是 LLM-SR 真实任务的命名。
+#: 二者此前都探测不到（旧实现只找 ``test.csv``）→ benchmark 的 OOD 一列永远为空。
+OOD_HOLDOUT_NAMES = ("ood_test.csv", "test_ood.csv")
+
 #: 解析结果缓存：曲线与报告都会调用，避免同一路径被反复打印/反复读盘。
-_resolved: dict[tuple[str, str | None], str | None] = {}
+_resolved: dict[tuple, str | None] = {}
 
 #: 已打印过的数据来源：同一个文件在一条实验流程里只提示一次。
 _logged: set[str] = set()
 
 
-def _snapshot_test_csv(results_root: str) -> str:
-    """读 config_snapshot.json 里记录的 test_csv（没有则空串）。
+def _snapshot_value(results_root: str, key: str) -> str:
+    """读 config_snapshot.json 里的某个字段（没有则空串）。
 
-    兼容两种写法：``test_csv``（生效值）与早期的 ``test_csv_arg``（命令行原值）。
+    ``test_csv`` 兼容两种写法：``test_csv``（生效值）与早期的 ``test_csv_arg``
+    （命令行原值）。
     """
     try:
         with open(os.path.join(results_root, "config_snapshot.json"), "r",
                   encoding="utf-8") as f:
             snap = json.load(f)
-        return str(snap.get("test_csv") or snap.get("test_csv_arg") or "")
     except Exception:
         return ""
+    value = snap.get(key)
+    if not value and key == "test_csv":
+        value = snap.get("test_csv_arg")
+    return str(value or "")
 
 
-def resolve_test_csv(results_root: str, test_csv: str | None = None,
-                     train_csv: str | None = None) -> str | None:
-    """解析 held-out 数据路径；解析不到返回 ``None``（调用方静默跳过）。
+def _train_dir_csv(results_root: str, train_csv: str | None) -> str | None:
+    """本次运行的训练 CSV 绝对路径（用于"同目录找兄弟文件"）。
 
-    优先级：显式 ``test_csv`` → 快照记录 → 训练数据同目录的 ``test.csv`` →
-    ``data/<问题名>/test.csv``（历史目录兜底）。``test_csv`` 取 ``"none"`` 等
-    关闭值时直接返回 ``None``（``--test_csv none`` 用来关掉自动探测）。
-
-    ``train_csv`` 是本次运行的训练 CSV 路径（CLI 直接把 ``--data_csv`` 传进来）：
-    快照要等启动流程后段才落盘，只靠快照推断会拿不到"训练数据同目录"这条最可靠的线索。
+    ``train_csv`` 由 CLI 直接把 ``--data_csv`` 传进来；快照要等启动流程后段才落盘，
+    只靠快照推断会拿不到这条最可靠的线索，故两者都用，最后才按目录名兜底。
     """
-    key = (str(results_root), test_csv)
+    train_path = resolve_csv(train_csv, results_root) if train_csv else None
+    if train_path is None:
+        train_data_csv = _snapshot_value(results_root, "data_csv")
+        train_path = resolve_csv(train_data_csv, results_root) if train_data_csv else None
+    if train_path is None:
+        train_path = infer_data_csv(results_root)
+    return train_path
+
+
+def _resolve_holdout(results_root: str, explicit: str | None, snapshot_key: str,
+                     names: tuple[str, ...], train_csv: str | None,
+                     label: str, flag: str) -> str | None:
+    """通用 held-out 路径解析：显式 → 快照 → 训练数据同目录按 ``names`` 顺序探测。
+
+    ``explicit`` 取 ``"none"`` 等关闭值时直接返回 ``None``（不退回自动探测——那会
+    违背用户显式关闭的意图）。解析不到返回 ``None``，调用方静默跳过。
+    """
+    key = (str(results_root), explicit, snapshot_key)
     if key in _resolved:
         return _resolved[key]
 
     def _remember(path: str | None, how: str) -> str | None:
         if path and path not in _logged:
             _logged.add(path)
-            print(f"[INFO] 样本外验证数据（{how}）: {path}")
+            print(f"[INFO] {label}数据（{how}）: {path}")
         _resolved[key] = path
         return path
 
-    if test_csv is not None:
-        if test_csv.strip().lower() in _DISABLED:
+    if explicit is not None:
+        if explicit.strip().lower() in _DISABLED:
             return _remember(None, "已关闭")
-        explicit = resolve_csv(test_csv, results_root)
-        if explicit is None:
-            print(f"[WARN] --test_csv 指定的文件不存在，跳过样本外验证: {test_csv}")
-            return _remember(None, "--test_csv")
-        return _remember(explicit, "--test_csv")
+        path = resolve_csv(explicit, results_root)
+        if path is None:
+            print(f"[WARN] {flag} 指定的文件不存在，跳过{label}: {explicit}")
+            return _remember(None, "显式指定")
+        return _remember(path, "显式指定")
 
-    snapped = _snapshot_test_csv(results_root)
+    snapped = _snapshot_value(results_root, snapshot_key)
     if snapped:
         if snapped.strip().lower() in _DISABLED:
-            # 当年就是用 --test_csv none 关掉的：不要退回自动探测（那会违背用户意图）
-            return _remember(None, "config_snapshot.test_csv=关闭")
+            return _remember(None, f"config_snapshot.{snapshot_key}=关闭")
         path = resolve_csv(snapped, results_root)
         if path:
-            return _remember(path, "config_snapshot.test_csv")
+            return _remember(path, f"config_snapshot.{snapshot_key}")
 
-    # 训练数据同目录的 test.csv（覆盖"快照没记 test_csv"与"只有目录名可推断"两种历史情形）
-    train_path = resolve_csv(train_csv, results_root) if train_csv else None
-    if train_path is None:
-        train_data_csv = ""
-        try:
-            with open(os.path.join(results_root, "config_snapshot.json"), "r",
-                      encoding="utf-8") as f:
-                train_data_csv = str(json.load(f).get("data_csv") or "")
-        except Exception:
-            pass
-        train_path = resolve_csv(train_data_csv, results_root) if train_data_csv else None
-    if train_path is None:
-        train_path = infer_data_csv(results_root)
+    train_path = _train_dir_csv(results_root, train_csv)
     if train_path:
-        sibling = os.path.join(os.path.dirname(train_path), "test.csv")
-        if os.path.isfile(sibling):
-            return _remember(sibling, "训练数据同目录自动探测")
+        directory = os.path.dirname(train_path)
+        for name in names:
+            candidate = os.path.join(directory, name)
+            if os.path.isfile(candidate):
+                return _remember(candidate, "训练数据同目录自动探测")
     return _remember(None, "未找到")
 
 
-def load_test_data(results_root: str, test_csv: str | None = None,
-                   train_csv: str | None = None) -> np.ndarray | None:
-    """读取 held-out 数据（结构化数组）；路径解析不到或读取失败返回 ``None``。"""
-    path = resolve_test_csv(results_root, test_csv, train_csv=train_csv)
+def resolve_test_csv(results_root: str, test_csv: str | None = None,
+                     train_csv: str | None = None) -> str | None:
+    """解析**同分布** held-out 数据路径；解析不到返回 ``None``（调用方静默跳过）。
+
+    优先级：显式 ``test_csv`` → 快照记录 → 训练数据同目录自动探测（``test.csv`` →
+    ``test_id.csv``）→ ``data/<问题名>/test.csv``（历史目录兜底）。``test_csv`` 取
+    ``"none"`` 等关闭值时直接返回 ``None``。
+    """
+    return _resolve_holdout(results_root, test_csv, "test_csv", ID_HOLDOUT_NAMES,
+                            train_csv, "样本外验证", "--test_csv")
+
+
+def resolve_ood_csv(results_root: str, test_ood_csv: str | None = None,
+                    train_csv: str | None = None) -> str | None:
+    """解析**分布外（OOD）** held-out 数据路径；语义同 :func:`resolve_test_csv`。
+
+    自动探测 ``ood_test.csv`` → ``test_ood.csv``（LSR-Synth 与 LLM-SR 真实任务各自的
+    命名）。旧实现只探测同分布的 ``test.csv``，benchmark 的 OOD 因此从未被评估。
+    """
+    return _resolve_holdout(results_root, test_ood_csv, "test_ood_csv",
+                            OOD_HOLDOUT_NAMES, train_csv, "分布外验证", "--test_ood_csv")
+
+
+def _load_struct(path: str | None, label: str) -> np.ndarray | None:
+    """把 CSV 读成结构化数组；路径为空 / 读取失败 / 无表头时返回 ``None``。"""
     if not path:
         return None
     try:
         data = np.genfromtxt(path, delimiter=",", names=True)
     except Exception as e:
-        print(f"[WARN] 读取样本外数据失败: {e}")
+        print(f"[WARN] 读取{label}失败: {e}")
         return None
     if data.dtype.names is None or data.size == 0:
-        print(f"[WARN] 样本外数据为空或缺少表头: {path}")
+        print(f"[WARN] {label}为空或缺少表头: {path}")
         return None
     return data
+
+
+def load_test_data(results_root: str, test_csv: str | None = None,
+                   train_csv: str | None = None) -> np.ndarray | None:
+    """读取**同分布** held-out 数据（结构化数组）；路径解析不到或读取失败返回 ``None``。"""
+    return _load_struct(resolve_test_csv(results_root, test_csv, train_csv=train_csv),
+                        "样本外数据")
+
+
+def load_ood_data(results_root: str, test_ood_csv: str | None = None,
+                  train_csv: str | None = None) -> np.ndarray | None:
+    """读取**分布外（OOD）** held-out 数据（结构化数组）；语义同 :func:`load_test_data`。"""
+    return _load_struct(resolve_ood_csv(results_root, test_ood_csv, train_csv=train_csv),
+                        "分布外数据")
 
 
 def _relative_error(pred: np.ndarray, y: np.ndarray) -> np.ndarray:
@@ -283,23 +340,19 @@ def format_holdout_summary(holdout: dict | None, fit: dict | None = None) -> str
     return line
 
 
-def render_holdout_section(holdout: dict | None, fit: dict | None = None) -> str:
-    """渲染 report.md 的「样本外验证」小节（机器生成，数字不由 LLM 转述）。"""
-    lines = [HOLDOUT_HEADING, ""]
-    if not holdout:
-        lines.append("本次没有可用的 held-out 数据（未指定 `--test_csv`，也未在数据目录"
-                     "自动探测到 `test.csv`），因此没有样本外指标。")
-        lines.append("")
-        lines.append("> 注意：正文里的 MSE/NMSE 都是**样本内**指标（评估器在同一批点上"
-                     "拟合参数并打分），不能当作泛化误差。")
-        return "\n".join(lines)
+def _render_holdout_block(h: dict, fit: dict | None) -> list[str]:
+    """单组 held-out 的正文：数据来源 + 样本内/外对照表 + 逐点明细。
 
-    source = holdout.get("path") or "test.csv"
-    lines.append(f"数据来源：`{source}`（{holdout['n_points']} 个点，未参与参数拟合、"
+    ID 与 OOD 各自调用一次；跨组的口径说明由 :func:`render_holdout_section` 统一附，
+    避免同一段说明在两组之间重复。
+    """
+    lines: list[str] = []
+    source = h.get("path") or "test.csv"
+    lines.append(f"数据来源：`{source}`（{h['n_points']} 个点，未参与参数拟合、"
                  f"打分与样本选择）")
-    if holdout.get("overlaps_train"):
+    if h.get("overlaps_train"):
         lines.append("")
-        lines.append(f"> **注意：该文件的 {holdout['n_points']} 行全部出现在训练集里**，"
+        lines.append(f"> **注意：该文件的 {h['n_points']} 行全部出现在训练集里**，"
                      f"它并不是独立的 held-out 集——下表与样本内指标同义，"
                      f"不能用来论证泛化能力。需要真正的样本外验证时，请另取未参与"
                      f"拟合与选择的数据点。")
@@ -315,30 +368,66 @@ def render_holdout_section(holdout: dict | None, fit: dict | None = None) -> str
 
     lines.append("| 指标 | 样本内（训练点） | 样本外（held-out 点） |")
     lines.append("|---|---|---|")
-    lines.append(f"| 点数 | {in_n if in_n else '未知'} | {holdout['n_points']} |")
-    lines.append(f"| MSE | {_fmt(in_mse)} | {holdout['mse']:.6g} |")
+    lines.append(f"| 点数 | {in_n if in_n else '未知'} | {h['n_points']} |")
+    lines.append(f"| MSE | {_fmt(in_mse)} | {h['mse']:.6g} |")
     lines.append(f"| NMSE（分母为训练集方差） | {_fmt(in_sample['nmse'])} "
-                 f"| {_fmt(holdout.get('nmse'))} |")
-    lines.append(f"| 最大绝对误差 | {_fmt(in_max_abs)} | {holdout['max_abs_err']:.6g} |")
+                 f"| {_fmt(h.get('nmse'))} |")
+    lines.append(f"| 最大绝对误差 | {_fmt(in_max_abs)} | {h['max_abs_err']:.6g} |")
     lines.append(f"| 最大相对误差 | {_fmt(in_max_rel, '{:.2%}')} "
-                 f"| {holdout['max_rel_err']:.2%} |")
+                 f"| {h['max_rel_err']:.2%} |")
     in_nmse = in_sample["nmse"]
-    if in_nmse and holdout.get("nmse") is not None:
+    if in_nmse and h.get("nmse") is not None:
         lines.append("")
-        lines.append(f"样本外 NMSE 是样本内的 **{holdout['nmse'] / in_nmse:.3g} 倍**"
-                     f"（样本内 {in_nmse:.6g} → 样本外 {holdout['nmse']:.6g}）。")
+        lines.append(f"样本外 NMSE 是样本内的 **{h['nmse'] / in_nmse:.3g} 倍**"
+                     f"（样本内 {in_nmse:.6g} → 样本外 {h['nmse']:.6g}）。")
 
     lines.append("")
     lines.append("逐点明细：")
     lines.append("")
-    var_names = list(holdout["rows"][0]["variables"]) if holdout["rows"] else []
+    var_names = list(h["rows"][0]["variables"]) if h["rows"] else []
     header = "| # | " + " | ".join(var_names) + " | 观测 | 预测 | 绝对误差 | 相对误差 |"
     lines.append(header)
     lines.append("|" + "---|" * (len(var_names) + 5))
-    for i, row in enumerate(holdout["rows"], 1):
+    for i, row in enumerate(h["rows"], 1):
         vals = " | ".join(f"{row['variables'][v]:.6g}" for v in var_names)
         lines.append(f"| {i} | {vals} | {row['observed']:.6g} | {row['predicted']:.6g} "
                      f"| {row['abs_err']:.6g} | {row['rel_err']:.2%} |")
+    return lines
+
+
+def render_holdout_section(holdout: dict | None, fit: dict | None = None,
+                           ood: dict | None = None) -> str:
+    """渲染 report.md 的「样本外验证」小节（机器生成，数字不由 LLM 转述）。
+
+    ``holdout`` 是**同分布（ID）** held-out 的指标，``ood`` 是**分布外（OOD）** 的
+    指标（:func:`load_ood_data` + :func:`evaluate_holdout` 得到）。两者都给时同列在
+    本节内、各一张对照表并标明 ID / OOD——论文要求 ID 与 OOD 分开报，混成一个数字
+    看不出外推是否失效。
+    """
+    lines = [HOLDOUT_HEADING, ""]
+    if not holdout and not ood:
+        lines.append("本次没有可用的 held-out 数据（未指定 `--test_csv`/`--test_ood_csv`，"
+                     "也未在数据目录自动探测到 `test.csv`/`test_id.csv` / "
+                     "`ood_test.csv`/`test_ood.csv`），因此没有样本外指标。")
+        lines.append("")
+        lines.append("> 注意：正文里的 MSE/NMSE 都是**样本内**指标（评估器在同一批点上"
+                     "拟合参数并打分），不能当作泛化误差。")
+        return "\n".join(lines)
+
+    if holdout and ood:
+        lines.append("本小节含两组样本外数据：**同分布 held-out（ID）** 与 "
+                     "**分布外（OOD）**；两者点数与口径不同，须分开读。")
+        lines.append("")
+    if holdout:
+        lines += _render_holdout_block(holdout, fit)
+    else:
+        lines.append("本次**没有同分布（ID）**的 held-out 数据（未指定 `--test_csv`，"
+                     "也未自动探测到 `test.csv`/`test_id.csv`）。")
+    if ood:
+        lines += ["", "### 分布外（OOD）", ""]
+        lines += _render_holdout_block(ood, fit)
+
+    in_sample = in_sample_metrics(fit)
     lines.append("")
     lines.append("> 口径说明：样本内指标对应**最终发布的表达式**（发生剪枝时即剪枝后表达式，"
                  "与样本外所用表达式相同），由评估器在同一批训练点上拟合参数并打分得到；"

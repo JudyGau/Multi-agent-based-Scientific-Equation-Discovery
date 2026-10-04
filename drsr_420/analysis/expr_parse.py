@@ -500,6 +500,59 @@ def rewrite_numpy_power_calls(text: str) -> str:
         pos = close_idx + 1
 
 
+#: 显式/裸 numpy 截断调用：``np.clip(a, a_min, a_max)`` / ``clip(...)``
+#: （``a_min`` / ``a_max`` 可以是 ``None``，表示该侧不设界）。
+_NP_CLIP_RE = re.compile(r'(?<![\w.])(?:(?:np|numpy)\s*\.\s*)?clip\s*\(')
+
+
+def rewrite_numpy_clip_calls(text: str) -> str:
+    """把 ``np.clip(a, a_min, a_max)`` 改写为 sympy 的 ``Max`` / ``Min`` 组合。
+
+    numpy 语义：``clip(a, lo, hi)`` = 把 a 逐元素截到 ``[lo, hi]``；``lo``/``hi`` 为
+    ``None`` 表示该侧不设界。sympy 没有 ``clip``：``clip`` 会被当成未知函数，
+    而其中的 ``None`` 字面量更会让 ``parse_expr`` 抛
+    ``'NoneType' object has no attribute 'is_Float'``——整行中间变量被跳过、符号成
+    孤儿、``return`` 无法求值（实测 BPG0 benchmark 的 I.37.4_0_1 samples_8：
+    ``radicand = np.clip(radicand, 0.0, None)``）。
+
+    改写为等价的最小组合（与 ``np.clip`` 同义）::
+
+        clip(a, None, None) -> a
+        clip(a, lo,   None) -> Max(a, lo)
+        clip(a, None, hi)   -> Min(a, hi)
+        clip(a, lo,   hi)   -> Max(Min(a, hi), lo)
+
+    参数个数不是 3（numpy 本就会报错）或括号不闭合时原样保留，交下游按失败处理。
+    """
+    out, pos = [], 0
+    while True:
+        m = _NP_CLIP_RE.search(text, pos)
+        if m is None:
+            out.append(text[pos:])
+            return ''.join(out)
+        open_idx = m.end() - 1               # 正则末尾 '(' 的下标
+        close_idx = find_matching_paren(text, open_idx)
+        out.append(text[pos:m.start()])
+        if close_idx < 0:                    # 括号不闭合：原样保留
+            out.append(text[m.start():])
+            return ''.join(out)
+        args = [a.strip() for a in split_top_level(text[open_idx + 1:close_idx])]
+        if len(args) != 3:
+            out.append(text[m.start():close_idx + 1])
+        else:
+            a, lo, hi = [rewrite_numpy_clip_calls(x) for x in args]  # 递归处理嵌套 clip
+            lo_none, hi_none = (lo == "None"), (hi == "None")
+            if lo_none and hi_none:
+                out.append(f"({a})")
+            elif lo_none:
+                out.append(f"Min(({a}), ({hi}))")
+            elif hi_none:
+                out.append(f"Max(({a}), ({lo}))")
+            else:
+                out.append(f"Max(Min(({a}), ({hi})), ({lo}))")
+        pos = close_idx + 1
+
+
 def _normalize_statements(func: str, params: list) -> str:
     """语句级预处理，替 return 的符号消解扫清三种 LLM 常见写法：
 
@@ -682,6 +735,10 @@ def expr_substitution(func: str, params: list) -> sp.Expr | None:
     # power 命名中间变量，剥掉前缀后裸 power(...) 会被解析成那个符号（Symbol 不可调用）。
     # 见 :func:`rewrite_numpy_power_calls`。
     func = rewrite_numpy_power_calls(func)
+    # 同理，``np.clip(a, lo, None)`` 里的 ``None`` 会让 parse_expr 抛
+    # ``'NoneType' object has no attribute 'is_Float'``；sympy 也没有 clip。见
+    # :func:`rewrite_numpy_clip_calls`。
+    func = rewrite_numpy_clip_calls(func)
 
     # 去掉 numpy 前缀，并把 maximum/minimum 别名映射到 SymPy 的 Max/Min。
     # 用 \b 限定标识符边界：原来的 str.replace 会把 `maximum_likelihood` 之类的
@@ -784,14 +841,20 @@ def _parse_capturing(func: str, params: list) -> tuple[sp.Expr | None, str]:
 
 
 def classify_sample(func: str | None, params: list) -> tuple[str, str]:
-    """把一个样本函数体归为 ``ok`` / ``truncated`` / ``unsupported`` 之一，并给出 WARN。
+    """把一个样本函数体归为 ``ok`` / ``truncated`` / ``no_params`` / ``unsupported``。
 
-    * ``"ok"``          —— :func:`expr_substitution` 得到表达式；WARN 为空；
+    * ``"ok"``          —— :func:`expr_substitution` 得到表达式；
     * ``"truncated"``   —— 函数体没有 ``return``：多为 ``max_tokens`` 截断的**不完整
-      样本**（评估器未打分，``score`` 为 None）。属于**采样侧**问题，不是解析器缺陷，
-      报告里必须与下一类分开计数，否则"失败率"读不出该修采样侧还是解析器侧；
-    * ``"unsupported"`` —— 有 ``return`` 但 :func:`expr_substitution` 仍返回 None，
+      样本**（评估器未打分，``score`` 为 None）。属于**采样侧**问题；
+    * ``"no_params"``   —— 有 ``return`` 但样本**没有 params**（``params`` 为空/None）：
+      评估器从未为它拟合出参数（``score`` 为 None），于是 ``params[k]`` 无从代换——
+      实测 ``I.37.4_0_1`` 的 samples_7/9 即此形态，报错是"符号被下标"。这是
+      **样本状态**问题，**不是**解析器缺陷；
+    * ``"unsupported"`` —— 有 ``params`` 但 :func:`expr_substitution` 仍返回 None，
       即**解析器不支持的写法**，是解析器（本模块）要补的形态；WARN 说明卡在哪。
+
+    后三类都算"解析失败"，但只有 ``unsupported`` 需要在解析器侧动手——这就是把
+    它们分开计数、而不是给一个总百分比的原因。
 
     Returns:
         ``(kind, warn)``。
@@ -799,28 +862,33 @@ def classify_sample(func: str | None, params: list) -> tuple[str, str]:
     if not func or "return" not in func:
         return "truncated", ""
     expr, warn = _parse_capturing(func, params or [])
-    return ("ok" if expr is not None else "unsupported"), warn
+    if expr is not None:
+        return "ok", warn
+    # 解析失败且没有参数：先归因于"样本未被评估"（无 params），再谈解析器支持与否。
+    # 注意先解析再判空——没有 params 的公式若本来就不含 params[k]，仍应算 ok。
+    return ("no_params" if not params else "unsupported"), warn
 
 
 def audit_parse_failures(results_root: str) -> dict:
-    """扫 ``<results_root>/samples/*.json``，统计表达式**解析失败率**并分两类。
+    """扫 ``<results_root>/samples/*.json``，统计表达式**解析失败率**并分类计数。
 
     为什么要有它：收尾阶段要把选出的样本公式解析成 SymPy 表达式；解析失败时只在同目录
     ``run.out`` 里留一行 ``[WARN]``，``report.md`` 完全不提示——读者拿不到"这一次
     有多少样本根本解释不了"的总体数字，也看不出该修采样侧还是解析器侧。本函数把
     **全部已落盘样本**逐个过 :func:`expr_substitution`，按 :func:`classify_sample`
-    拆成"截断样本"与"解析器不支持的写法"两类给出。
+    拆成三类（截断样本 / 无参数样本 / 解析器不支持的写法）给出——只有最后一类需要在
+    解析器侧动手。
 
     只读磁盘、不写盘、不调 LLM。文件名带 ``top`` 的 Top-K 副本与全量文件按
     ``sample_order`` 去重（优先全量），口径与
     :func:`drsr_420.core.sample_records.load_sample_records` 一致，但**不过滤
-    ``score`` 为 None 的样本**——截断样本正是要计数的对象。
+    ``score`` 为 None 的样本**——截断/未评估样本正是要计数的对象。
 
     Returns:
-        dict：``n_total`` / ``n_ok`` / ``n_failed`` / ``n_truncated`` / ``n_unsupported`` /
-        ``failure_rate``（失败数/总数；总数为 0 时 ``None``）/ ``truncated`` 与
-        ``unsupported``（失败明细，各含 ``file`` / ``sample_order`` / ``score``，
-        后者另含 ``warn``）。
+        dict：``n_total`` / ``n_ok`` / ``n_failed`` / ``n_truncated`` / ``n_no_params`` /
+        ``n_unsupported`` / ``failure_rate``（失败数/总数；总数为 0 时 ``None``）/
+        ``truncated`` / ``no_params`` / ``unsupported``（失败明细，各含 ``file`` /
+        ``sample_order`` / ``score``，后两类的 ``unsupported`` 另含 ``warn``）。
     """
     pattern = os.path.join(results_root or ".", "samples", "*.json")
     unique: dict = {}
@@ -843,11 +911,13 @@ def audit_parse_failures(results_root: str) -> dict:
                        "function": data.get("function") or "",
                        "params": data.get("params") or []}
 
-    truncated, unsupported = [], []
+    truncated, no_params, unsupported = [], [], []
     for rec in unique.values():
         kind, warn = classify_sample(rec["function"], rec["params"])
         if kind == "truncated":
             truncated.append(rec)
+        elif kind == "no_params":
+            no_params.append(rec)
         elif kind == "unsupported":
             unsupported.append({**rec, "warn": warn})
 
@@ -855,16 +925,19 @@ def audit_parse_failures(results_root: str) -> dict:
         return (rec["sample_order"] is None, rec["sample_order"] or 0)
 
     truncated.sort(key=_order_key)
+    no_params.sort(key=_order_key)
     unsupported.sort(key=_order_key)
     n_total = len(unique)
-    n_failed = len(truncated) + len(unsupported)
+    n_failed = len(truncated) + len(no_params) + len(unsupported)
     return {
         "n_total": n_total,
         "n_ok": n_total - n_failed,
         "n_failed": n_failed,
         "n_truncated": len(truncated),
+        "n_no_params": len(no_params),
         "n_unsupported": len(unsupported),
         "failure_rate": (n_failed / n_total) if n_total else None,
         "truncated": truncated,
+        "no_params": no_params,
         "unsupported": unsupported,
     }

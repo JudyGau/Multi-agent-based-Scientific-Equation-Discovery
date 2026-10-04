@@ -152,10 +152,15 @@ def build_parser() -> ArgumentParser:
     parser.add_argument('--data_csv', type=str, required=True,
                         help='含表头的 CSV，前 n-1 列为特征，最后一列为因变量')
     parser.add_argument('--test_csv', type=str, default=None,
-                        help='held-out 数据 CSV（可选的样本外验证）：缺省时自动探测'
-                             '训练数据同目录的 test.csv；给 none 关闭。'
+                        help='同分布 held-out 数据 CSV（可选的样本外验证）：缺省时自动探测'
+                             '训练数据同目录的 test.csv / test_id.csv；给 none 关闭。'
                              '样本外指标只写进 run.out 与 report.md，'
                              '不参与采样、打分、早停与样本选择')
+    parser.add_argument('--test_ood_csv', type=str, default=None,
+                        help='分布外（OOD）held-out 数据 CSV：缺省时自动探测训练数据同目录的'
+                             ' ood_test.csv / test_ood.csv；给 none 关闭。ID 与 OOD 在'
+                             'report.md 的「样本外验证」小节里分开报告，同样不参与'
+                             '采样、打分、早停与样本选择')
     parser.add_argument('--experiment_dir', type=str, default=None,
                         help='实验目录（可为绝对/相对路径）。如提供，将直接使用此目录')
     parser.add_argument('--niterations', type=int, default=10,
@@ -496,7 +501,9 @@ def main(argv: list[str] | None = None) -> int:
         # 样本外验证数据：这里只记命令行原值（路径或关闭标记），实际解析在收尾分析里做
         # （holdout.resolve_test_csv：显式路径 → 本字段 → 训练数据同目录的 test.csv）。
         # 注意别把它并进下面的 dataset：一旦进了训练数据就不再是 held-out。
+        # test_csv = 同分布（ID）；test_ood_csv = 分布外（OOD），两者分开报告。
         "test_csv": args.test_csv,
+        "test_ood_csv": args.test_ood_csv,
         "seed": args.seed,
         "niterations": args.niterations,
         "num_islands": exp_config.experience_buffer.num_islands,
@@ -538,6 +545,7 @@ def main(argv: list[str] | None = None) -> int:
         llm_config=llm_config,
         role_clients=role_clients,
         test_csv=args.test_csv,
+        test_ood_csv=args.test_ood_csv,
         seed=args.seed,
     )
     return 0

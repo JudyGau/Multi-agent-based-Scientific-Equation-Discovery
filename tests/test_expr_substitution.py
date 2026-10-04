@@ -390,6 +390,34 @@ class NumpyPowerCollisionTest(_ExprTestCase):
         self.assert_expr_close(expr, 5 * X1**6)     # (x1**2)**3 == x1**6
 
 
+class NumpyClipRewriteTest(_ExprTestCase):
+    """``np.clip(a, lo, None)`` 必须改写为 Max/Min 组合。
+
+    sympy 没有 ``clip``，而其中的 ``None`` 字面量更会让 ``parse_expr`` 抛
+    ``'NoneType' object has no attribute 'is_Float'``——整行中间变量被跳过、符号成
+    孤儿、``return`` 无法求值。实测 benchmark ``I.37.4_0_1`` samples_8：
+    ``radicand = np.clip(radicand, 0.0, None)``。
+    """
+
+    def test_rewrite_forms(self):
+        from drsr_420.analysis.expr_parse import rewrite_numpy_clip_calls as rw
+        self.assertEqual(rw("np.clip(a, 0.0, None)"), "Max((a), (0.0))")
+        self.assertEqual(rw("np.clip(a, None, 5.0)"), "Min((a), (5.0))")
+        self.assertEqual(rw("np.clip(a, 0.0, 1.0)"), "Max(Min((a), (1.0)), (0.0))")
+        self.assertEqual(rw("clip(a, None, None)"), "(a)")
+
+    def test_nested_clip_is_rewritten(self):
+        from drsr_420.analysis.expr_parse import rewrite_numpy_clip_calls as rw
+        self.assertEqual(rw("np.clip(np.clip(a, 0.0, None), None, 5.0)"),
+                         "Min((Max((a), (0.0))), (5.0))")
+
+    def test_end_to_end_lower_bound_only(self):
+        func = _spec(["a = np.clip(x1, 0.0, None)", "return a"])
+        expr = expr_substitution(func, [])
+        self.assertIsNotNone(expr)                      # 修复前恒为 None
+        self.assert_expr_close(expr, sp.Max(X1, 0))
+
+
 class WherePiecewiseHelpersTest(_ExprTestCase):
     """`where(...)` -> `Piecewise((a, cond), (b, True))` 改写所用的括号/切分工具。"""
 
@@ -782,12 +810,13 @@ class ParseAuditTest(unittest.TestCase):
     #: 有 return 但引用了未定义符号 —— 解析器不支持的写法
     _UNSUPPORTED = _spec(["return params[0]*unknown_symbol"])
 
-    def _write(self, root: pathlib.Path, order, func, score, name=None):
+    def _write(self, root: pathlib.Path, order, func, score, name=None,
+               params=(1.0, 2.0)):
         samples = root / "samples"
         samples.mkdir(parents=True, exist_ok=True)
         (samples / (name or f"samples_{order}.json")).write_text(
             json.dumps({"sample_order": order, "score": score,
-                        "function": func, "params": [1.0, 2.0]}), encoding="utf-8")
+                        "function": func, "params": list(params)}), encoding="utf-8")
 
     def test_classify_three_kinds(self):
         self.assertEqual(classify_sample(self._OK, [1.0, 2.0])[0], "ok")
@@ -795,6 +824,27 @@ class ParseAuditTest(unittest.TestCase):
         kind, warn = classify_sample(self._UNSUPPORTED, [1.0, 2.0])
         self.assertEqual(kind, "unsupported")
         self.assertIn("未定义符号", warn)
+
+    def test_no_params_is_its_own_class(self):
+        """有 ``return`` 但 ``params`` 为空（评估器从未拟合）→ ``no_params``，不是解析器缺陷。
+
+        实测 benchmark ``I.37.4_0_1`` 的 samples_7/9：``score=None``、``params=None``，
+        ``params[k]`` 无从代换 → 报错是"符号被下标"。而**不含** params 的公式即使没有
+        params 也应判 ``ok``（先解析、后判空）。
+        """
+        self.assertEqual(classify_sample(self._OK, [])[0], "no_params")
+        self.assertEqual(classify_sample(_spec(["return x1 + 1.0"]), [])[0], "ok")
+
+    def test_audit_counts_no_params_separately(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self._write(root, 1, self._OK, -1.0)
+            self._write(root, 2, self._OK, None, params=[])
+            audit = audit_parse_failures(str(root))
+            self.assertEqual(audit["n_total"], 2)
+            self.assertEqual(audit["n_no_params"], 1)
+            self.assertEqual(audit["n_unsupported"], 0)
+            self.assertEqual(audit["n_failed"], 1)
 
     def test_audit_splits_two_failure_classes(self):
         with tempfile.TemporaryDirectory() as tmp:

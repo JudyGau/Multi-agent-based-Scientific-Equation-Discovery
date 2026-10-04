@@ -332,4 +332,5 @@ def main(
         inputs, config, max_sample_nums, class_config, kwargs, profiler)
 
     find_best_eq(results_root, role_clients=kwargs.get('role_clients'),
-                 test_csv=kwargs.get('test_csv'))
+                 test_csv=kwargs.get('test_csv'),
+                 test_ood_csv=kwargs.get('test_ood_csv'))

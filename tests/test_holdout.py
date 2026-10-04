@@ -462,15 +462,109 @@ class FindBestEqPlumbingTest(unittest.TestCase):
             seen = {}
 
             def _fake_prune(results_root, func, params, threshold, sample_range,
-                            test_csv=None):
+                            test_csv=None, test_ood_csv=None):
                 seen["test_csv"] = test_csv
+                seen["test_ood_csv"] = test_ood_csv
                 return None
 
             with mock.patch.object(fbe, "prune_and_visualize", _fake_prune), \
                  mock.patch.object(fbe, "explain_best_sample", lambda *a, **k: None), \
                  mock.patch("builtins.print"):
-                fbe.find_best_eq(str(root), test_csv="none")
+                fbe.find_best_eq(str(root), test_csv="none", test_ood_csv="none")
         self.assertEqual(seen["test_csv"], "none")
+        # OOD 通道独立透传：ID 关闭不影响 OOD 的显式值
+        self.assertEqual(seen["test_ood_csv"], "none")
+
+
+class OodChannelTest(ResolveTestBase):
+    """OOD（分布外）held-out 通道：旧实现只探测同分布的 ``test.csv``，于是基准数据里
+    的 ``ood_test.csv`` / ``test_ood.csv`` 从未被评估——论文的 ID/OOD 两列因此各缺一半。
+    本类锁定：自动探测、显式指定、ID/OOD 分开渲染。
+    """
+
+    @staticmethod
+    def _metric(path, nmse, n=7):
+        return {"path": path, "n_points": n, "mse": nmse, "nmse": nmse,
+                "max_abs_err": 0.1, "max_rel_err": 0.02, "train_var": 1.0,
+                "in_sample_nmse": None,
+                "rows": [{"variables": {"x1": 1.0, "x2": 2.0}, "observed": 9.0,
+                          "predicted": 9.0, "abs_err": 1e-9, "rel_err": 1e-9}]}
+
+    def _mk(self, root, name):
+        d = root / "data" / "tiny"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / name).write_text("x1,x2,y\n1,2,9\n", encoding="utf-8")
+
+    def test_autodetect_ood_test_csv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "p_20260101-000000"
+            _make_experiment(root, snapshot={"data_csv": "data/tiny/train.csv"},
+                             test_rows=None)
+            self._mk(root, "ood_test.csv")
+            self.assertEqual(ho.resolve_ood_csv(str(root)),
+                             str(root / "data" / "tiny" / "ood_test.csv"))
+
+    def test_autodetect_test_ood_csv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "p_20260101-000000"
+            _make_experiment(root, snapshot={"data_csv": "data/tiny/train.csv"},
+                             test_rows=None)
+            self._mk(root, "test_ood.csv")
+            self.assertEqual(ho.resolve_ood_csv(str(root)),
+                             str(root / "data" / "tiny" / "test_ood.csv"))
+
+    def test_id_autodetect_test_id_csv(self):
+        """LLM-SR 真实任务用 ``test_id.csv`` 作同分布 held-out——旧实现探测不到。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "p_20260101-000000"
+            _make_experiment(root, snapshot={"data_csv": "data/tiny/train.csv"},
+                             test_rows=None)
+            self._mk(root, "test_id.csv")
+            self.assertEqual(ho.resolve_test_csv(str(root)),
+                             str(root / "data" / "tiny" / "test_id.csv"))
+
+    def test_explicit_none_disables_ood(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "p_20260101-000000"
+            _make_experiment(root, snapshot={"data_csv": "data/tiny/train.csv"})
+            self._mk(root, "ood_test.csv")
+            self.assertIsNone(ho.resolve_ood_csv(str(root), "none"))
+
+    def test_load_ood_data_reads_struct(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "p_20260101-000000"
+            _make_experiment(root, snapshot={"data_csv": "data/tiny/train.csv"},
+                             test_rows=None)
+            self._mk(root, "ood_test.csv")
+            data = ho.load_ood_data(str(root))
+            self.assertIsNotNone(data)
+            self.assertEqual(list(data.dtype.names), ["x1", "x2", "y"])
+
+    def test_render_lists_id_and_ood_separately(self):
+        text = ho.render_holdout_section(self._metric("data/tiny/test.csv", 1e-4),
+                                        {"n_points": 5, "mse_before": 1e-6,
+                                         "nmse_before": 1e-7},
+                                        ood=self._metric("data/tiny/ood_test.csv", 3e-2))
+        self.assertIn(ho.HOLDOUT_HEADING, text)
+        self.assertIn("分布外（OOD）", text)
+        self.assertIn("data/tiny/test.csv", text)
+        self.assertIn("data/tiny/ood_test.csv", text)
+
+    def test_render_ood_without_id(self):
+        text = ho.render_holdout_section(None, {"nmse_before": 1e-7},
+                                        ood=self._metric("data/tiny/test_ood.csv", 3e-2))
+        self.assertIn("分布外（OOD）", text)
+        self.assertIn("没有同分布（ID）", text)
+        self.assertNotIn("本次没有可用的 held-out 数据", text)
+
+    def test_format_holdout_block_mentions_ood(self):
+        from drsr_420.analysis import explain as explain_mod
+
+        text = explain_mod._format_holdout_block(
+            self._metric("data/tiny/test.csv", 1e-4), {"nmse_before": 1e-7},
+            ood=self._metric("data/tiny/ood_test.csv", 3e-2))
+        self.assertIn("分布外（OOD）held-out", text)
+        self.assertIn("外推失效", text)
 
 
 class CliOptionTest(unittest.TestCase):

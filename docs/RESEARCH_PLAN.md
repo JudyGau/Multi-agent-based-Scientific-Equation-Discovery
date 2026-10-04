@@ -492,6 +492,10 @@ flowchart TB
 
 **建议起点**：P0 的三件（撤下 DORA 那条后补入"可评测性三小项"）——互相独立、改动小，且做完后第一次拥有**能写进论文**的真实数字。
 
+> **P0"真跑 benchmark"已迈出第一步（2026-10-04）**：`example.bat` 早已覆盖全部 12 个 benchmark 问题，但 `experiments/` 里**只有 MRF 系**——CRK0/PO0/MatSci0/4 个 Feynman/oscillator×2/stressstrain/bactgrow **连目录都没有**；BPG0 的 91 个目录里 **89 个是空的**（外部预建的占位目录；`cli/main.py` 的 `resolve_results_root` → `setup_output_tee` 紧邻，真启动必留 `run.out`，故空目录**不是**失败运行，是**从未发起**）。本轮以最小规模（`--seed 11 --niterations 2 --num_samplers 1 --samples_per_iteration 4`，约 9 样本/题）把 12 题全部跑通：**12/12 产出 `report.md`**，`III.4.33_3_0` 样本内 NMSE **6.5e-15**（近乎精确）、BPG0 8.9e-5、MatSci0 3.7e-2；样本外/样本内比 0.94~1.33（Feynman 的 `test.csv` 有 1~2 万点，是真 held-out）。**实测成本 ≈7.4k tokens/样本**（12 题×9 样本 = 80 万 tokens）→ 据此：10 题×3 种子、40 样本/run ≈ **9M tokens / 15~20 h**；80 样本/run ≈ **18M / 30~40 h**。产物在 `experiments/<问题>/<问题>_20261004-*`。
+>
+> **同轮暴露并修复的两个缺口**：① **OOD 通道缺失**——旧实现只自动探测同分布的 `test.csv`，而 benchmark 的 OOD 叫 `ood_test.csv`（LSR-Synth）/`test_ood.csv`（LLM-SR 真实任务）、ID 叫 `test_id.csv`，**全都探测不到** → 12 题里 4 题连 ID 样本外都没有、OOD 全线缺席。现新增 `--test_ood_csv` + `resolve_ood_csv`，ID/OOD 在「样本外验证」小节**分开两张表**报告。② **两处解析/归因缺陷**——`np.clip(a, lo, None)`（sympy 无 `clip`，且 `None` 字面量抛 `'NoneType' has no attribute 'is_Float'`）→ 改写为 `Max/Min` 组合；而"样本无 `params`（评估器从未拟合、`score=None`）"报错为"符号被下标"、被自检**误记为解析器缺陷** → `classify_sample` 新增 `no_params` 第三类，报告里与"截断样本""解析器不支持的写法"并列、只有最后一类才需要在解析器侧动手。修后 `I.37.4_0_1` 的"解析器不支持"由 **3 → 0**。
+
 ---
 
 ## 附录 A：文献清单与一句话定位

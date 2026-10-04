@@ -42,7 +42,8 @@ from drsr_420.analysis.expr_parse import expr_substitution
 from drsr_420.analysis.expr_viz import render_expr_trees, safe_preview
 from drsr_420.analysis.explain import explain_best_sample
 from drsr_420.analysis.holdout import (evaluate_holdout, format_holdout_summary,
-                                       load_test_data, resolve_test_csv)
+                                       load_ood_data, load_test_data,
+                                       resolve_ood_csv, resolve_test_csv)
 from drsr_420.analysis.prune_report import (classify_pruning, compare_fits,
                                             format_fit_summary, load_training_data,
                                             resolve_columns)
@@ -157,7 +158,8 @@ def _training_points(data, dependent: str, sym_names: list[str]) -> list | None:
 
 def prune_and_visualize(results_root: str, func: str, params,
                         threshold: float, sample_range: tuple,
-                        test_csv: str | None = None) -> dict | None:
+                        test_csv: str | None = None,
+                        test_ood_csv: str | None = None) -> dict | None:
     """基于敏感度分析剪枝最优公式，保存表达式预览图与表达式树图，返回剪枝摘要。
 
     返回值是给 ``explain`` 用的剪枝摘要（含剪枝前/后表达式、被移除项及其敏感度、
@@ -313,20 +315,32 @@ def prune_and_visualize(results_root: str, func: str, params,
 
     # 样本外验证：在没参与拟合/打分/选择的 held-out 点上评估**最终发布的**公式。
     # 只报告，不回灌评分——一旦参与选择，它就不再是 held-out（见 holdout 模块说明）。
-    holdout = load_test_data(results_root, test_csv)
-    if holdout is not None:
-        train_var = None
-        if data is not None:
-            try:
-                train_dep, _train_ind, _ = resolve_columns(data, dependent, sym_names)
-                train_var = float(np.var(np.asarray(data[train_dep], dtype=float)))
-            except KeyError:
-                train_var = None
-        holdout = evaluate_holdout(dependent, sym_names, published, holdout,
-                                   train_var=train_var,
-                                   path=(resolve_test_csv(results_root, test_csv) or ""),
-                                   train_data=data)
+    # **ID（同分布）与 OOD（分布外）分开评估、分开报告**：论文要求两者分开报，
+    # 合成一个数字看不出外推是否失效。自动探测：test.csv/test_id.csv ↔
+    # ood_test.csv/test_ood.csv（见 holdout.resolve_ood_csv）。
+    train_var = None
+    if data is not None:
+        try:
+            train_dep, _train_ind, _ = resolve_columns(data, dependent, sym_names)
+            train_var = float(np.var(np.asarray(data[train_dep], dtype=float)))
+        except KeyError:
+            train_var = None
+
+    def _eval_holdout(test_data, explicit, resolver):
+        if test_data is None:
+            return None
+        return evaluate_holdout(dependent, sym_names, published, test_data,
+                                train_var=train_var,
+                                path=(resolver(results_root, explicit) or ""),
+                                train_data=data)
+
+    holdout = _eval_holdout(load_test_data(results_root, test_csv), test_csv,
+                            resolve_test_csv)
+    holdout_ood = _eval_holdout(load_ood_data(results_root, test_ood_csv), test_ood_csv,
+                                resolve_ood_csv)
     print(f"[HOLDOUT] {format_holdout_summary(holdout, fit)}")
+    if holdout_ood is not None:
+        print(f"[HOLDOUT-OOD] {format_holdout_summary(holdout_ood, fit)}")
 
     return {
         "dependent": dependent,
@@ -359,8 +373,9 @@ def prune_and_visualize(results_root: str, func: str, params,
         "fit": fit,
         # 动态范围体检（对发布式）：检测角点钉扎/下溢尖峰类病理解；None=体检失败
         "range_check": range_info,
-        # 样本外验证（held-out）：只报告，不参与任何选择
+        # 样本外验证（held-out）：只报告，不参与任何选择。ID 与 OOD 分开。
         "holdout": holdout,
+        "holdout_ood": holdout_ood,
         # 训练进度（历史最优刷新点）：只报告；None=没有 best_history 记录
         "progress": progress,
     }
@@ -368,7 +383,8 @@ def prune_and_visualize(results_root: str, func: str, params,
 
 def find_best_eq(results_root: str, threshold: float = 0.1,
                  sample_range: tuple = (1, 14), role_clients=None,
-                 test_csv: str | None = None):
+                 test_csv: str | None = None,
+                 test_ood_csv: str | None = None):
     """收尾：寻找最优样本 → 敏感度剪枝与可视化 → 生成物理解释（含剪枝分析）。
 
     主函数仅做扁平编排，具体逻辑拆分到 select_published_sample / prune_and_visualize /
@@ -382,9 +398,12 @@ def find_best_eq(results_root: str, threshold: float = 0.1,
         role_clients: ``llm.roles.RoleClients``；物理解释按其中的 ``explain`` 角色
             取客户端。省略时由 ``explain`` 模块自行按注册表解析（因此直接调用
             本函数也能拿到正确档案，不再依赖硬编码文件名）。
-        test_csv: held-out 数据路径；``None`` 表示自动探测（见
+        test_csv: **同分布（ID）** held-out 数据路径；``None`` 表示自动探测（见
             ``holdout.resolve_test_csv``），``"none"`` 表示关闭。样本外指标只写进
             run.out 与 report.md，不参与采样/打分/选择。
+        test_ood_csv: **分布外（OOD）** held-out 数据路径；``None`` 表示自动探测
+            （``ood_test.csv`` / ``test_ood.csv``，见 ``holdout.resolve_ood_csv``）。
+            ID 与 OOD 分开报告。
     """
     chosen, selection = select_published_sample(results_root)
     if chosen is None:
@@ -409,7 +428,7 @@ def find_best_eq(results_root: str, threshold: float = 0.1,
     # 先剪枝：report.md 要解释"剪枝后的表达式"与"剪掉了哪些项、为什么合理"，
     # 剪枝摘要（含剪枝前后在训练数据上的拟合对比）必须先算出来。
     pruning = prune_and_visualize(results_root, func, params, threshold, sample_range,
-                                  test_csv=test_csv)
+                                  test_csv=test_csv, test_ood_csv=test_ood_csv)
     if pruning is not None:
         # 选择依据随剪枝摘要一起进 explain（渲染成 report.md 的「发布解选择」小节）：
         # 被跳过的病理解候选必须留在报告里，否则"为什么发布的不是最高分"无法追溯。
@@ -443,19 +462,26 @@ def _latest_run_dir(root: str = "experiments") -> str | None:
 
 if __name__ == "__main__":
     # 手工排查用：
-    #   python -m drsr_420.analysis.find_best_eq [实验目录] [--test_csv <路径>|none]
+    #   python -m drsr_420.analysis.find_best_eq [实验目录]
+    #       [--test_csv <路径>|none] [--test_ood_csv <路径>|none]
     # 不给路径时取 experiments/ 下最近修改的一次 run（见 _latest_run_dir）。
     import sys
 
     argv = sys.argv[1:]
-    explicit_test = None
-    if "--test_csv" in argv:
-        i = argv.index("--test_csv")
-        explicit_test = argv[i + 1] if i + 1 < len(argv) else "none"
-        del argv[i:i + 2]
+
+    def _take(flag: str):
+        if flag in argv:
+            i = argv.index(flag)
+            value = argv[i + 1] if i + 1 < len(argv) else "none"
+            del argv[i:i + 2]
+            return value
+        return None
+
+    explicit_test = _take("--test_csv")
+    explicit_ood = _take("--test_ood_csv")
     target = argv[0] if argv else _latest_run_dir()
     if target is None:
         print("[WARN] 未找到任何实验目录，请显式给出路径。")
     else:
         print(f"[INFO] 收尾分析目标: {target}")
-        find_best_eq(target, test_csv=explicit_test)
+        find_best_eq(target, test_csv=explicit_test, test_ood_csv=explicit_ood)
