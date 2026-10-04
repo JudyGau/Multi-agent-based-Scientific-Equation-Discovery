@@ -1,6 +1,8 @@
 # data/ —— 基准数据集
 
-本目录存放 DrSR 的基准数据集。**每个子目录对应一个"问题"，至少包含 `train.csv`。**
+本目录存放符号回归（SR）的**社区标准基准数据集**与课题组自有的**磁流变（MRF）**数据。**每个子目录对应一个"问题"，至少包含 `train.csv`。**
+
+非 MRF 数据并非本项目独有，而是沿用学界通用 benchmark（可按需增删或替换）；其来源见下方「数据来源」小节。
 
 ## 使用约定
 
@@ -26,6 +28,19 @@
 > （现已互异），但它们与 MRF 其它系的 `test.csv` **都只有 2 行**：它们不是统计意义上
 > 的 held-out 集——工具会标出"与训练集重合"，而即便不重合，2 个点也算不出可信的
 > 泛化指标，不要拿它论证泛化能力。
+
+## 数据来源
+
+非 MRF 数据均取自学界公开 benchmark，**非本项目独有**。逐类来源如下：
+
+| 子目录 | 类别 | 来源 | 原始文献 |
+|--------|------|------|----------|
+| `BPG0` / `CRK0` / `PO0` / `MatSci0` | LSR-Synth 四域 | **LLM-SRBench** | Shojaee et al., *LLM-SRBench*, arXiv:2504.10415 |
+| `I.37.4_0_1` / `I.48.2_1_0` / `II.6.15b_3_0` / `III.4.33_3_0` | LSR-Transform（Feynman 方程变换） | **LLM-SRBench**（目标函数源自 **AI Feynman**） | Udrescu & Tegmark, *Science Advances*, 2020；Shojaee et al., arXiv:2504.10415 |
+| `oscillator1` / `oscillator2` / `stressstrain` / `bactgrow` | 非线性振子 / 铝材应力-应变 / 细菌生长 | **LLM-SR** | Shojaee et al., *LLM-SR*, arXiv:2404.18400 |
+| `MRFCompress-*` / `MRFShear-*` | 磁流变本构（小样本） | 课题组自有数据 | — |
+
+> 说明：上述非 MRF 数据亦被 DrSR（arXiv:2506.04282）等后续工作复用，但其原始来源是 LLM-SR / LLM-SRBench / AI Feynman，并非任何单一后续工作独有。本仓库收录的题目范围甚至**大于** DrSR 实验所用子集（其 LSR-Transform 仅取 `I.37.4_0_1` 与 `III.4.33_3_0` 两题）。
 
 ## 数据集清单
 
