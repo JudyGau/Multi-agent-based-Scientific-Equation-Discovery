@@ -15,6 +15,7 @@
 - **想冲分区高一点且免版面费**：`Int. J. Mechanical Sciences`（工程技术 1 区 Top，可走订阅免费通道）。
 - **偏 AI/交叉且免版面费**：`Engineering Applications of AI`、`Advanced Engineering Informatics`（均中科院 1 区 Top，订阅免费）。
 - **彻底 OA 且必付费**（除非有经费，否则优先不选）：`npj Computational Materials`、`Machine Learning: Science & Technology`、`J. Computational Design and Engineering`、`Digital Discovery`。
+- **方向未定时最稳妥（A/B 都能投）**：`EAAI`、`Advanced Engineering Informatics`（免 APC、1 区 Top）、`npj Computational Materials`、`Machine Learning: Science & Technology`、`J. Computational Design and Engineering` —— 详见第 8 节。
 - **强烈不建议**：`Mechanics of Advanced Materials and Structures`（2025 年被 WOS 列入 On Hold）。
 
 > 币值概算：1 USD ≈ 7.1 CNY，1 EUR ≈ 7.7 CNY，1 GBP ≈ 9.0 CNY。
@@ -222,6 +223,37 @@
 4. **JCIM**：专属 APC 未查到，需向 ACS 确认。
 5. **Scientific Reports**：中科院综合性期刊 **3区**，部分单位认可度一般。
 6. **Computer Physics Communications**：投稿→接收周期来源差异极大（5.3–12 个月）。
+
+---
+
+## 8. 路线 A / B 通用期刊（两条路线都可投）
+
+> **判据**：期刊 scope 同时接受"应用优先（MRF 本构发现）"与"方法优先（可信性感知的符号回归）"两种写法。这些是**方向未最终定**时最稳妥的落点。
+
+| 期刊 | JCR 分区（小类） | 中科院分区（大类 / Top） | OA 类型 | 费用 | 投稿周期 | 两条路线如何摆 |
+|---|---|---|---|---|---|---|
+| **Engineering Applications of AI (EAAI)** (Elsevier) | **Q1×4**：自动化控制 8/88、CS-AI 30/210、工程电子电气 27/369、工程综合 6/178 | 计算机科学 **1区**；**Top 是** | 混合 OA | 订阅**免费**；金色 OA **$3040** | 投稿→接收 207 天（~6.9 月） | A：讲"AI 用于本构建模"；B：讲"可信 SR 方法" |
+| **Advanced Engineering Informatics** (Elsevier) | **Q1**：CS-AI 17/210、工程综合 4/178 | 工程技术 **1区**；**Top 是** | 混合 OA | 订阅**免费**；金色 OA **$3380**（第三方） | 初审 9.3 周；投稿→接收 3–4.5 月 | 同 EAAI，工程/信息学接口 |
+| **npj Computational Materials** (Nature) | IF ~9；物理化学 **Q1**(24/191)、材料综合 **Q1**(54/472) | 材料科学 **1区**；**Top 是** | **完全 OA** | **必付**：Research **£2790 / $3590 / €3090**；Brief/Review ~£1355 | 6 周；中位 146 天 | A：讲"材料本构发现"；B：讲"ML 用于计算材料" |
+| **Machine Learning: Science & Technology** (IOP) | CS-AI Q2；**综合性期刊 Q1**(26/140) | 物理与天体物理 **2区**；**非 Top** | **完全 OA** | **必付** **£2680 / €3215 / $3350** | 初审 ~5 周 | AI4S 主刊，两种写法都收 |
+| **J. Computational Design and Engineering** (OUP) | **Q1**：CS-跨学科 34/185、工程综合 11/178 | 工程技术 **2区**；**非 Top** | **完全 OA** | **必付** **$2715** | 投稿→初审 6 周；→接收 15 周 | 计算设计 + AI，两种写法都收 |
+| ⚠️ **Digital Discovery** (RSC) | Q1 但**仅 ESCI（非 SCIE）** | 计算机科学 **2区**（2024 版无记录） | **完全 OA** | **必付** **£2200**；机构协议可免 | 初审 40 天 | 两种写法都收；**收录风险**（仅 ESCI） |
+
+### 8.1 通用表的选刊取舍
+
+- **免 APC 优先** → `EAAI`、`Advanced Engineering Informatics`（均中科院 1 区 Top，可走订阅免费通道）。
+- **愿付 APC 且想贴 AI4S 身份** → `npj Computational Materials`、`Machine Learning: Science & Technology`。
+- **快速见刊** → `J. Computational Design and Engineering`（~15 周）。
+- **避开** → `Digital Discovery`（仅 ESCI，毕业认定可能不认）。
+
+### 8.2 边界情况（口径宽、两路线也能沾，但有取舍）
+
+| 期刊 | 中科院分区 | 说明 |
+|---|---|---|
+| **Scientific Reports** (Nature) | 综合性期刊 **3区** | 口径最宽，两种写法都收；但分区较低、部分单位认可度一般；完全 OA 必付 **US$2,850** |
+| **Advanced Theory and Simulations** (Wiley) | 工程技术 **3区** | 计算/模拟 + ML，两路线都能沾；订阅**免费**，金色 OA ~US$4,220 |
+| **Advanced Intelligent Systems** (Wiley) | 计算机科学 **3区** | AI + 智能系统，智能材料 + AI 可两者；但**完全 OA 必付 US$3,970–4,410** |
+| **J. Chemical Information and Modeling** (ACS) | 化学 **2区**（Top） | **偏化学**：路线 B 的 ML 方法契合，路线 A 的 MRE 本构为弱契合 → 更适合作 B |
 
 ---
 
