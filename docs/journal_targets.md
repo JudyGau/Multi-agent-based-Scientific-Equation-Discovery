@@ -161,6 +161,70 @@
 
 ---
 
+## 7. 路线 B 推荐期刊（方法型：可信性感知的符号回归）
+
+> 路线 B 是 AI4S / AI 方法型，期刊偏 AI 与交叉。
+> **重要张力**：路线 B 与"暂不考虑纯计算机类"的约束存在冲突——其中 `Nature Machine Intelligence`、`Nature Computational Science` 在中科院分区中计为**计算机科学 1 区**，部分单位视为计算机类；投稿前请确认学校/学院的认定口径。
+> 币值概算：1 USD ≈ 7.1 CNY、1 EUR ≈ 7.7、1 GBP ≈ 9.0。
+
+### 7.1 天花板（要求真实科学发现 / 方法极强）
+
+| 期刊 | JCR 分区（小类） | 中科院分区（大类 / 小类 / Top） | OA 类型 | 费用 | 投稿周期 |
+|---|---|---|---|---|---|
+| **Nature Machine Intelligence** | IF 29.8；计算机:AI **Q1**(2/210)、计算机:跨学科 **Q1**(1/185) | 计算机科学 **1区**；计算机:AI 1区、计算机:跨学科 1区；**Top 是** | 混合 OA | 订阅**免费**；金色 OA **~US$12,690–12,850**（≈¥9万） | 首次编辑决定中位 10 天；投稿→接收中位 ~231 天 |
+| **Nature Computational Science** | IF 20.3；计算机:跨学科 **Q1**(3/185)、计算机:理论方法 **Q1**(2/146)、综合性期刊 **Q1**(7/140) | 计算机科学 **1区**；小类均 1区；**Top 是** | 混合 OA | 订阅**免费**；金色 OA **€9,500**（≈¥7.4万） | 初审 ~9 天；投稿→接收 ~4–6 个月 |
+
+### 7.2 AI4Science 主力
+
+| 期刊 | JCR 分区（小类） | 中科院分区（大类 / 小类 / Top） | OA 类型 | 费用 | 投稿周期 |
+|---|---|---|---|---|---|
+| **Machine Learning: Science & Technology** (IOP) | CS-AI Q2；**综合性期刊 Q1**(26/140) | 物理与天体物理 **2区**；综合性期刊 2区、计算机 AI 3区；**非 Top** | **完全 OA** | **必付** **£2680 / €3215 / $3350**（≈¥2.4万） | 初审 ~5 周 |
+| **npj Computational Materials** (Nature) | IF ~9；物理化学 **Q1**(24/191)、材料综合 **Q1**(54/472) | 材料科学 **1区**；物理化学 1区、材料综合 1区；**Top 是** | **完全 OA** | **必付**：Research **£2790 / $3590 / €3090**（≈¥2.5万）；Brief/Review ~£1355 | 6 周；中位 146 天 |
+| **Computer Physics Communications** (Elsevier) | IF 3.9；物理:数学物理 **Q1**(2/61)、计算机:跨学科 Q2(81/185) | 物理与天体物理 **2区**；物理:数学物理 2区、计算机:跨学科 3区；**非 Top** | 混合 OA | 订阅**免费**；金色 OA **~US$3,410–3,700**（≈¥2.5万） | 初审 ~11 天–6 周；投稿→接收 5.3–12 个月（源差异大） |
+| **Scientific Reports** (Nature) | IF 4.9；综合性期刊 **Q1**(21/140) | 综合性期刊 **3区**；综合性期刊 3区；**非 Top** | **完全 OA** | **必付** **US$2,850**（≈¥2.1万）；可申请豁免/折扣 | 投稿→初审 56 天、→接收 133 天 |
+| ⚠️ **Digital Discovery** (RSC) | Q1 但**仅 ESCI（非 SCIE）** | 计算机科学 **2区**（2024 版无记录）；化学综合 2区 | **完全 OA** | **必付** **£2200**；机构协议可免 | 初审 40 天 |
+
+### 7.3 AI + 工程交叉（写法与路线 A 兼容，免 APC 可选）
+
+| 期刊 | JCR 分区（小类） | 中科院分区（大类 / 小类 / Top） | OA 类型 | 费用 | 投稿周期 |
+|---|---|---|---|---|---|
+| **Engineering Applications of AI (EAAI)** (Elsevier) | **Q1×4**：自动化控制 8/88、CS-AI 30/210、工程电子电气 27/369、工程综合 6/178 | 计算机科学 **1区**；工程综合 1区、自动化控制 2区、计算机 AI 2区；**Top 是** | 混合 OA | 订阅**免费**；金色 OA **$3040** | 官网投稿→接收 207 天（~6.9 月） |
+| **Advanced Engineering Informatics** (Elsevier) | **Q1**：CS-AI 17/210、工程综合 4/178 | 工程技术 **1区**；计算机 AI 1区、工程综合 1区；**Top 是** | 混合 OA | 订阅**免费**；金色 OA **$3380**（第三方） | 初审 9.3 周；投稿→接收 3–4.5 月 |
+| **J. Computational Design and Engineering** (OUP) | **Q1**：CS-跨学科 34/185、工程综合 11/178 | 工程技术 **2区**；计算机跨学科 3区、工程综合 3区；**非 Top** | **完全 OA** | **必付** **$2715**（≈¥2.0万） | 投稿→初审 6 周；投稿→接收 15 周 |
+
+### 7.4 备选（更偏材料/化学，或相对易中）
+
+| 期刊 | JCR 分区（小类） | 中科院分区（大类 / 小类 / Top） | OA 类型 | 费用 | 投稿周期 |
+|---|---|---|---|---|---|
+| **Advanced Intelligent Systems** (Wiley) | IF 6.7；自动化控制 **Q1**(15/88)、计算机:AI **Q1**(43/210)、机器人学 **Q1**(10/48) | 计算机科学 **3区**；小类均 3区；**非 Top** | **完全 OA** | **必付** **US$3,970–4,410**（≈¥2.8–3.2万，来源不一） | ~4 周（作者反馈） |
+| **Advanced Theory and Simulations** (Wiley) | IF 3.2；综合性期刊 **Q2**(39/140) | 工程技术 **3区**；综合性期刊 4区；**非 Top** | 混合 OA | 订阅**免费**；金色 OA **~US$4,220 / €3,520**（≈¥3万） | 投稿→初审中位 20 天 |
+| **J. Chemical Information and Modeling** (ACS) | IF 6.4；药物化学/计算机:信息系统/计算机:跨学科 **Q1**、化学:综合 Q2（2024 版小类） | 化学 **2区**；化学:综合 2区、药物化学 3区、计算机:跨学科 3区；**Top 是** | 混合 / Transformative | 订阅**免费**；专属 APC **未查到**（ACS AuthorChoice 一般 ~$4000 档） | ~3 个月（作者反馈） |
+
+### 7.5 明确排除（按"暂不考虑纯计算机领域"的约束）
+
+以下为纯计算机/机器学习类期刊与会议，**按你的约束排除**、不列入路线 B：
+
+- 期刊：**TMLR、JMLR、IEEE TPAMI、IEEE TNNLS、Artificial Intelligence (AIJ)、Machine Learning (Springer)**。
+- 会议：**NeurIPS / ICML / ICLR / AAAI / IJCAI**。
+- （备注：`Nature Machine Intelligence`、`Nature Computational Science` 虽为综合/AI 顶刊，但中科院计为计算机科学 1 区，是否算"纯计算机"由学校认定为准。）
+
+### 7.6 路线 B 选刊建议与警戒
+
+- **能付 APC + 想贴 AI4S 身份** → `Machine Learning: Science & Technology`、`npj Computational Materials`。
+- **兼容路线 A 写法 + 免 APC** → `Engineering Applications of AI`、`Advanced Engineering Informatics`（均中科院 1 区 Top，订阅免费）。
+- **快速见刊** → `Scientific Reports`（完全 OA，~133 天）、`J. Computational Design and Engineering`（~15 周）。
+- **天花板** → `Nature Machine Intelligence`、`Nature Computational Science`（需真实科学发现 + APC 高昂 ~¥7–9 万）。
+
+**警戒项**：
+1. **APC 高昂**：NMI ~¥9万、NCS ~¥7.4万；且二者被视为"计算机类"，未必符合你的约束。
+2. **Digital Discovery**：**仅 ESCI，不在 SCIE** → 毕业认定可能不认。
+3. **Advanced Intelligent Systems**：APC 三处来源不一致（$3,190 / $3,970 / $4,410）→ 以官网为准。
+4. **JCIM**：专属 APC 未查到，需向 ACS 确认。
+5. **Scientific Reports**：中科院综合性期刊 **3区**，部分单位认可度一般。
+6. **Computer Physics Communications**：投稿→接收周期来源差异极大（5.3–12 个月）。
+
+---
+
 ## 附：主要数据来源
 
 - Smart Materials and Structures — IOP About / 作者指南：https://publishingsupport.iopscience.iop.org/journals/smart-materials-and-structures/about-smart-materials-structures/
@@ -178,3 +242,12 @@
 - 科研通 ablesci 期刊库：https://www.ablesci.com/journal/index
 - SciRev（审稿周期）：https://scirev.org/
 - Springer Nature 混合期刊 APC 价目（Couperin 2025）：https://www.couperin.org/wp-content/uploads/2024/07/Springer_Tarifs_APC_oct2025.pdf
+
+路线 B 补充来源：
+- Scientific Reports — 官网/APC：https://www.nature.com/srep/
+- Computer Physics Communications — Elsevier：https://www.elsevier.com/journals/computer-physics-communications/0010-4655
+- Advanced Intelligent Systems — Wiley OA：https://advanced.onlinelibrary.wiley.com/hub/journal/26404567/open-access
+- Advanced Theory and Simulations — Wiley：https://advanced.onlinelibrary.wiley.com/journal/25130390
+- JCIM — ACS About / 定价：https://pubs.acs.org/page/jcisd8/about.html ；https://acsopenscience.org/researchers/oa-pricing/
+- Wiley 混合期刊 APC 价目（2024）：https://www.uv.es/investsbd/openaccess/Wiley-Journal-APCs-OnlineOpen.pdf
+- Nature Portfolio APC 说明：https://www.springernature.com/gp/article-processing-charges-faqs/14238042
