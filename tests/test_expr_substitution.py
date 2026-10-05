@@ -418,6 +418,58 @@ class NumpyClipRewriteTest(_ExprTestCase):
         self.assert_expr_close(expr, sp.Max(X1, 0))
 
 
+class ParamPaddingIdiomTest(_ExprTestCase):
+    """模型为"保持参数总数固定"把用不满的参数槽补零的写法，必须能解析。
+
+    实测 benchmark ``PO0`` 三个 seed 共 **7** 条 unsupported 失败（2026-10-05）：
+    samples_21..25/31 是零列表（``unused = [0.0] * (len(params) - 3)`` +
+    ``sum(unused)``），samples_28 是零数组（``p = np.zeros(10)`` + 填充循环）。
+    两类写法的净语义都是"补零、不用即零"。
+    """
+
+    def test_zero_list_consumed_by_sum_is_zero(self):
+        body = [
+            "a = params[0]",
+            "b = params[1]",
+            "unused = [0.0] * (len(params) - 2)",
+            "return a * x1**2 + b + sum(unused)",
+        ]
+        expr = expr_substitution(_spec(body), [2.0, 3.0, 9.9])
+        self.assertIsNotNone(expr)                      # 修复前恒为 None
+        self.assert_expr_close(expr, 2 * X1**2 + 3)
+
+    def test_zeros_array_filled_by_loop(self):
+        body = [
+            "p = np.zeros(10)",
+            "for i in range(min(len(params), 3)):",
+            "    p[i] = params[i]",
+            "return p[0]*x1 + p[1]*x1**2 + p[2] + p[3]",
+        ]
+        expr = expr_substitution(_spec(body), [2.0, 3.0, 4.0])
+        self.assertIsNotNone(expr)                      # 修复前恒为 None
+        # p[3] 未被填充 → 按 np.zeros 语义取 0
+        self.assert_expr_close(expr, 2 * X1 + 3 * X1**2 + 4)
+
+    def test_zeros_array_filled_by_literal_indices(self):
+        body = [
+            "p = np.zeros(4)",
+            "p[0] = params[0]",
+            "p[2] = params[1]",
+            "return p[0]*x1 + p[1] + p[2]",
+        ]
+        expr = expr_substitution(_spec(body), [2.0, 3.0])
+        self.assertIsNotNone(expr)                      # p[1] 未赋值 → 0
+        self.assert_expr_close(expr, 2 * X1 + 3)
+
+    def test_unknown_dynamic_index_is_not_guessed(self):
+        """含未定义符号的下标不猜：交给自由符号护栏安全失败（返回 None）。"""
+        body = [
+            "q = params",
+            "return q[j] * x1",                         # j 未定义
+        ]
+        self.assertIsNone(expr_substitution(_spec(body), [2.0, 3.0]))
+
+
 class WherePiecewiseHelpersTest(_ExprTestCase):
     """`where(...)` -> `Piecewise((a, cond), (b, True))` 改写所用的括号/切分工具。"""
 

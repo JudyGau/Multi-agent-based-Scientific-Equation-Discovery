@@ -142,6 +142,33 @@ class UnevaluableExpressionTest(unittest.TestCase):
         self.assertGreater(pruner.stats.nodes_pruned, 0)
 
 
+class AbsOfPowNormalizationTest(unittest.TestCase):
+    """``sp.simplify`` 把 ``Abs(x)**y`` 翻成 ``Abs(x**y)`` 时必须归一回安全形式。
+
+    sympy 1.14 的化简易给出后者：符号等价（``|x^n| = |x|^n``）但**浮点求值不等价**
+    —— ``x<0`` 且指数非整数时 numpy 的 ``x**n`` 直接给 ``nan``。实测 benchmark
+    ``II.6.15b_3_0`` samples_40：剪枝只移除数值正则项 ``1e-12``，样本内 MSE 却从
+    ``0.0521732`` 变成 ``nan``。
+    """
+
+    def test_abs_of_pow_is_rewritten(self):
+        from drsr_420.analysis.sensitivity_prune import _rewrite_abs_of_pow
+        e = sp.Abs(x ** sp.Float(-0.332317))
+        out = _rewrite_abs_of_pow(e)
+        self.assertEqual(out, sp.Abs(x) ** sp.Float(-0.332317))
+
+    def test_pruned_result_stays_finite_for_negative_base(self):
+        expr = 1 / (sp.Abs(x) + sp.Float("1e-12")) ** sp.Float("0.332317")
+        pruned, stats = sensitivity_prune(expr, [x], threshold=0.1,
+                                          num_samples=64, metric="relative",
+                                          reduction="max")
+        self.assertEqual(stats.nodes_pruned, 1)         # 只剪掉 1e-12
+        self.assertNotIn("Abs(x**", str(pruned))        # 不得留下危险的 Abs(x**y)
+        f = sp.lambdify([x], pruned, modules="numpy")
+        vals = np.asarray(f(np.array([-2.0, -0.5, 1.5])), dtype=float)
+        self.assertTrue(np.all(np.isfinite(vals)))
+
+
 class PruneBehaviorTest(unittest.TestCase):
     def test_drops_negligible_cross_term(self):
         expr = x**2 + y**2 + z**2 + eps * x * y

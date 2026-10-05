@@ -43,6 +43,36 @@ from drsr_420.analysis.prune_stats import PruneRecord, PruneStats
 __all__ = ["SensitivityPruner", "sensitivity_prune", "PruneRecord", "PruneStats"]
 
 
+def _rewrite_abs_of_pow(expr: sp.Expr) -> sp.Expr:
+    """把 ``Abs(x**y)`` 归一回 ``Abs(x)**y``：数学等价，数值上必需。
+
+    ``sp.simplify`` 会把 ``Abs(x)**(-0.332317)`` 改写成 ``Abs(x**(-0.332317))``
+    （sympy 1.14，见下），二者在复数意义下相等（``|x^n| = |x|^n``），但**浮点求值
+    不等价**：``x < 0`` 且指数非整数时 ``x**n`` 在 numpy 里直接给 ``nan``
+    （负底数 + 非整数幂），而 ``Abs(x)**n`` 恒为有限值。
+
+    实测后果（benchmark ``II.6.15b_3_0`` 的 samples_40，2026-10-05）：原式为
+    ``(p_d/(epsilon*|Ef|))**p1 * (1+3cos²θ)**p2``，剪枝只移除数值正则项 ``1e-12``；
+    随后 ``simplify`` 把分母 ``Abs(Ef)**0.332317`` 翻成 ``Abs(Ef**0.332317)``，
+    样本内 MSE 立即从 ``0.0521732`` 变成 ``nan``（数据中 ``Ef`` 取负）。
+
+    与 :mod:`drsr_420.analysis.expr_parse` 的 ``np.clip`` 改写同属"符号式正确、
+    数值式有害"的一类，故在剪枝出口做一次归一，令发布式在两种求值器下都有限。
+    """
+    def _query(node) -> bool:
+        return (isinstance(node, sp.Abs) and len(node.args) == 1
+                and isinstance(node.args[0], sp.Pow))
+
+    def _value(node) -> sp.Expr:
+        base, exp = node.args[0].args
+        return sp.Abs(base) ** exp
+
+    try:
+        return expr.replace(_query, _value)
+    except Exception:
+        return expr     # 改写失败：宁可保留 sympy 原形（由调用方按原样评估）
+
+
 class SensitivityPruner:
     """
     对 SymPy 表达式树进行基于敏感度的剪枝。
@@ -143,6 +173,9 @@ class SensitivityPruner:
 
         result = sp.simplify(result)
         self.stats.simplify_applied = True
+        # simplify 可能把 Abs(x)**y 改成 Abs(x**y)（符号等价、数值有害，见
+        # _rewrite_abs_of_pow）；发布前归一，避免负底数 + 非整数幂在 numpy 下变 nan。
+        result = _rewrite_abs_of_pow(result)
         self.stats.ops_after = sp.count_ops(result)
 
         if verbose:

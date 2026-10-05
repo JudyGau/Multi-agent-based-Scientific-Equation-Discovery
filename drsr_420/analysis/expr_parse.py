@@ -553,6 +553,131 @@ def rewrite_numpy_clip_calls(text: str) -> str:
         pos = close_idx + 1
 
 
+# ── "参数预算填充"惯用法（把用不满的参数槽补零到固定总数） ────────────────
+#: ① 零列表：``unused = [0.0] * (len(params) - 3)``（只被 ``sum()`` 消费）。
+_ZERO_LIST_ASSIGN_RE = re.compile(r'^\s*([A-Za-z_]\w*)\s*=\s*\[\s*0(?:\.0*)?\s*\]\s*\*')
+#: ② 零数组：``p = np.zeros(10)`` / ``p = zeros(10)``（随后按下标填充）。
+_ZEROS_ASSIGN_RE = re.compile(r'^\s*([A-Za-z_]\w*)\s*=\s*(?:np\.|numpy\.)?zeros\s*\(')
+#: 填充循环：``for i in range(...):``
+_RANGE_LOOP_RE = re.compile(r'^\s*for\s+([A-Za-z_]\w*)\s+in\s+range\s*\((.+)\)\s*:?\s*$')
+#: 填充循环体（或独立赋值）：``p[i] = params[i]``
+_FILL_BODY_RE = re.compile(
+    r'^\s*([A-Za-z_]\w*)\s*\[\s*([A-Za-z_]\w*)\s*\]\s*=\s*'
+    r'params\s*\[\s*([A-Za-z_]\w*)\s*\]\s*$')
+#: 独立下标赋值：``p[3] = params[3]`` 或（参数已代入后）``p[3] = 2.0``
+_INDEX_ASSIGN_RE = re.compile(
+    r'^\s*([A-Za-z_]\w*)\s*\[\s*(\d+)\s*\]\s*=\s*(.+?)\s*$')
+
+
+def _loop_upper(inner: str, n_params: int) -> int | None:
+    """解析填充循环的 ``range(...)`` 上界；认不出返回 ``None``。
+
+    支持三种写法：``range(min(len(params), U))``、``range(len(params))``、``range(U)``。
+    """
+    inner = inner.strip()
+    m = re.fullmatch(
+        r'min\s*\(\s*(?:len\s*\(\s*params\s*\)|(\d+))\s*,\s*(\d+)\s*\)', inner)
+    if m:
+        a = int(m.group(1)) if m.group(1) is not None else n_params
+        return min(a, int(m.group(2)))
+    if re.fullmatch(r'len\s*\(\s*params\s*\)', inner):
+        return n_params
+    m = re.fullmatch(r'(\d+)', inner)
+    return min(int(m.group(1)), n_params) if m else None
+
+
+def _strip_param_padding(func: str, params: list) -> str:
+    """消解"参数预算填充"惯用法——净语义是"补零、不用即零"。
+
+    模型常把用不满的参数槽补零以"保持参数总数固定"，两种写法都让解析器失手
+    （实测 benchmark ``PO0`` 三个 seed 共 **7** 条 unsupported 失败，2026-10-05）：
+
+    * ``unused = [0.0] * (len(params) - 3)`` → ``len(params)`` 对符号抛
+      ``object of type 'Symbol' has no len()``，该行被跳过、``unused`` 成孤儿，
+      随后 ``sum(unused)`` 报 ``'Symbol' object is not iterable``；
+    * ``p = np.zeros(10)`` + ``for i in range(min(len(params), 5)): p[i] = params[i]``
+      → sympy 的 ``zeros`` 是**矩阵**构造器（不是一维零数组），for 循环也无法解析，
+      ``p`` 沦为符号 → ``p[0]`` 报 ``'Symbol' object is not subscriptable``。
+
+    两类写法的净语义都是"补零、不用即零"：①零列表只被 ``sum()`` 消费 → 整体为 0；
+    ②零数组按下标填充 → **未填充的下标为 0**。此处按语义消解，不引入求值器：
+    含符号的动态下标（如 ``q[i]`` 而 ``i`` 未定义）一律不猜，交由函数尾部的自由符号
+    护栏安全失败。``len(params)`` 是已知量，统一换成字面量，免得任何残留用它报错。
+    """
+    n_params = len(params)
+    lines = func.splitlines()
+    zero_lists: set[str] = set()
+    arrays: dict[str, dict[int, str]] = {}
+    out: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        m = _ZERO_LIST_ASSIGN_RE.match(line)
+        if m:
+            zero_lists.add(m.group(1))
+            i += 1
+            continue
+
+        m = _ZEROS_ASSIGN_RE.match(line)
+        if m:
+            arrays.setdefault(m.group(1), {})
+            i += 1
+            continue
+
+        m = _RANGE_LOOP_RE.match(line)
+        if m:
+            var, upper = m.group(1), _loop_upper(m.group(2), n_params)
+            # 循环体 = 紧随其后的第一条非空缩进行
+            j, body = i + 1, None
+            while j < len(lines):
+                if lines[j].strip() == "":
+                    j += 1
+                    continue
+                if lines[j][:1] in (" ", "\t"):
+                    body = lines[j].strip()
+                break
+            bm = _FILL_BODY_RE.match(body) if body else None
+            if (upper is not None and bm is not None
+                    and bm.group(2) == var and bm.group(3) == var):
+                name = bm.group(1)
+                arrays.setdefault(name, {})
+                for k in range(min(upper, n_params)):
+                    arrays[name][k] = str(params[k])
+                i = j + 1
+                continue
+
+        # 独立下标填充（仅当该名字已被识别为零数组）：
+        #   ``p[3] = params[3]``（下标是字面量，未代参）或 ``p[3] = 2.0``（已代参）。
+        m2 = _INDEX_ASSIGN_RE.match(line)
+        if m2 and m2.group(1) in arrays:
+            name, k, rhs = m2.group(1), int(m2.group(2)), m2.group(3).strip()
+            km = re.fullmatch(r'params\s*\[\s*(\d+)\s*\]', rhs)
+            if km:
+                j = int(km.group(1))
+                if j < n_params:
+                    arrays[name][k] = str(params[j])
+                i += 1
+                continue
+            if _TUPLE_ITEM_NUMBER_RE.match(rhs):
+                arrays[name][k] = rhs
+                i += 1
+                continue
+
+        out.append(line)
+        i += 1
+
+    text = "\n".join(out)
+    for name in zero_lists:
+        text = re.sub(rf"\bsum\s*\(\s*{re.escape(name)}\s*\)", "0", text)
+    for name, mapping in arrays.items():
+        def _rep(mm, _m=mapping):
+            return _m.get(int(mm.group(1)), "0")     # 未填充下标按 np.zeros 语义取 0
+        text = re.sub(rf"\b{re.escape(name)}\s*\[\s*(\d+)\s*\]", _rep, text)
+    text = re.sub(r'\blen\s*\(\s*params\s*\)', str(n_params), text)
+    return text
+
+
 def _normalize_statements(func: str, params: list) -> str:
     """语句级预处理，替 return 的符号消解扫清三种 LLM 常见写法：
 
@@ -577,6 +702,9 @@ def _normalize_statements(func: str, params: list) -> str:
        后果是报告缺「发布解选择」小节）。dtype 不改变值，去掉包装保语义，见
        :func:`strip_type_cast_wrappers`。
     """
+    # ⑥ 先消解"参数预算填充"惯用法（零列表 / 零数组 + 填充循环）：它的净语义是
+    #    "补零、不用即零"，不消解会让后面每一层都拿它没办法（见 _strip_param_padding）。
+    func = _strip_param_padding(func, params)
     name_map: dict[str, str] = {}
     #: **整体别名**（``p = params`` / ``p = params[:10]``）：左侧只有一个名字、右侧是整个
     #: 数组。它不是解包，值要**按下标**取（见函数尾部的展开），不能当成"第一个参数"。
