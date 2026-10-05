@@ -470,6 +470,91 @@ class ParamPaddingIdiomTest(_ExprTestCase):
         self.assertIsNone(expr_substitution(_spec(body), [2.0, 3.0]))
 
 
+class NumpyGuardRewriteTest(_ExprTestCase):
+    """numpy 数值护栏常量/函数必须归一，否则剥离 np. 后成自由符号或未知函数。
+
+    实测 benchmark 批次（36 run / 1476 样本，2026-10-05）残留 unsupported 中多数是
+    防除零/防 NaN/防 log(非正) 的护栏，见 ``rewrite_numpy_guards``。
+    """
+
+    def test_finfo_constants_become_literals(self):
+        for attr, value in [("eps", 2.220446049250313e-16),
+                            ("tiny", 2.2250738585072014e-308),
+                            ("max", 1.7976931348623157e308)]:
+            func = _spec([f"e = np.finfo(float).{attr}", "return x1 + e"])
+            expr = expr_substitution(func, [])
+            self.assertIsNotNone(expr)                  # 修复前恒为 None
+            self.assertAlmostEqual(float(expr.subs(X1, 1.0)), 1.0 + value, places=12)
+
+    def test_numpy_inf_and_bare_inf_become_oo(self):
+        func = _spec(["a = np.minimum(x1, np.inf)", "b = np.minimum(x1, inf)",
+                      "return a + b"])
+        expr = expr_substitution(func, [])
+        self.assertIsNotNone(expr)                      # 修复前恒为 None
+        self.assert_expr_close(expr, 2 * X1)            # Min(x1, oo) == x1
+
+    def test_numpy_nan_becomes_sympy_nan(self):
+        func = _spec(["a = np.where(x1 > 0, x1, np.nan)", "return a"])
+        expr = expr_substitution(func, [])
+        self.assertIsNotNone(expr)                      # 修复前恒为 None
+        self.assertEqual(len(expr.atoms(sp.nan)), 1)
+
+    def test_log1p_rewritten_to_log1p_equivalent(self):
+        func = _spec(["return np.log1p(x1)"])
+        expr = expr_substitution(func, [])
+        self.assertIsNotNone(expr)                      # 修复前 sympy 认不出 log1p
+        self.assert_expr_close(expr, sp.log(1 + X1))
+
+    def test_nan_to_num_guard_is_dropped(self):
+        func = _spec(["v = np.sqrt(x1)", "return np.nan_to_num(v, nan=0.0)"])
+        expr = expr_substitution(func, [])
+        self.assertIsNotNone(expr)                      # nan= 关键字修复前必失败
+        self.assert_expr_close(expr, sp.sqrt(X1))
+
+    def test_broadcast_to_and_copy_are_value_preserving(self):
+        func = _spec(["return np.broadcast_to(x1 * 2.0, np.broadcast(x1, x1).shape).copy()"])
+        expr = expr_substitution(func, [])
+        self.assertIsNotNone(expr)                      # 修复前恒为 None
+        self.assert_expr_close(expr, 2 * X1)
+
+
+class ConditionalExpressionTest(_ExprTestCase):
+    """Python 三元表达式 ``A if C else B`` → ``Piecewise((A, C), (B, True))``。
+
+    实测 ``I.37.4_0_1`` samples_3/22：``a = p[0] if len(p) > 0 else 1.0`` 这类
+    "参数个数护栏"解析失败后符号成孤儿，``return`` 无法求值。
+    """
+
+    def test_ternary_in_assignment_with_len_guard(self):
+        body = ["p = params", "a = p[0] if len(p) > 0 else 1.0", "return a * x1"]
+        expr = expr_substitution(_spec(body), [2.0, 3.0])
+        self.assertIsNotNone(expr)                      # 修复前恒为 None
+        self.assert_expr_close(expr, 2 * X1)
+
+    def test_ternary_in_return(self):
+        body = ["p = params", "return p[1] * x1 if len(p) > 1 else 0.0"]
+        expr = expr_substitution(_spec(body), [2.0, 3.0])
+        self.assertIsNotNone(expr)                      # 修复前恒为 None
+        self.assert_expr_close(expr, 3 * X1)
+
+    def test_nonconstant_condition_becomes_piecewise(self):
+        from drsr_420.analysis.expr_parse import rewrite_conditional_expressions as rw
+        self.assertEqual(rw("a if x1 > 0 else b"),
+                         "Piecewise((a, x1 > 0), (b, True))")
+
+    def test_nested_ternary(self):
+        from drsr_420.analysis.expr_parse import rewrite_conditional_expressions as rw
+        out = rw("a if x1 > 1 else (b if x1 > 0 else c)")
+        self.assertNotIn(" if ", out)
+        self.assertEqual(out.count("Piecewise"), 2)
+
+    def test_and_or_condition_is_left_untouched(self):
+        """条件含 and/or：宁可不改也不静默改错结合顺序。"""
+        from drsr_420.analysis.expr_parse import rewrite_conditional_expressions as rw
+        s = "a if x1 > 0 and x2 > 0 else b"
+        self.assertEqual(rw(s), s)
+
+
 class WherePiecewiseHelpersTest(_ExprTestCase):
     """`where(...)` -> `Piecewise((a, cond), (b, True))` 改写所用的括号/切分工具。"""
 

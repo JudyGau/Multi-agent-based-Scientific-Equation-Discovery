@@ -186,6 +186,76 @@ def fold_constant_comparisons(text: str) -> str:
         return text
 
 
+_IF_KEYWORD_RE = re.compile(r'(?<![\w.])if\b')
+_ELSE_KEYWORD_RE = re.compile(r'(?<![\w.])else\b')
+_AND_OR_KEYWORD_RE = re.compile(r'(?<![\w.])(?:and|or)\b')
+
+
+def _top_level_keyword(text: str, regex: re.Pattern, start: int = 0) -> int:
+    """返回 ``regex`` 在**括号/字符串之外**首次命中的下标；找不到返回 -1。"""
+    depth, quote, i = 0, None, start
+    while i < len(text):
+        ch = text[i]
+        if quote is not None:
+            if ch == '\\':
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+        elif ch in '([{':
+            depth += 1
+        elif ch in ')]}':
+            depth -= 1
+        elif depth == 0 and regex.match(text, i):
+            return i
+        i += 1
+    return -1
+
+
+def _unwrap_balanced_parens(text: str) -> str:
+    """剥掉整体包裹的成对括号（可多层）：``(a if c else b)`` → ``a if c else b``。"""
+    s = text.strip()
+    while s.startswith('(') and find_matching_paren(s, 0) == len(s) - 1:
+        s = s[1:-1].strip()
+    return s
+
+
+def rewrite_conditional_expressions(expr: str) -> str:
+    """把 Python 三元表达式 ``A if C else B`` 改写为 ``Piecewise((A, C), (B, True))``。
+
+    ``sympy.parse_expr`` 不认 Python 条件表达式。模型常拿它做"参数个数护栏"，例如
+    ``a = p[0] if len(p) > 0 else 1.0``；该行解析失败后 ``a`` 成孤儿符号，``return``
+    里的 ``a`` 也随之无法求值（实测 ``I.37.4_0_1`` 的 samples_3 / samples_22）。
+
+    与 :func:`rewrite_where_calls` 同义（都是把条件表达式交给 ``Piecewise``）；条件为
+    常量时 sympy 会自动折叠（``Piecewise((x, 10 > 0), (y, True))`` → ``x``）。只处理
+    括号/字符串外的**顶层** ``if``/``else``，并递归处理被括号包裹的嵌套三元；条件里含
+    顶层 ``and``/``or`` 的形态原样保留——宁可不改，也不静默改错结合顺序。
+    """
+    expr = _unwrap_balanced_parens(expr)
+    idx = _top_level_keyword(expr, _IF_KEYWORD_RE)
+    if idx < 0:
+        return expr
+    body = expr[:idx]
+    m_if = _IF_KEYWORD_RE.match(expr, idx)
+    after_if = expr[m_if.end():]
+    else_idx = _top_level_keyword(after_if, _ELSE_KEYWORD_RE)
+    if else_idx < 0:
+        return expr                         # 没有配对的 else：原样保留，交下游报错
+    cond = after_if[:else_idx]
+    m_else = _ELSE_KEYWORD_RE.match(after_if, else_idx)
+    orelse = after_if[m_else.end():]
+    # 条件含顶层 and/or 时不改：sympy 对带 `and`/`or` 的关系式会退化成 Python 真值
+    # （``x1 > 0 and x2 > 0`` → 只剩 ``x2 > 0``），属于静默算错；宁可不改。
+    if _top_level_keyword(cond, _AND_OR_KEYWORD_RE) >= 0:
+        return expr
+    return (f"Piecewise(({rewrite_conditional_expressions(body)}, "
+            f"{normalize_condition(_unwrap_balanced_parens(cond))}), "
+            f"({rewrite_conditional_expressions(orelse)}, True))")
+
+
 def _parse_expr_with_symbols(text: str, names: list) -> sp.Expr:
     """用显式符号表解析表达式，避免与 SymPy 全局名撞名。
 
@@ -204,7 +274,8 @@ def _parse_expr_with_symbols(text: str, names: list) -> sp.Expr:
     """
     local = {name: sp.Symbol(name) for name in names}
     local.setdefault('N', sp.Symbol('N'))
-    return sp.parse_expr(fold_constant_comparisons(text), local)
+    # 三元表达式先转 Piecewise（sympy 不认 Python 条件表达式），再折叠常量比较。
+    return sp.parse_expr(fold_constant_comparisons(rewrite_conditional_expressions(text)), local)
 
 
 def normalize_condition(cond: str) -> str:
@@ -503,6 +574,84 @@ def rewrite_numpy_power_calls(text: str) -> str:
 #: 显式/裸 numpy 截断调用：``np.clip(a, a_min, a_max)`` / ``clip(...)``
 #: （``a_min`` / ``a_max`` 可以是 ``None``，表示该侧不设界）。
 _NP_CLIP_RE = re.compile(r'(?<![\w.])(?:(?:np|numpy)\s*\.\s*)?clip\s*\(')
+
+#: ``np.finfo(float).eps`` / ``np.finfo(np.float64).tiny`` / ``...max``：浮点极值常量。
+_FINFO_RE = re.compile(
+    r'(?<![\w.])(?:np|numpy)\s*\.\s*finfo\s*\([^()]*\)\s*\.\s*(eps|tiny|max)\b')
+#: ``np.inf`` / ``np.nan``：numpy 的非有限常量（sympy 里是 oo / nan）。
+_NP_INF_RE = re.compile(r'(?<![\w.])(?:np|numpy)\s*\.\s*(inf|nan)\b')
+#: 裸 ``inf`` / ``nan``（``np.`` 前缀剥离后会残留为自由符号，故一并归一）。
+#: ``\b`` 已排除 ``infinity`` / ``nan_to_num`` 这类更长标识符。
+_BARE_INF_RE = re.compile(r'(?<![\w.])inf\b')
+_BARE_NAN_RE = re.compile(r'(?<![\w.])nan\b')
+#: ``np.log1p(a)``：sympy 无 log1p，按数值稳定等价改写成 ``log(1 + a)``。
+_NP_LOG1P_RE = re.compile(r'(?<![\w.])(?:np|numpy)\s*\.\s*log1p\s*\(')
+#: ``np.nan_to_num(a, ...)``：把非有限值替换成给定值；符号层无法表达，丢弃护栏保留 a。
+_NP_NAN_TO_NUM_RE = re.compile(r'(?<![\w.])(?:np|numpy)\s*\.\s*nan_to_num\s*\(')
+#: ``np.broadcast_to(a, shape)``：只改形状不改值（对已对齐的数据列等价于 a）。
+_NP_BROADCAST_TO_RE = re.compile(r'(?<![\w.])(?:np|numpy)\s*\.\s*broadcast_to\s*\(')
+#: ``arr.copy()``：值语义上的空操作，符号层直接去掉。
+_DOT_COPY_RE = re.compile(r'\.\s*copy\s*\(\s*\)')
+
+#: numpy 浮点极值——与 ``np.finfo(np.float64)`` 一致。
+_FLOAT_CONSTS = {"eps": repr(2.220446049250313e-16),
+                 "tiny": repr(2.2250738585072014e-308),
+                 "max": repr(1.7976931348623157e308)}
+
+#: 单参数调用改写表：正则 → 生成改写文本的函数（入参为调用内的原始参数）。
+_CALL_REWRITES = (
+    (_NP_LOG1P_RE, lambda arg: f"log(1 + ({arg}))"),
+    (_NP_NAN_TO_NUM_RE, lambda arg: f"({arg})"),
+    (_NP_BROADCAST_TO_RE, lambda arg: f"({arg})"),
+)
+
+
+def _rewrite_single_arg_calls(text: str, regex: re.Pattern, build) -> str:
+    """把 ``regex`` 命中的单参数调用改写为 ``build(第一个参数)``（括号配对解析）。"""
+    out, pos = [], 0
+    while True:
+        m = regex.search(text, pos)
+        if m is None:
+            out.append(text[pos:])
+            return ''.join(out)
+        open_idx = m.end() - 1
+        close_idx = find_matching_paren(text, open_idx)
+        out.append(text[pos:m.start()])
+        if close_idx < 0:
+            out.append(text[m.start():])
+            return ''.join(out)
+        args = split_top_level(text[open_idx + 1:close_idx])
+        first = args[0].strip() if args else ""
+        out.append(build(_rewrite_single_arg_calls(first, regex, build)) if first
+                   else text[m.start():close_idx + 1])
+        pos = close_idx + 1
+
+
+def rewrite_numpy_guards(text: str) -> str:
+    """归一 numpy 的**数值护栏**惯用法，让它们不再成为自由符号。
+
+    benchmark 批次实测（36 run / 1476 样本，2026-10-05）残留 9 条 unsupported，其中
+    大部分是"防除零/防 NaN/防 log(非正)"的数值护栏常量和函数，sympy 里没有对应物：
+
+    * ``np.finfo(float).eps`` / ``.tiny`` / ``.max`` → 对应的浮点常量字面量
+      （sympy 无 ``finfo``；实测 ``III.4.33_3_0`` 多个样本、``I.48.2_1_0`` samples_14）；
+    * ``np.inf`` / ``np.nan`` → ``oo`` / ``nan``（sympy 的 ``oo``/``nan`` 不是自由符号，
+      而剥离 ``np.`` 后残留的裸 ``inf``/``nan`` 会变成 Symbol 被护栏拒绝）；
+    * ``np.log1p(a)`` → ``log(1 + a)``（sympy 无 ``log1p``，数值稳定等价）；
+    * ``np.nan_to_num(a, nan=0.0)`` → ``a``（丢弃护栏：符号层无法表达"替换非有限值"，
+      与 :func:`rewrite_numpy_clip_calls` 同属"保留语义、去掉数值实现细节"）。
+
+    与 :func:`strip_type_cast_wrappers` 一样只做**保语义**改写；认不出的形态原样保留。
+    """
+    out = str(text or "")
+    out = _FINFO_RE.sub(lambda m: _FLOAT_CONSTS[m.group(1)], out)
+    out = _NP_INF_RE.sub(lambda m: "oo" if m.group(1) == "inf" else "nan", out)
+    out = _BARE_INF_RE.sub("oo", out)
+    out = _BARE_NAN_RE.sub("nan", out)
+    for regex, build in _CALL_REWRITES:
+        out = _rewrite_single_arg_calls(out, regex, build)
+    out = _DOT_COPY_RE.sub("", out)     # 丢掉 broadcast_to(...).copy() 里的 .copy()
+    return out
 
 
 def rewrite_numpy_clip_calls(text: str) -> str:
@@ -815,6 +964,10 @@ def _normalize_statements(func: str, params: list) -> str:
             k = int(mm.group(1))
             return str(params[k]) if k < len(params) else mm.group(0)
         text = re.sub(rf"\b{re.escape(alias)}\s*\[\s*(\d+)\s*\]", _expand_index, text)
+        # 整体别名的长度：``len(p)`` 与 ``len(params)`` 等价（p = params）。模型的
+        # "参数个数护栏"常写 ``p[0] if len(p) > 0 else 1.0``，不换掉 len(p) 会让该行
+        # 解析失败、符号成孤儿。见 rewrite_conditional_expressions 里的三元改写。
+        text = re.sub(rf"\blen\s*\(\s*{re.escape(alias)}\s*\)", str(len(params)), text)
     # 展开后若仍残留裸的别名名字（例如 ``return p * 2`` 这种用法），留给函数尾部的
     # 自由符号护栏拒绝——**安全失败**，不带病求值。
     for name, value in name_map.items():
@@ -867,6 +1020,9 @@ def expr_substitution(func: str, params: list) -> sp.Expr | None:
     # ``'NoneType' object has no attribute 'is_Float'``；sympy 也没有 clip。见
     # :func:`rewrite_numpy_clip_calls`。
     func = rewrite_numpy_clip_calls(func)
+    # numpy 数值护栏常量/函数（finfo/inf/nan/log1p/nan_to_num）必须在剥离 np. 前缀
+    # **之前**归一——剥完裸 inf/nan/log1p 会变成自由符号或未知函数。见 rewrite_numpy_guards。
+    func = rewrite_numpy_guards(func)
 
     # 去掉 numpy 前缀，并把 maximum/minimum 别名映射到 SymPy 的 Max/Min。
     # 用 \b 限定标识符边界：原来的 str.replace 会把 `maximum_likelihood` 之类的
