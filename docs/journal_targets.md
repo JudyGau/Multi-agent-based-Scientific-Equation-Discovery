@@ -2,8 +2,8 @@
 
 > **背景**：力学硕士；毕业需 SCI；暂不考虑纯计算机类期刊/会议。
 > **论文定位（路线 A）**：应用型 —— 数据稀缺条件下磁流变弹性体（MRE/MRF）本构方程的**可信数据驱动发现**；benchmark 数据仅作泛化性旁证。
-> **数据现实**：MRF 仅 6 个体系、7–19 点，评估只能走 LOO（留一法），不声称泛化/OOD。
-> **整理日期**：2026-10-04
+> **数据现实**：MRF 仅 6 个体系、7–19 点，评估只能走 LOO（留一法），不声称泛化/OOD。数据为课题组自有论文（Physics of Fluids 37, 042024 (2025)）的**粒子动力学仿真**结果——单次仿真耗时长，故点数少（详见「路线 A」小节）。
+> **整理日期**：2026-10-04（修订 2026-10-05：补充 MRF 数据来源与天然基线）
 > **数据来源**：期刊官网、LetPub、科研通(ablesci)、SciRev、出版社 APC 页面等公开信息。
 > **重要提醒**：JCR 分区与中科院分区**逐年变动**，APC 与审稿周期各来源常不一致 → **投稿前必须以 Clarivate JCR、中科院文献情报中心分区表、以及期刊官网 APC 页实时复核**。本文件仅供初步筛选用。
 
@@ -34,7 +34,13 @@
 - **主实验与数据**：
   - MRF 六体系（压缩：Cuboid 8 点 / Ellipsoid 7 点 / -3 17 点；剪切：同构）——**主贡献与主实验**；
   - benchmark 12 题（LLM-SR / LLM-SRBench）——仅作**方法可迁移性旁证**。
-- **评价口径**：**LOO（留一法）**，报 median / 95th 分位 LOO NMSE + 逐点误差；6 体系**跨体系一致性**（压缩 vs 剪切、Cuboid/Ellipsoid/-3）作为外部证据；**不声称泛化 / 不做 OOD**。
+- **数据来源与天然基线** `[补充 2026-10-05]`：
+  - **来源**：`/data` 下 6 个 MRF 数据集均出自课题组自有论文 —— Kang Wang, Bing Liu, Yunqi Xu, Huaxia Deng, Xinglong Gong, *A bead random generation method revealing structure-function relation of magnetorheological fluids with arbitrary morphology particles*, **Physics of Fluids 37, 042024 (2025)**, DOI 10.1063/5.0260409（USTC 力学系）。方法为**超椭球形态约束方程 + bead 随机生成 + 力-磁耦合仿真**（误差 2.24%）。**论文必须引用该来源**（数据非本项目新造，也非他人数据）。
+  - **n 小的结构性原因**：每个数据点需一次粒子动力学仿真，单次耗时长 → 每个体系仅 7–19 点。这既是"数据稀缺"的客观成因，也构成路线的**合法性**（仿真昂贵 ⇒ 从少量点做可信方程发现有价值）；同时解释了为何只能 LOO、为何不声称泛化。
+  - **天然基线 = 该论文的手推公式**：论文用**量纲分析**构造无量纲数（Π2/Π3/Π4/Π5，由 λ12、λ23、α 组合），并拟合幂律相关（形如 μ_m = k1·Π3^k2、τ = (k5·Π4)^k6、v_s = k7·d_i²·Π5）。力学刊审稿人必问的"为何不用已有模型"，**答案就是与这套手推 Π 相关性正面对比**——比对比 PySR 更对口。
+  - **可用的物理先验（外部校验通道）**：该论文已给出可判定的趋势——Π3 随 λ12 增大、随 λ23 减小，极值出现在 λ12=10、λ23=1；分层度与 Π2 呈二次关系。**发现出的方程须与这些趋势一致**，这给了一个不依赖新数据的物理校验（与"跨体系一致性"互补）。
+  - **可选杠杆**：课题组掌握该仿真方法 → 若确需一个小规模真实外推/OOD 集，可按论文流程**补少量仿真点**（而非合成数据）。
+- **评价口径**：**LOO（留一法）**，报 median / 95th 分位 LOO NMSE + 逐点误差；6 体系**跨体系一致性**（压缩 vs 剪切、Cuboid/Ellipsoid/-3）作为外部证据；并与**论文手推 Π 相关性**对比；**不声称泛化 / 不做 OOD**。
 - **卖点（创新叙事）**：把"可信性"讲成主张——**病理体检（拦下尖峰/门控/大系数抵消）+ 可辨识性（声明秩亏方向）**，回答"为什么这条本构可信"，而非"我们用了 LLM"。
 - **论文骨架**：
   1. 绪论：MRF 本构建模现状（超弹性 / 唯象模型）+ 小样本建模难点；
@@ -51,8 +57,9 @@
 - **优点**：契合"力学硕士 + 非纯 CS SCI"约束；直接服务课题组刚需；MRF 数据与产物已具备；证据链缺口最小。
 - **风险 / 局限**：
   - n 太小 → 只能 LOO，**不能声称泛化/OOD**；
-  - 审稿人必问"为何不用已有 MRF 本构模型（超弹性/Ogden/唯象）"与"没有新数据凭什么信"→ 靠可信性判据 + LOO + 跨体系一致性作答。
-- **前置工作**：① `holdout.py` 加 LOO 通道（train < 30 自动留一法）；② 用现有 MRF 产物出一版力学刊 framing。
+  - 审稿人必问"为何不用已有 MRF 本构模型"与"没有新数据凭什么信"→ 前者答**与课题组自身论文（Phys. Fluids 2025）的手推 Π 相关性正面对比**，后者靠可信性判据 + LOO + 跨体系一致性作答；
+  - **新颖性边界**：数据与手推模型均出自课题组已发表论文，本文的贡献**必须落在"可信数据驱动发现"方法本身**，而非重复报告那条公式；数据来源与对比模型均须明确引用，避免自我重复之嫌。
+- **前置工作**：① `holdout.py` 加 LOO 通道（train < 30 自动留一法）；② 用现有 MRF 产物出一版力学刊 framing；③ **复现/获取该论文的手推 Π 相关性作为对比基线**（若公式中的拟合常数未公开，需向作者（课题组内部）取得）。
 
 ### 路线 B：方法型 —— 可信性感知的符号回归智能体
 
@@ -258,6 +265,11 @@
 ---
 
 ## 附：主要数据来源
+
+**本项目 MRF 数据来源（须在论文中引用）**：
+- Kang Wang, Bing Liu, Yunqi Xu, Huaxia Deng, Xinglong Gong. *A bead random generation method revealing structure-function relation of magnetorheological fluids with arbitrary morphology particles.* **Physics of Fluids 37, 042024 (2025).** DOI: 10.1063/5.0260409（`papers/` 下同名 PDF + `SI.pdf`）。数据为其粒子动力学/力-磁耦合仿真的结果；手推 Π 相关性为该论文模型，用作路线 A 的对比基线。
+
+期刊信息数据来源：
 
 - Smart Materials and Structures — IOP About / 作者指南：https://publishingsupport.iopscience.iop.org/journals/smart-materials-and-structures/about-smart-materials-structures/
 - Int. J. Solids and Structures — Elsevier 期刊页：https://www.journals.elsevier.com/international-journal-of-solids-and-structures
