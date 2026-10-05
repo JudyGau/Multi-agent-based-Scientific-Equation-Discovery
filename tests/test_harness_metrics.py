@@ -173,11 +173,11 @@ class AggregateTest(unittest.TestCase):
         summaries = agg.summarize(agg.collect_runs(self.root))
         table = agg.format_table(summaries)
         self.assertIn("| 问题 | runs |", table)
-        self.assertIn("| alpha | 2 | 2 | 0.275 | 0.05 | 0.500 |", table)
+        self.assertIn("| alpha | 2 | 2 | 0.275 | 0.05 | 0.500 | — | — |", table)
 
         no_nmse = agg.GroupSummary(problem="zeta", n_runs=1, n_with_nmse=0,
                                    nmse_median=None, nmse_min=None, acc_at=None)
-        self.assertIn("| zeta | 1 | 0 | — | — | — |", agg.format_table([no_nmse]))
+        self.assertIn("| zeta | 1 | 0 | — | — | — | — | — |", agg.format_table([no_nmse]))
 
     def test_main_prints_summary(self):
         buffer = io.StringIO()
@@ -185,6 +185,83 @@ class AggregateTest(unittest.TestCase):
             code = agg.main([self.root])
         self.assertEqual(code, 0)
         self.assertIn("alpha", buffer.getvalue())
+
+
+#: 可被 ``equations.parse`` 解析的最小函数（y = params[0] * x）。
+_PARSEABLE_FUNC = (
+    "Dependent: y\n"
+    "Independents: x\n\n"
+    "def equation(x, params):\n"
+    "    return params[0] * x\n"
+)
+
+
+class HoldoutBackfillTest(unittest.TestCase):
+    """ID/OOD 回填：默认不算（快）；``holdout=True`` 时在测试集上本地求值。
+
+    口径必须与单 run 报告同源（NMSE 分母取训练集方差），否则表里的数与 report.md
+    里的数会对不上——这正是本仓库反复记录过的那类"两处各判一次"缺陷。
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = self._tmp.name
+        self.run_dir = os.path.join(self.root, "prob_20261004-120000")
+        os.makedirs(os.path.join(self.run_dir, "samples"), exist_ok=True)
+        train = os.path.join(self.run_dir, "train.csv")
+        with open(train, "w", encoding="utf-8") as fh:
+            fh.write("x,y\n1,1\n2,2\n3,3\n")
+        for name in ("test.csv", "test_ood.csv"):
+            with open(os.path.join(self.run_dir, name), "w", encoding="utf-8") as fh:
+                fh.write("x,y\n1,1\n2,2\n")
+        with open(os.path.join(self.run_dir, "config_snapshot.json"), "w", encoding="utf-8") as fh:
+            json.dump({"problem_name": "prob", "seed": 7, "data_csv": train}, fh)
+        with open(os.path.join(self.run_dir, "samples", "samples_1.json"), "w", encoding="utf-8") as fh:
+            json.dump({"score": -1.0, "sample_order": 1, "mse": 1.0, "nmse": 0.5,
+                       "function": _PARSEABLE_FUNC, "params": [2.0]}, fh)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_holdout_not_computed_by_default(self):
+        run = agg.load_run_metrics(self.run_dir)
+        self.assertIsNone(run.nmse_id)
+        self.assertIsNone(run.nmse_ood)
+
+    def test_holdout_columns_filled_with_evaluator_convention(self):
+        run = agg.load_run_metrics(self.run_dir, holdout=True)
+        # 用 y=2x 去拟合 y=x：测试集 MSE=mean(x^2)，分母取训练集方差 var([1,2,3])
+        expected = float(np.mean((2.0 * np.array([1.0, 2.0]) - np.array([1.0, 2.0])) ** 2)
+                         / np.var(np.array([1.0, 2.0, 3.0])))
+        self.assertAlmostEqual(run.nmse_id, expected)
+        self.assertAlmostEqual(run.nmse_ood, expected)
+
+    def test_collect_runs_holdout_flag_propagates(self):
+        runs = agg.collect_runs(self.root, holdout=True)
+        self.assertEqual(len(runs), 1)
+        self.assertIsNotNone(runs[0].nmse_id)
+
+    def test_summarize_reports_id_ood_medians(self):
+        summaries = agg.summarize(agg.collect_runs(self.root, holdout=True))
+        self.assertEqual(len(summaries), 1)
+        self.assertIsNotNone(summaries[0].nmse_id_median)
+        self.assertIsNotNone(summaries[0].acc_ood)
+
+    def test_run_without_test_csv_yields_none_not_zero(self):
+        """取不到样本外指标时记 None（"没测"），不是 0。"""
+        empty = os.path.join(self.root, "solo_20261004-130000")
+        _write_sample(empty, score=-1.0, nmse_value=0.3)
+        run = agg.load_run_metrics(empty, holdout=True)
+        self.assertIsNotNone(run)
+        self.assertIsNone(run.nmse_id)
+        self.assertIsNone(run.nmse_ood)
+
+    def test_main_accepts_holdout_flag(self):
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            code = agg.main([self.root, "--holdout"])
+        self.assertEqual(code, 0)
+        self.assertIn("ID/OOD", buffer.getvalue())
 
 
 class LayerPlacementTest(unittest.TestCase):

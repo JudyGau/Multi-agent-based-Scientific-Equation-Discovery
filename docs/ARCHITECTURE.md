@@ -57,7 +57,7 @@ CoordinatorAgent.run()  while 未达采样上限/时长上限:
 | `reporting` | `drsr_420/reporting/` | 收尾分析与报告装配：最优方程的剪枝/解释/可视化（`find_best_eq` 只做编排）、`report.md` 各机器小节、参考文献、泛化口径（`generalization/`：held-out + LOO）与剪枝（`pruning/`） |
 | `agents` | `drsr_420/agents/` | ★ **多 Agent 角色层**：7 个 Agent + 契约（`base.py`）+ 消息（`messages.py`）+ 层内部件（`skeleton.py` / `prompt_injection.py`） |
 | `runtime` | `drsr_420/runtime/` | 编排：实验主流程（初始化 → 并行采样 → 收尾） |
-| `harness` | `drsr_420/harness/` | **论文实验设施**：跨 run 的指标定义与聚合——`metrics`（MSE / NMSE / Acc@阈值 / SA）、`aggregate`（把 `experiments/` 下多次 run 汇成一张表）。纯计算、不重新拟合、不调 LLM |
+| `harness` | `drsr_420/harness/` | **论文实验设施**：跨 run 的指标定义与聚合——`metrics`（MSE / NMSE / Acc@阈值 / SA）、`aggregate`（把 `experiments/` 下多次 run 汇成一张表；`--holdout` 时在 ID/OOD 测试集上**本地**求值补两列，口径复用 `reporting.generalization`）。纯计算、不重新拟合、不调 LLM |
 | `cli` | `drsr_420/cli/` | 命令行入口：参数解析、输出归档、数据集加载、spec 渲染、产物快照 |
 
 `drsr_420/` 顶层只有 `__init__.py`：**实现全部在分层子包里**，历史的一层平铺路径已清退
@@ -371,8 +371,9 @@ drsr420 --help
 python -m drsr_420.knowledge.rag_build --help
 python -m drsr_420.reporting.pruning.demo
 
-# 跨 run 汇总（论文 E1 表骨架；只读 experiments/ 产物，不重新拟合）
+# 跨 run 汇总（论文 E1 表骨架；只读 experiments/ 产物，不重新拟合、不调 LLM）
 python -m drsr_420.harness.aggregate experiments
+python -m drsr_420.harness.aggregate experiments --holdout   # 额外补 NMSE_ID / NMSE_OOD
 ```
 
 架构护栏（`tests/test_architecture.py`）覆盖：
