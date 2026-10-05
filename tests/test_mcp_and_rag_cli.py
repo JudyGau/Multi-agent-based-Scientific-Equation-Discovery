@@ -24,7 +24,7 @@ import contextlib
 from unittest import mock
 
 from drsr_420.knowledge import rag_build
-from drsr_420.knowledge import rag_kb
+from drsr_420.knowledge import pdf_metadata, rag_embedder, rag_kb
 from drsr_420.knowledge.rag_kb import chunk_text, DEFAULT_CONFIG
 from drsr_420.knowledge.tools import read_paper as rp
 from drsr_420.knowledge.tools import mcp_server as ms
@@ -567,9 +567,9 @@ class RagConfigNamingTest(unittest.TestCase):
     def test_env_key_inference_follows_the_renamed_field(self):
         with mock.patch.dict(os.environ, {"SILICONFLOW_API_KEY": "env-key"}):
             self.assertEqual(
-                rag_kb._env_key_for_base_url("https://api.siliconflow.cn/v1"),
+                rag_embedder._env_key_for_base_url("https://api.siliconflow.cn/v1"),
                 "env-key")
-        self.assertEqual(rag_kb._env_key_for_base_url("https://unknown.example/v1"), "")
+        self.assertEqual(rag_embedder._env_key_for_base_url("https://unknown.example/v1"), "")
 
 
 class KnowledgeMetadataInferenceTest(unittest.TestCase):
@@ -583,8 +583,8 @@ class KnowledgeMetadataInferenceTest(unittest.TestCase):
 
     def test_ambiguous_filename_doi_is_refused(self):
         # 后缀含 '-'：既可能是 DOI 自带的连字符、也可能是被抹掉的 '/'，无法唯一还原
-        self.assertIsNone(rag_kb._recover_doi("10.216561000-0887.380021"))
-        self.assertIsNone(rag_kb._recover_doi("10.10880964-17262412125005"))
+        self.assertIsNone(pdf_metadata._recover_doi("10.216561000-0887.380021"))
+        self.assertIsNone(pdf_metadata._recover_doi("10.10880964-17262412125005"))
 
     def test_numeric_suffix_filename_doi_is_refused(self):
         """后缀以数字开头时切分法无从确定注册号，猜出来的是假 DOI（实测进了知识库）。
@@ -593,9 +593,9 @@ class KnowledgeMetadataInferenceTest(unittest.TestCase):
         真值是 ``10.1142/9789812771209_0109``；``10.10631.4907603`` 被猜成
         ``10.10631/.4907603``（真值形如 ``10.1063/1.4907603``）。宁可留空。
         """
-        self.assertIsNone(rag_kb._recover_doi("10.11429789812771209_0109"))
-        self.assertIsNone(rag_kb._recover_doi("10.10631.4907603"))
-        self.assertIsNone(rag_kb._recover_doi("10.3583420031503173"))
+        self.assertIsNone(pdf_metadata._recover_doi("10.11429789812771209_0109"))
+        self.assertIsNone(pdf_metadata._recover_doi("10.10631.4907603"))
+        self.assertIsNone(pdf_metadata._recover_doi("10.3583420031503173"))
 
     def test_printed_doi_wins_even_past_the_old_scan_window(self):
         """DOI 常印在首页页眉/页脚：实测落在 3748–5612 字符处，旧的 3000 字符窗口漏掉。
@@ -617,22 +617,22 @@ class KnowledgeMetadataInferenceTest(unittest.TestCase):
                     "Preprint not peer reviewed", "Abstract", "标题",
                     "\ue929 Online \ue92d"):
             with self.subTest(bad=bad):
-                self.assertTrue(rag_kb._is_placeholder_title(bad))
-        self.assertFalse(rag_kb._is_placeholder_title("Effect of particle shape in magnetorheology"))
+                self.assertTrue(pdf_metadata.is_placeholder_title(bad))
+        self.assertFalse(pdf_metadata.is_placeholder_title("Effect of particle shape in magnetorheology"))
 
     def test_stem_mismatching_printed_doi_is_not_trusted(self):
         """文件名是 DOI 形态、正文印的却是另一篇的 DOI（IOP 下载包装页）时不信印刷值。"""
         text = "This content has been downloaded from IOPscience.\ndoi:10.1088/1361-665X/aa549c\n"
-        self.assertEqual(rag_kb._resolve_doi(text, "10.10631.4907603"), "")
+        self.assertEqual(pdf_metadata.resolve_doi(text, "10.10631.4907603"), "")
         # 与文件名去分隔符后一致的印刷 DOI 才是本文的
         self.assertEqual(
-            rag_kb._resolve_doi("doi: 10.1122/1.3479045", "10.11221.3479045"),
+            pdf_metadata.resolve_doi("doi: 10.1122/1.3479045", "10.11221.3479045"),
             "10.1122/1.3479045")
 
     def test_unambiguous_filename_doi_is_recovered(self):
-        self.assertEqual(rag_kb._recover_doi("10.1016j.jmmm.2020.166652"),
+        self.assertEqual(pdf_metadata._recover_doi("10.1016j.jmmm.2020.166652"),
                          "10.1016/j.jmmm.2020.166652")
-        self.assertEqual(rag_kb._recover_doi("10.1002smll.202410011"),
+        self.assertEqual(pdf_metadata._recover_doi("10.1002smll.202410011"),
                          "10.1002/smll.202410011")
 
     def test_printed_doi_in_pdf_text_wins(self):
@@ -641,16 +641,16 @@ class KnowledgeMetadataInferenceTest(unittest.TestCase):
         self.assertIsNone(rag_kb.doi_from_pdf_text("no doi in this text"))
 
     def test_title_never_falls_back_to_a_doi(self):
-        self.assertEqual(rag_kb._resolve_title("", "", "", "some_paper_name"),
+        self.assertEqual(pdf_metadata.resolve_title("", "", "", "some_paper_name"),
                          "some_paper_name")
         # 文件名是 DOI 形态时宁可留空，也不写成标题
-        self.assertEqual(rag_kb._resolve_title("", "", "", "10.216561000-0887.380021"), "")
+        self.assertEqual(pdf_metadata.resolve_title("", "", "", "10.216561000-0887.380021"), "")
 
     def test_page_title_beats_placeholder_metadata(self):
         self.assertEqual(
-            rag_kb._resolve_title("", "Microsoft Word - x.doc", "Real Paper Title", "10.1/2"),
+            pdf_metadata.resolve_title("", "Microsoft Word - x.doc", "Real Paper Title", "10.1/2"),
             "Real Paper Title")
-        self.assertEqual(rag_kb._resolve_title("Given", "meta", "page", "stem"), "Given")
+        self.assertEqual(pdf_metadata.resolve_title("Given", "meta", "page", "stem"), "Given")
 
 
 class RepairMetadataTest(unittest.TestCase):
@@ -709,7 +709,7 @@ class RepairMetadataTest(unittest.TestCase):
                              fontsize=14, fontname="helv")
             doc.save(path)
             doc.close()
-            self.assertEqual(rag_kb._first_page_title(path),
+            self.assertEqual(pdf_metadata.first_page_title(path),
                              "Effect of particle shape in magnetorheology")
 
     def test_page_scan_cuts_the_cover_block(self):
@@ -729,7 +729,7 @@ class RepairMetadataTest(unittest.TestCase):
                              fontsize=14, fontname="helv")
             doc.save(path)
             doc.close()
-            self.assertEqual(rag_kb._first_page_title(path),
+            self.assertEqual(pdf_metadata.first_page_title(path),
                              "Structure-enhanced yield stress of magnetorheological fluids")
 
     def test_printed_doi_and_page_title_repair_bad_metadata(self):

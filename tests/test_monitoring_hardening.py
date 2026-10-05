@@ -15,7 +15,7 @@ import unittest
 
 import numpy as np
 
-from drsr_420.knowledge import rag_kb as rk
+from drsr_420.knowledge import pdf_metadata, rag_embedder, rag_kb as rk
 from drsr_420.agents.evaluator_agent import LocalSandbox
 from drsr_420.core.profile import Profiler
 
@@ -167,20 +167,27 @@ class _CountingEmbedder(rk.EmbeddingModel):
 
 
 class EmbedderSingletonTest(unittest.TestCase):
+    """``get_embedder`` 的双重检查锁定：并发首调只构造一次。
+
+    打桩要打在**定义处**（``rag_embedder``）：``get_embedder`` 在本模块的全局命名空间里
+    查找 ``SentenceTransformerEmbedder``，打进 ``rag_kb`` 只是改了一个转发的名字，
+    桩等于没打——这正是 ``llm/__init__.py`` 记录过的那条教训。
+    """
+
     def setUp(self):
-        rk.reset_embedder()
-        self._orig = rk.SentenceTransformerEmbedder
-        rk.SentenceTransformerEmbedder = _CountingEmbedder
+        rag_embedder.reset_embedder()
+        self._orig = rag_embedder.SentenceTransformerEmbedder
+        rag_embedder.SentenceTransformerEmbedder = _CountingEmbedder
         _CountingEmbedder.construct_count = 0
         self.cfg = {"backend": "local", "model": "m1", "query_prefix": ""}
 
     def tearDown(self):
-        rk.SentenceTransformerEmbedder = self._orig
-        rk.reset_embedder()
+        rag_embedder.SentenceTransformerEmbedder = self._orig
+        rag_embedder.reset_embedder()
 
     def test_same_config_reuses_instance(self):
-        e1 = rk.get_embedder(self.cfg)
-        e2 = rk.get_embedder(self.cfg)
+        e1 = rag_embedder.get_embedder(self.cfg)
+        e2 = rag_embedder.get_embedder(self.cfg)
         self.assertIs(e1, e2)
         self.assertEqual(_CountingEmbedder.construct_count, 1)
 
@@ -189,7 +196,7 @@ class EmbedderSingletonTest(unittest.TestCase):
         results = []
 
         def call():
-            results.append(rk.get_embedder(self.cfg))
+            results.append(rag_embedder.get_embedder(self.cfg))
 
         threads = [threading.Thread(target=call) for _ in range(8)]
         for t in threads:
@@ -201,8 +208,8 @@ class EmbedderSingletonTest(unittest.TestCase):
         self.assertEqual(_CountingEmbedder.construct_count, 1)
 
     def test_changed_config_rebuilds(self):
-        rk.get_embedder(self.cfg)
-        rk.get_embedder({**self.cfg, "model": "m2"})
+        rag_embedder.get_embedder(self.cfg)
+        rag_embedder.get_embedder({**self.cfg, "model": "m2"})
         self.assertEqual(_CountingEmbedder.construct_count, 2)
 
 
