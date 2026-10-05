@@ -31,6 +31,7 @@
 
 本模块只做"取样本 + 步骤编排 + 兜底告警"，具体逻辑见上表各自的模块。
 """
+import dataclasses
 import glob
 import os
 import re
@@ -38,6 +39,8 @@ import re
 import numpy as np
 import sympy as sp
 
+from drsr_420.analysis.data_io import load_training_data, resolve_columns
+from drsr_420.analysis.expr_numeric import compile_expr
 from drsr_420.analysis.expr_parse import expr_substitution
 from drsr_420.analysis.expr_viz import render_expr_trees, safe_preview
 from drsr_420.analysis.explain import explain_best_sample
@@ -46,19 +49,19 @@ from drsr_420.analysis.holdout import (LOO_MAX_TRAIN, evaluate_holdout, evaluate
                                        load_ood_data, load_test_data,
                                        resolve_ood_csv, resolve_test_csv)
 from drsr_420.analysis.prune_report import (classify_pruning, compare_fits,
-                                            format_fit_summary, load_training_data,
-                                            resolve_columns)
+                                            format_fit_summary)
 from drsr_420.analysis.sensitivity_prune import SensitivityPruner
-from drsr_420.core.sample_records import load_sample_records
+from drsr_420.core.sample_header import parse_symbols
+from drsr_420.core.sample_records import load_sample_records, top_sample
 
 
 def find_best_sample(results_root: str):
-    """扫描 samples 目录，返回分数最高的样本 (score, path, func, params)；无则 None。"""
-    records = load_sample_records(results_root)
-    if not records:
-        return None
-    best = records[0]
-    return best["score"], best["path"], best["function"], best["params"]
+    """扫描 samples 目录，返回分数最高的样本 (score, path, func, params)；无则 None。
+
+    **不带病理门禁**：只要"谁是最高分"就去 :func:`drsr_420.core.sample_records.top_sample`；
+    发布解的选择见 :func:`select_published_sample`（优先无病理）。两者语义不同。
+    """
+    return top_sample(results_root)
 
 
 def _selection_entry(record: dict) -> dict:
@@ -126,21 +129,6 @@ def select_published_sample(results_root: str) -> tuple[dict | None, dict]:
     return chosen, info
 
 
-def _parse_symbols(func: str) -> tuple[str, list[str]] | None:
-    """从样本函数头解析 (因变量名, 自变量名列表)；解析失败返回 None。
-
-    兼容逗号 / 中文逗号 / 空白分隔的自变量列表。
-    """
-    dependent_match = re.search(r'Dependent:\s*(\w+)', func)
-    independent_match = re.search(r'Independents:\s*(.*)', func)
-    if not dependent_match or not independent_match:
-        return None
-    sym_names = [v.strip() for v in re.split(r'[,，\s]+', independent_match.group(1)) if v.strip()]
-    if not sym_names:
-        return None
-    return dependent_match.group(1), sym_names
-
-
 def _training_points(data, dependent: str, sym_names: list[str]) -> list | None:
     """取训练数据的自变量列作为敏感度采样的补充点；取不到返回 None。
 
@@ -157,26 +145,43 @@ def _training_points(data, dependent: str, sym_names: list[str]) -> list | None:
         return None
 
 
-def prune_and_visualize(results_root: str, func: str, params,
-                        threshold: float, sample_range: tuple,
-                        test_csv: str | None = None,
-                        test_ood_csv: str | None = None) -> dict | None:
-    """基于敏感度分析剪枝最优公式，保存表达式预览图与表达式树图，返回剪枝摘要。
+#: 剪枝摘要的键集合（**声明式契约**）。
+#:
+#: ``prune_and_visualize`` 的返回值同时被 ``explain``（渲染提示词与 report.md 小节）与
+#: 测试消费。键名靠"约定对齐"时，写错一个键只会静默取到 ``None``——这里把键集合变成
+#: 可断言的对象，``tests/test_publish_gate.py`` 有一条护栏比对实际返回值与本元组。
+PRUNING_SUMMARY_KEYS = (
+    "dependent", "sym_names", "threshold", "sample_range", "substituted_expr",
+    "pruned_expr", "used_original", "verdict", "simplify_expr", "nodes_visited",
+    "nodes_pruned", "prune_rate", "ops_before", "ops_after", "removed", "fit",
+    "range_check", "holdout", "holdout_ood", "loo", "progress", "selection",
+)
 
-    返回值是给 ``explain`` 用的剪枝摘要（含剪枝前/后表达式、被移除项及其敏感度、
-    剪枝统计、剪枝前后在训练数据上的拟合对比、样本外验证指标）；解析/剪枝失败时
-    返回 ``None``，调用方据此让解释 LLM 知道"本次没有剪枝结果"。
 
-    ``test_csv`` 给定时（见 ``holdout.resolve_test_csv``）额外做样本外验证：在没参与
-    拟合/打分/选择的 held-out 点上算 MSE/NMSE/最大误差，**只报告**。公式的对外发布
-    形式在这里确定，样本外验证因而也放在这里（保证验证的就是最终报告的那个公式）。
+@dataclasses.dataclass
+class _PreparedPruning:
+    """剪枝的**输入侧**：解析结果 + 训练数据 + 剪枝器 + 参数已代入的表达式。
+
+    只在本模块内部流转。``prune_and_visualize`` 原先是一个 246 行的函数，把"准备输入 /
+    执行剪枝 / 范围体检 / 画图 / 泛化口径"全塞在一起；拆开后各步骤靠这个对象传参，
+    不再依赖一长串同名局部变量。
     """
-    parsed = _parse_symbols(func)
+    dependent: str
+    sym_names: list[str]
+    expr: object                      # 参数已代入的 SymPy 表达式
+    pruner: SensitivityPruner
+    data: np.ndarray | None           # 训练数据（结构化数组）
+    data_points: list | None          # 训练数据点（敏感度采样的补充点）
+    sample_range: tuple
+
+
+def _prepare_pruning_inputs(results_root, func, params, threshold, sample_range):
+    """解析样本 → 加载训练数据 → 构造剪枝器 → 代入参数；解析/剪枝输入不可用返回 ``None``。"""
+    parsed = parse_symbols(func)
     if parsed is None:
         print("[WARN] 无法从样本中解析 Dependent/Independents，跳过剪枝。")
         return None
     dependent, sym_names = parsed
-    symbols = sp.symbols(sym_names)
 
     # 训练数据点并入敏感度采样（必须在剪枝判定之前加载）：均匀随机撒点对"只在
     # 个别数据点承重"的项是盲的——实测 20260921-161549 最优样本的 (1,1) 角点锚
@@ -188,13 +193,25 @@ def prune_and_visualize(results_root: str, func: str, params,
         print("[WARN] 敏感度采样不含训练数据点（数据缺失或列对不上），"
               "仅用随机采样点做敏感度判据。")
 
-    pruner = SensitivityPruner(symbols=symbols, threshold=threshold,
+    pruner = SensitivityPruner(symbols=sp.symbols(sym_names), threshold=threshold,
                                sample_range=sample_range, extra_points=data_points)
     expr = expr_substitution(func, params)
     if expr is None:
         print("[WARN] 表达式解析失败，跳过剪枝。")
         return None
+    return _PreparedPruning(dependent=dependent, sym_names=list(sym_names), expr=expr,
+                            pruner=pruner, data=data, data_points=data_points,
+                            sample_range=tuple(sample_range))
 
+
+def _run_pruning(prepared: _PreparedPruning, results_root: str):
+    """执行剪枝、判定其实质、产出预览图与表达式树。
+
+    Returns:
+        ``(pruned_expr, published, actually_pruned, verdict)``。``published`` 是**对外
+        发布**的表达式：真剪枝才用剪枝结果，否则一律是剪枝前的原式。
+    """
+    dependent, expr, pruner = prepared.dependent, prepared.expr, prepared.pruner
     print(f"剪枝前的表达式为 {dependent} =")
     sp.pprint(expr)
     safe_preview(expr, f'{results_root}/expr.png')
@@ -211,11 +228,11 @@ def prune_and_visualize(results_root: str, func: str, params,
     verdict = None
     if pruned_expr is not None:
         verdict = classify_pruning(expr, pruned_expr, pruner.stats,
-                                   sym_names=sym_names, sample_range=sample_range,
-                                   extra_points=data_points)
+                                   sym_names=prepared.sym_names,
+                                   sample_range=prepared.sample_range,
+                                   extra_points=prepared.data_points)
         print(f"[PRUNE] {verdict['summary']}")
     actually_pruned = bool(verdict and verdict["actually_pruned"])
-    # 对外发布的表达式：真剪枝才用剪枝结果，否则一律是剪枝前的原式
     published = pruned_expr if actually_pruned else expr
 
     if actually_pruned:
@@ -234,24 +251,23 @@ def prune_and_visualize(results_root: str, func: str, params,
                   "曲线图只画一条并注明本次未剪枝。")
 
     render_expr_trees(results_root, expr, pruned_expr if actually_pruned else None)
+    return pruned_expr, published, actually_pruned, verdict
 
-    # 剪枝前后在训练数据上的拟合对比：解释 LLM 要靠它论证"剪掉这些项是否合理"。
-    # 未实际剪枝时 published == expr，对比结果自然是"逐点完全相同（剪枝未改变模型）"。
-    # （data 已在剪枝前加载并用于敏感度采样，此处直接复用。）
-    fit = compare_fits(dependent, sym_names, data, expr, published)
-    print(f"[PRUNE] {format_fit_summary(fit)}")
 
-    # 动态范围体检（对**最终发布**的表达式）：检测角点钉扎/下溢尖峰类病理解。
-    # 训练点 MSE 看不见点与点之间的行为——体检在包围盒网格（含角点壳层）上评估，
-    # 与评分器（evaluation/problems.evaluate）同一判据（内核在 core.range_check，
-    # 两层共用），结果进 explain 提示词与 report.md 权威小节。
-    range_info = None
+def _range_check_published(prepared: _PreparedPruning, published, func, params):
+    """动态范围体检（对**最终发布**的表达式）；体检不可用返回 ``None``。
+
+    训练点 MSE 看不见点与点之间的行为——体检在包围盒网格（含角点壳层）上评估，
+    与评分器（``evaluation.problems.evaluate``）同一判据（内核在 ``core.range_check``，
+    两层共用），结果进 explain 提示词与 report.md 权威小节。
+    """
+    dependent, sym_names, data = prepared.dependent, prepared.sym_names, prepared.data
     try:
         from drsr_420.core.range_check import dynamic_range_check
         _dep_col, ind_cols, _note = resolve_columns(data, dependent, sym_names)
         _X = np.column_stack([np.asarray(data[c], dtype=float) for c in ind_cols])
         _y = np.asarray(data[_dep_col], dtype=float)
-        f_pub = sp.lambdify(sym_names, published, modules="numpy")
+        f_pub = compile_expr(published, sym_names)
         # 判据三（大系数抵消）要"换一组参数再算一次"。**不要**用 SymPy 把参数符号化：
         # 实测最优样本常用 ``c0, c1, ... = params[:8]`` 这类元组解包，expr_substitution
         # 解析不了 → 探针建不出来 → 判据三静默弃权（20260925-134149 的 order 83 就是
@@ -290,30 +306,47 @@ def prune_and_visualize(results_root: str, func: str, params,
                   f"{range_info['span_ratio']:.3g} ≤ {range_info['limit']}；"
                   f"局部斜率={range_info['slope_max']:.3g} ≤ "
                   f"{range_info['slope_limit']}；系数抵消={coef_txt}）")
+        return range_info
     except Exception as e:
         print(f"[WARN] 动态范围体检失败（跳过，不阻塞收尾）: {e}")
-        range_info = None
+        return None
 
+
+def _plot_curves_and_progress(results_root, prepared: _PreparedPruning, expr, published,
+                              actually_pruned, test_csv):
+    """剪枝前后曲线图 + 训练进度图（都是"给人看"的产物，失败只告警）。
+
+    Returns:
+        训练进度摘要；没有 ``best_history`` 记录时 ``None``。
+    """
     # 剪枝完成 → 剪枝前后表达式曲线 + 数据点（每个自变量一幅，人工检查贴合度）。
-    # 与 expr.png 同级别的"给人看"产物：失败只告警，不拖垮收尾流程。
     try:
         from drsr_420.analysis.expr_curves import plot_data_curves
-        plot_data_curves(results_root, dependent, sym_names, expr,
+        plot_data_curves(results_root, prepared.dependent, prepared.sym_names, expr,
                          published if actually_pruned else None,
                          test_csv=test_csv)
     except Exception as e:
         print(f"[WARN] 剪枝前后曲线图生成失败（跳过）: {e}")
 
-    # 训练进度：MSE 随 sample_order 的变化（历史最优刷新点）。同样是"给人看"的产物，
-    # 数据只取自 best_history/*.json（不解析 run.out——.bat/.sh 并不重定向 stdout，
-    # run.out 不是每条启动路径都有的产物）；没有记录时返回 None，报告侧跳过该小节。
+    # 训练进度：MSE 随 sample_order 的变化（历史最优刷新点）。数据只取自
+    # best_history/*.json（不解析 run.out——.bat/.sh 并不重定向 stdout，run.out 不是
+    # 每条启动路径都有的产物）；没有记录时返回 None，报告侧跳过该小节。
     try:
         from drsr_420.analysis.progress_curve import plot_progress_curve
-        progress = plot_progress_curve(results_root)
+        return plot_progress_curve(results_root)
     except Exception as e:
         print(f"[WARN] 训练进度图生成失败（跳过）: {e}")
-        progress = None
+        return None
 
+
+def _evaluate_generalization(results_root, prepared: _PreparedPruning, func, params,
+                             published, test_csv, test_ood_csv, fit):
+    """样本外口径：训练点少时用 LOO，否则用 held-out（ID 与 OOD 分开）。只报告，不选择。
+
+    Returns:
+        ``(holdout, holdout_ood, loo)``；LOO 生效时后两项为 ``None``。
+    """
+    dependent, sym_names, data = prepared.dependent, prepared.sym_names, prepared.data
     # 样本外验证：在没参与拟合/打分/选择的 held-out 点上评估**最终发布的**公式。
     # 只报告，不回灌评分——一旦参与选择，它就不再是 held-out（见 holdout 模块说明）。
     # **ID（同分布）与 OOD（分布外）分开评估、分开报告**：论文要求两者分开报，
@@ -363,12 +396,64 @@ def prune_and_visualize(results_root: str, func: str, params,
         print(f"[HOLDOUT] {format_holdout_summary(holdout, fit)}")
         if holdout_ood is not None:
             print(f"[HOLDOUT-OOD] {format_holdout_summary(holdout_ood, fit)}")
+    return holdout, holdout_ood, loo
+
+
+def prune_and_visualize(results_root: str, func: str, params,
+                        threshold: float, sample_range: tuple,
+                        test_csv: str | None = None,
+                        test_ood_csv: str | None = None,
+                        selection: dict | None = None) -> dict | None:
+    """基于敏感度分析剪枝最优公式，保存表达式预览图与表达式树图，返回剪枝摘要。
+
+    返回值是给 ``explain`` 用的剪枝摘要（含剪枝前/后表达式、被移除项及其敏感度、
+    剪枝统计、剪枝前后在训练数据上的拟合对比、样本外验证指标）；解析/剪枝失败时
+    返回 ``None``，调用方据此让解释 LLM 知道"本次没有剪枝结果"。**键集合见
+    :data:`PRUNING_SUMMARY_KEYS`**（有护栏测试比对，不再靠约定对齐）。
+
+    ``selection`` 是 ``select_published_sample`` 的发布解选择依据，随摘要一起返回，
+    供 explain 渲染 report.md 的「发布解选择」小节。它由调用方**在调用时**传入
+    （而非返回后回填 `pruning["selection"]`），所以摘要一旦返回就是完整的。
+
+    ``test_csv`` 给定时（见 ``holdout.resolve_test_csv``）额外做样本外验证：在没参与
+    拟合/打分/选择的 held-out 点上算 MSE/NMSE/最大误差，**只报告**。公式的对外发布
+    形式在这里确定，样本外验证因而也放在这里（保证验证的就是最终报告的那个公式）。
+
+    本函数只做编排，四段实现分别在 ``_prepare_pruning_inputs``（输入）、
+    ``_run_pruning``（剪枝与判定）、``_range_check_published``（范围体检）、
+    ``_evaluate_generalization``（样本外口径）。
+    """
+    prepared = _prepare_pruning_inputs(results_root, func, params, threshold, sample_range)
+    if prepared is None:
+        return None
+
+    pruned_expr, published, actually_pruned, verdict = _run_pruning(prepared, results_root)
+    expr, dependent, sym_names = prepared.expr, prepared.dependent, prepared.sym_names
+    data = prepared.data
+
+    # 剪枝前后在训练数据上的拟合对比：解释 LLM 要靠它论证"剪掉这些项是否合理"。
+    # 未实际剪枝时 published == expr，对比结果自然是"逐点完全相同（剪枝未改变模型）"。
+    # （data 已在剪枝前加载并用于敏感度采样，此处直接复用。）
+    fit = compare_fits(dependent, sym_names, data, expr, published)
+    print(f"[PRUNE] {format_fit_summary(fit)}")
+
+    # 动态范围体检（对**最终发布**的表达式）：检测角点钉扎/下溢尖峰类病理解
+    # （判据与评分器同一份，见 _range_check_published）。
+    range_info = _range_check_published(prepared, published, func, params)
+
+    # 剪枝前后的曲线图与训练进度图（都是"给人看"的产物，失败只告警）。
+    progress = _plot_curves_and_progress(results_root, prepared, expr, published,
+                                         actually_pruned, test_csv)
+
+    # 样本外口径：LOO（训练点太少时）或 held-out（ID 与 OOD 分开）。只报告，不参与选择。
+    holdout, holdout_ood, loo = _evaluate_generalization(
+        results_root, prepared, func, params, published, test_csv, test_ood_csv, fit)
 
     return {
         "dependent": dependent,
         "sym_names": list(sym_names),
         "threshold": threshold,
-        "sample_range": tuple(sample_range),
+        "sample_range": tuple(prepared.sample_range),
         "substituted_expr": sp.sstr(expr),
         # pruned_expr 是**对外发布**的最终表达式：未实际剪枝时它就是剪枝前的原式
         # （下游 explain 的 `after == before` 分支据此说明"与剪枝前完全相同"）。
@@ -376,13 +461,13 @@ def prune_and_visualize(results_root: str, func: str, params,
         "used_original": not actually_pruned,
         "verdict": verdict,
         # 诊断用：0 项剪枝时 simplify 会给出的形式（未被采用，仅说明"只是换写法"）
-        "simplify_expr": (sp.sstr(pruner.stats.simplified_expr)
-                          if pruner.stats.simplified_expr is not None else None),
-        "nodes_visited": pruner.stats.nodes_visited,
-        "nodes_pruned": pruner.stats.nodes_pruned,
-        "prune_rate": pruner.stats.prune_rate,
-        "ops_before": pruner.stats.ops_before,
-        "ops_after": pruner.stats.ops_after,
+        "simplify_expr": (sp.sstr(prepared.pruner.stats.simplified_expr)
+                          if prepared.pruner.stats.simplified_expr is not None else None),
+        "nodes_visited": prepared.pruner.stats.nodes_visited,
+        "nodes_pruned": prepared.pruner.stats.nodes_pruned,
+        "prune_rate": prepared.pruner.stats.prune_rate,
+        "ops_before": prepared.pruner.stats.ops_before,
+        "ops_after": prepared.pruner.stats.ops_after,
         "removed": [
             {
                 "kind": r.node_type,
@@ -390,7 +475,7 @@ def prune_and_visualize(results_root: str, func: str, params,
                 "sensitivity": r.sensitivity,
                 "depth": r.depth,
             }
-            for r in pruner.stats.records
+            for r in prepared.pruner.stats.records
         ],
         "fit": fit,
         # 动态范围体检（对发布式）：检测角点钉扎/下溢尖峰类病理解；None=体检失败
@@ -402,6 +487,10 @@ def prune_and_visualize(results_root: str, func: str, params,
         "loo": loo,
         # 训练进度（历史最优刷新点）：只报告；None=没有 best_history 记录
         "progress": progress,
+        # 发布解选择依据（病理门禁的对照）。由调用方在**调用时**传入，不再事后回填——
+        # 旧实现是 ``pruning["selection"] = selection``，让摘要对象在返回后还被写一次，
+        # 读者无法从创建处看出它有几个键（见 PRUNING_SUMMARY_KEYS）。
+        "selection": selection,
     }
 
 
@@ -451,12 +540,12 @@ def find_best_eq(results_root: str, threshold: float = 0.1,
 
     # 先剪枝：report.md 要解释"剪枝后的表达式"与"剪掉了哪些项、为什么合理"，
     # 剪枝摘要（含剪枝前后在训练数据上的拟合对比）必须先算出来。
+    # 选择依据随剪枝摘要一起进 explain（渲染成 report.md 的「发布解选择」小节）：
+    # 被跳过的病理解候选必须留在报告里，否则"为什么发布的不是最高分"无法追溯。
+    # 以**参数**传入而不是返回后再写字典，摘要一旦返回即完整（见 PRUNING_SUMMARY_KEYS）。
     pruning = prune_and_visualize(results_root, func, params, threshold, sample_range,
-                                  test_csv=test_csv, test_ood_csv=test_ood_csv)
-    if pruning is not None:
-        # 选择依据随剪枝摘要一起进 explain（渲染成 report.md 的「发布解选择」小节）：
-        # 被跳过的病理解候选必须留在报告里，否则"为什么发布的不是最高分"无法追溯。
-        pruning["selection"] = selection
+                                  test_csv=test_csv, test_ood_csv=test_ood_csv,
+                                  selection=selection)
 
     # 物理解释（按 sample_order 匹配 Good 经验，含 RAG 文献注入与剪枝分析）
     order_match = re.search(r"samples_(\d+)", path)

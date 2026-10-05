@@ -20,22 +20,30 @@
 数据点上求值对比"这两件事，既不属于绘图（expr_curves，曲线是给眼睛看的投影），也不
 属于剪枝算法（sensitivity_prune，只关心敏感度阈值）。
 
+**数据定位/读取/列对齐已拆到 :mod:`drsr_420.analysis.data_io`**：本模块原先兼当
+全层的数据工具库，于是 ``holdout``、``expr_curves`` 都得 import 它的私有名。现在
+本模块只负责"算"；下列名字仍按旧路径 re-export（对象同一，非副本），既有调用方不受影响。
+
 失败策略：一律只告警并返回 ``None``/空字典——剪枝评估不该拖垮收尾流程。
 """
 from __future__ import annotations
 
-import json
-import os
-import re
-
 import numpy as np
 import sympy as sp
 
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from drsr_420.analysis.data_io import (
+    infer_data_csv,
+    load_training_data,
+    resolve_columns,
+    resolve_csv,
+    warn_once,
+)
+from drsr_420.analysis.expr_numeric import lambdify_eval
 
-#: 实验目录名 ``<问题名>_<YYYYMMDD-HHMMSS>``：没有 config_snapshot.json 的历史目录
-#: 靠它反推数据集（见 :func:`infer_data_csv`）。
-_RUN_DIR_RE = re.compile(r"^(?P<problem>.+)_\d{8}-\d{6}$")
+# ── 兼容 re-export（对象同一）────────────────────────────────────
+# 这些名字原先定义在本模块，现位于 data_io / expr_numeric；保留别名供既有调用方
+# 与外部脚本按旧路径取用，避免"搬家即失联"。
+_warn_once = warn_once
 
 #: 判定"剪枝是否只是换了写法"（而非真的删掉项）的相对误差阈值。
 #: 实测 36 次真实运行：仅形式变化的样本最大相对差 ≤ 9.6e-13，真剪枝的样本 ≥ 7.6e-3
@@ -46,159 +54,18 @@ FORM_ONLY_RTOL = 1e-6
 VERIFY_SAMPLES = 200
 VERIFY_SEED = 20260919
 
-#: 已提示过的"数据源/列名兜底"信息：一次收尾里 load_training_data / compare_fits /
-#: 曲线 / 样本外验证会各调一遍，不去重的话同一句话会刷 4 遍（run.out 已经很长）。
-_warned: set[str] = set()
-
-
-def _warn_once(message: str) -> None:
-    if message not in _warned:
-        _warned.add(message)
-        print(f"[WARN] {message}")
-
-
-def resolve_csv(data_csv: str, results_root: str = "") -> str | None:
-    """data_csv 依次按 results_root、项目根、cwd 解析；兼容绝对路径。
-
-    config_snapshot 里通常存项目根相对路径（./data/...），自包含实验目录
-    （如测试夹具）则是 results_root 相对路径——两处都要试。
-
-    返回值统一 ``normpath``：快照里的 "./data/X/train.csv" 与目录拼接后会得到
-    "…\\./data/X\\train.csv" 这种混合分隔符，直接进日志/产物说明很难看。
-    """
-    if os.path.isabs(data_csv):
-        return os.path.normpath(data_csv) if os.path.isfile(data_csv) else None
-    for base in (results_root, _REPO_ROOT, os.getcwd()):
-        p = os.path.join(base, data_csv)
-        if os.path.isfile(p):
-            return os.path.normpath(p)
-    return None
-
-
-def infer_data_csv(results_root: str) -> str | None:
-    """没有 config_snapshot.json 时按目录名推断训练数据：``<问题名>_<时间戳>`` → ``data/<问题名>/train.csv``。
-
-    历史实验目录（用户从别处整理进来的那批）没有 config_snapshot.json，旧实现只能
-    放弃——剪枝前后拟合对比与曲线图全部静默缺失。目录名里的问题名唯一，且 ``data/``
-    下的数据集是**约定命名**，因此按它兜底能把这批目录重新变成可分析的。
-
-    推断结果只作兜底并会在日志里明说：它终究是"猜"的，不如快照里的记录可靠。
-    """
-    m = _RUN_DIR_RE.match(os.path.basename(os.path.normpath(results_root)))
-    if not m:
-        return None
-    candidate = os.path.join(_REPO_ROOT, "data", m.group("problem"), "train.csv")
-    if os.path.isfile(candidate):
-        _warn_once(f"目录里没有 config_snapshot.json，按目录名推断训练数据: {candidate}")
-        return candidate
-    return None
-
-
-def load_training_data(results_root: str) -> np.ndarray | None:
-    """按 config_snapshot.json 的 data_csv 读取训练数据（结构化数组）；失败返回 None。
-
-    快照缺失或没写 data_csv 时退回 :func:`infer_data_csv` 按目录名推断（历史目录）。
-    """
-    snap_path = os.path.join(results_root, "config_snapshot.json")
-    data_csv = None
-    try:
-        with open(snap_path, "r", encoding="utf-8") as f:
-            data_csv = json.load(f).get("data_csv")
-    except Exception as e:
-        _warn_once(f"读取 config_snapshot.json 失败: {e}")
-
-    if not data_csv:
-        data_csv = infer_data_csv(results_root)
-    if not data_csv:
-        print("[WARN] config_snapshot.json 里没有 data_csv，无法定位训练数据。")
-        return None
-    csv_path = resolve_csv(data_csv, results_root)
-    if csv_path is None:
-        print(f"[WARN] 数据文件不存在: {data_csv}")
-        return None
-    try:
-        data = np.genfromtxt(csv_path, delimiter=",", names=True)
-    except Exception as e:
-        print(f"[WARN] 读取训练数据失败: {e}")
-        return None
-    if data.dtype.names is None or data.size == 0:
-        print(f"[WARN] 训练数据为空或缺少表头: {csv_path}")
-        return None
-    return data
-
-
-def resolve_columns(data: np.ndarray, dependent: str,
-                    sym_names: list[str]) -> tuple[str, list[str], str]:
-    """把函数头里的变量名对齐到 CSV 的实际列名。
-
-    函数头里的名字是 LLM 写的，未必与 CSV 表头逐字相同（实测历史运行的因变量写成
-    ``um``，而 CSV 列是 ``miu``）——旧实现直接按名字取列，取不到就静默跳过拟合对比与
-    曲线（``compare_fits`` 返回空字典、``plot_data_curves`` 直接 return）。
-
-    匹配顺序：
-
-    1. 精确匹配；
-    2. 忽略大小写（``Sigma`` / ``sigma``）；
-    3. 因变量兜底：自变量都能对上时，取"自变量之外的唯一一列"（CSV 约定最后一列是因变量）。
-
-    三档都不成立时抛 ``KeyError``（调用方只告警跳过，不猜）。
-
-    Returns:
-        ``(因变量列名, 自变量列名列表, 说明)``；说明非空表示发生了兜底匹配，供日志明说
-        用了哪一列（不能悄悄换列）。
-    """
-    names = list(getattr(getattr(data, "dtype", None), "names", None) or ())
-    lower = {n.lower(): n for n in names}
-    notes: list[str] = []
-
-    def _match(name: str, kind: str) -> str | None:
-        if name in names:
-            return name
-        hit = lower.get(str(name).lower())
-        if hit is not None:
-            notes.append(f"{kind} {name!r} → CSV 列 {hit!r}（忽略大小写）")
-        return hit
-
-    ind_cols: list[str] = []
-    for sym in sym_names:
-        col = _match(sym, "自变量")
-        if col is None:
-            raise KeyError(f"数据里没有自变量列 {sym!r}（现有列：{names}）")
-        ind_cols.append(col)
-
-    dep_col = _match(dependent, "因变量")
-    if dep_col is None:
-        rest = [n for n in names if n not in ind_cols]
-        if len(rest) == 1:
-            dep_col = rest[0]
-            notes.append(f"因变量 {dependent!r} → CSV 列 {dep_col!r}"
-                         f"（按位置兜底：自变量之外的唯一一列）")
-        else:
-            raise KeyError(f"数据里没有因变量列 {dependent!r}（现有列：{names}）")
-    return dep_col, ind_cols, "；".join(notes)
-
 
 def _evaluate(expr, sym_names: list[str], args: list[np.ndarray]) -> np.ndarray | None:
-    """把 SymPy 表达式 lambdify 后在数据点上求值；失败/形状非法返回 None。
+    """把 SymPy 表达式 lambdify 后在数据点上求值；失败返回 None（保留异常正文）。
 
-    用 ``errstate`` 静音数值告警：剪枝前后的表达式都可能在被修剪的项上溢出，
-    这里是"评估"而不是"优化"，没有清洗残差的必要，但也没必要刷警告。
-
-    常量表达式（``lambdify`` 出来是 0 维标量）按采样点数广播成 1 维：否则下游的
-    ``vals[mask]`` 会抛 ``IndexError: too many indices for array``。剪枝结果退化成
-    常数时（正是要判定的那种情形）走的就是这条路。
+    求值样板（errstate 静音 + 标量广播）在 :mod:`drsr_420.analysis.expr_numeric`，
+    这里只负责把失败翻译成一句带原因的告警。
     """
-    try:
-        func = sp.lambdify(list(sp.symbols(sym_names)), expr, modules="numpy")
-        with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
-            vals = np.asarray(func(*args), dtype=float)
-    except Exception as e:
-        print(f"[WARN] 表达式数值化失败: {e}")
+    values, error = lambdify_eval(expr, sym_names, args)
+    if error is not None:
+        print(f"[WARN] 表达式数值化失败: {error}")
         return None
-    if vals.ndim == 0:
-        length = len(args[0]) if args else 1
-        vals = np.full(length, float(vals))
-    return vals
+    return values
 
 
 def compare_fits(dependent: str, sym_names: list[str], data: np.ndarray,
@@ -445,3 +312,12 @@ def classify_pruning(expr, published, stats, sym_names: list[str] | None = None,
             f"（最大相对差 {rel_txt}，判定阈值 {FORM_ONLY_RTOL:.0e}），"
             f"为稳妥起见仍沿用剪枝前的形式")
     return out
+
+
+__all__ = [
+    "FORM_ONLY_RTOL", "VERIFY_SAMPLES", "VERIFY_SEED",
+    "compare_fits", "format_fit_summary", "sample_points",
+    "max_relative_difference", "classify_pruning",
+    # 兼容 re-export（定义已移至 data_io）
+    "load_training_data", "resolve_columns", "resolve_csv", "infer_data_csv", "warn_once",
+]

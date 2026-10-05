@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from drsr_420.llm.client import _post_with_retry, gateway_error_detail
+from drsr_420.llm.client import gateway_error_detail, post_with_retry
 from drsr_420.llm.factory import ClientFactory, load_llm_config
 from drsr_420.llm.role_clients import RoleClients
 from drsr_420.llm.roles import PROFILE_SUFFIX, TASKS, RoleRegistry, resolve_roles
@@ -254,7 +254,7 @@ def _ping_one(role_clients: RoleClients, role: str, roles: tuple[str, ...],
 
     started = time.time()
     try:
-        resp = _post_with_retry(url, headers, payload, max_retries=0,
+        resp = post_with_retry(url, headers, payload, max_retries=0,
                                 timeout=timeout, stream=False)
     except Exception as exc:                           # noqa: BLE001
         resp = getattr(exc, "response", None)

@@ -61,6 +61,18 @@ def require_absolute_url(value: str, what: str = "base_url") -> str:
     return url
 
 
+def post_with_retry(url, headers, payload, **kwargs):
+    """:func:`_post_with_retry` 的**公开别名**（同一函数对象）。
+
+    层内其他模块（``role_diagnostics`` 的连通性自检）需要发起一次"不重试"的请求；
+    跨模块引用私有名会被 ``tests/test_architecture.py`` 的层内私有导入护栏拦下——
+    下划线是"别碰我"的信号，不是接口。保留私有名是因为**定义处的名字才是 mock 打桩
+    的锚点**（``mock.patch('drsr_420.llm.client._post_with_retry')`` 出现在 18 处测试里），
+    改名会让这些既有护栏失去着力点。
+    """
+    return _post_with_retry(url, headers, payload, **kwargs)
+
+
 def _post_with_retry(url, headers, payload,
                      max_retries=LLM_REQUEST_MAX_RETRIES,
                      backoff_base=LLM_REQUEST_BACKOFF_BASE,

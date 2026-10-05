@@ -40,6 +40,8 @@ import re
 
 import sympy as sp
 
+from drsr_420.core.sample_header import parse_independents_text, split_names
+
 #: 参数代入表达式时保留的**有效数字**位数（不是小数点后位数）。
 #:
 #: 旧实现是 ``round(x, 2)``（小数点后 2 位），对"小系数 × 巨量项"的骨架是灾难：
@@ -988,16 +990,12 @@ def expr_substitution(func: str, params: list) -> sp.Expr | None:
     """
     params = _round_params(params or [])
 
-    # 解析自变量列表：兼容逗号、中文逗号、空白分隔
-    independent_match = re.search(r'Independents:\s*(.*)', func)
-    if independent_match:
-        independent = independent_match.group(1)
-        independent_list = [
-            v.strip() for v in re.split(r'[,，\s]+', independent) if v.strip()
-        ]
-    else:
+    # 解析自变量列表：兼容逗号、中文逗号、空白分隔（判据统一在 core.sample_header）
+    independent = parse_independents_text(func)
+    if independent is None:
         print("未找到自变量，返回 None")
         return None
+    independent_list = split_names(independent)
 
     # 将具体数值代入参数（只替换实际存在的 params，避免越界）
     for i in range(len(params)):

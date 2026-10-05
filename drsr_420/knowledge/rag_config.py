@@ -40,17 +40,19 @@ DEFAULT_CONFIG = {
 }
 
 #: RAG 档案名（不含后缀）。文件定位统一交给 ``llm.factory.locate_config``。
-_CONFIG_NAME = "rag"
+CONFIG_NAME = "rag"
 
-# 项目根目录：知识库持久化目录等相对路径统一锚定到这里，避免不同 cwd 下产生多个库。
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+#: 项目根目录：知识库持久化目录等相对路径统一锚定到这里，避免不同 cwd 下产生多个库。
+#: **公开名**（无下划线）：``rag_kb`` / ``rag_build`` 都要用它，跨模块引用私有名等于
+#: 声明一个不存在于任何文档里的接口（由 test_architecture 的层内私有导入护栏守护）。
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _resolve_config_path(path: str | None = None) -> Path:
     """解析配置路径，交由 ``llm.factory.locate_config`` 统一在仓库根与 ``config/`` 下定位。"""
     from drsr_420.llm.factory import locate_config
 
-    return locate_config(path or _CONFIG_NAME)
+    return locate_config(path or CONFIG_NAME)
 
 
 #: 已废弃的配置键 -> 现用键。

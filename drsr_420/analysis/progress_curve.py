@@ -53,6 +53,11 @@ import sys
 
 import numpy as np
 
+from drsr_420.analysis.md_sections import (
+    only_h1_or_h2_ends_section,
+    strip_section,
+    upsert_section,
+)
 from drsr_420.core.sample_records import load_sample_records
 
 #: 三个量各自的进度图文件名（报告小节按相对路径引用）。MSE 沿用旧名——历史报告与
@@ -502,19 +507,8 @@ def _strip_progress_section(text: str) -> str:
     * 只把 **h1/h2** 当作"小节结束"，``###`` 子标题（拟合 MSE / 罚分 / 评分）属于本节
       内容——否则剥离会在第一个子标题处停下，留下半节旧内容。
     """
-    if not text or _SECTION_PREFIX not in text:
-        return text
-    kept: list[str] = []
-    skipping = False
-    for line in text.splitlines():
-        if line.strip().startswith(_SECTION_PREFIX):
-            skipping = True
-            continue
-        if skipping and line.startswith("#") and not line.startswith("###"):
-            skipping = False
-        if not skipping:
-            kept.append(line)
-    return "\n".join(kept)
+    return strip_section(text, _SECTION_PREFIX,
+                         end_check=only_h1_or_h2_ends_section, rstrip=False)
 
 
 def upsert_progress_section(text: str, section: str) -> str:
@@ -524,20 +518,9 @@ def upsert_progress_section(text: str, section: str) -> str:
     得到逐字节相同的结果（同一个报告不会出现两节，也不会每次多一个空行）。
     锚点缺失（正文没有参考文献小节）时追加到末尾，保证小节不丢。
     """
-    if not section:
-        return text
-    lines = _strip_progress_section(text).splitlines()
-    anchor_at = next((i for i, line in enumerate(lines)
-                      if line.strip().startswith(_REFERENCE_ANCHOR)), None)
-    if anchor_at is None:
-        head, tail = "\n".join(lines).rstrip(), ""
-    else:
-        head = "\n".join(lines[:anchor_at]).rstrip()
-        tail = "\n".join(lines[anchor_at:]).rstrip()
-    merged = f"{head}\n\n{section}" if head else section
-    if tail:
-        merged += f"\n\n{tail}"
-    return re.sub(r"\n{3,}", "\n\n", merged).rstrip() + "\n"
+    return upsert_section(text, section, heading=_SECTION_PREFIX,
+                          anchor=_REFERENCE_ANCHOR,
+                          end_check=only_h1_or_h2_ends_section)
 
 
 def backfill(results_root: str, report_name: str = "report.md",

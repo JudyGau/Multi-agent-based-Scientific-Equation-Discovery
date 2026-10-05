@@ -487,6 +487,59 @@ class LayerDependencyTest(unittest.TestCase):
                     self.assertNotEqual(_layer_of(module_name), "agents")
 
 
+class IntraLayerPrivateImportTest(unittest.TestCase):
+    """**层内**不得跨模块引用私有名（下划线开头）。
+
+    ``LayerDependencyTest`` 管的是层与层之间的方向（``agents`` 不能反向依赖
+    ``runtime``）；本类管**同一层内部**的接口纪律：``analysis.holdout`` 曾经
+    ``from ...prune_report import _warn_once``——下划线是"别碰我"的信号，一旦跨模块
+    引用，等于**声明了一个不存在于任何文档、``__all__`` 或类型里的接口**。这类引用
+    会随模块拆分/改名静默失效，也让"这个私有名到底能不能改"变得无从判断。
+
+    实测的成因（本护栏要堵的正是它）：把不同职责的函数塞进同一个模块后，其他模块
+    只能靠私有名取用；正确做法是把它们提升为公开名或移到共享模块（本次重构已把
+    ``_warn_once``/``_REPO_ROOT`` 等提为 ``warn_once``/``REPO_ROOT``）。
+
+    豁免只允许两条白名单（附理由），新增豁免必须在同一处写明为什么它是契约而非巧合。
+    """
+
+    #: ``(文件相对路径, 被导入的模块, 私有名)`` → 豁免理由。
+    ALLOWED = {
+        ("analysis/holdout.py", "drsr_420.analysis.loo", "_loo_fit"):
+            "holdout 只是把 LOO 的名字转发回旧路径（对象同一），_loo_fit 是 loo 的内部实现",
+    }
+
+    def test_no_cross_module_private_imports_within_a_layer(self):
+        offenders: list[str] = []
+        for layer in _LAYERS:
+            for path in sorted((Path(_PKG_DIR) / layer).rglob("*.py")):
+                if "__pycache__" in path.parts:
+                    continue
+                source = path.read_text(encoding="utf-8")
+                tree = ast.parse(source, filename=str(path))
+                rel = f"{layer}/{path.name}"
+                for node in ast.walk(tree):
+                    if not (isinstance(node, ast.ImportFrom) and node.module):
+                        continue
+                    if _layer_of(node.module) != layer:
+                        continue          # 跨层由 LayerDependencyTest 管
+                    if node.module == f"drsr_420.{layer}.{path.stem}":
+                        continue          # 自己 import 自己不算
+                    for alias in node.names:
+                        if not (alias.name.startswith("_")
+                                and not alias.name.startswith("__")):
+                            continue
+                        if (rel, node.module, alias.name) in self.ALLOWED:
+                            continue
+                        offenders.append(
+                            f"{rel}:{node.lineno} -> {node.module}.{alias.name}")
+        self.assertEqual(
+            sorted(set(offenders)), [],
+            "同一层内跨模块引用了私有名——请把它提升为公开名，或移到共享模块"
+            "（确属契约的加进 IntraLayerPrivateImportTest.ALLOWED 并写明理由）:\n"
+            + "\n".join(sorted(set(offenders))))
+
+
 class PathAnchorTest(unittest.TestCase):
     """`.parent` 级数必须随目录深度同步修正（搬迁最易踩的静默坑）。"""
 
@@ -496,7 +549,7 @@ class PathAnchorTest(unittest.TestCase):
 
         expected = Path(_REPO_ROOT).resolve()
         for label, anchor in (("llm._REPO_ROOT", llm._REPO_ROOT),
-                              ("rag_kb._REPO_ROOT", rag_kb._REPO_ROOT),
+                              ("rag_kb.REPO_ROOT", rag_kb.REPO_ROOT),
                               ("tool_runner._ROOT", tool_runner._ROOT)):
             with self.subTest(anchor=label):
                 self.assertEqual(Path(anchor).resolve(), expected,

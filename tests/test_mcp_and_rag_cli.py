@@ -139,7 +139,7 @@ class ResolveDirTest(unittest.TestCase):
             finally:
                 os.chdir(old)
         self.assertEqual(os.path.normpath(resolved),
-                         os.path.normpath(str(rag_build._REPO_ROOT / "pdf_downloads")))
+                         os.path.normpath(str(rag_build.REPO_ROOT / "pdf_downloads")))
 
     def test_existing_relative_path_untouched(self):
         import tempfile

@@ -462,9 +462,10 @@ class FindBestEqPlumbingTest(unittest.TestCase):
             seen = {}
 
             def _fake_prune(results_root, func, params, threshold, sample_range,
-                            test_csv=None, test_ood_csv=None):
+                            test_csv=None, test_ood_csv=None, selection=None):
                 seen["test_csv"] = test_csv
                 seen["test_ood_csv"] = test_ood_csv
+                seen["selection"] = selection
                 return None
 
             with mock.patch.object(fbe, "prune_and_visualize", _fake_prune), \

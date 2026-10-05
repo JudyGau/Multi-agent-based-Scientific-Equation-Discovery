@@ -25,6 +25,7 @@
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import threading
@@ -42,6 +43,42 @@ from drsr_420.agents.coordinator_agent import CoordinatorAgent
 from drsr_420.agents.evaluator_agent import EvaluatorAgent
 from drsr_420.agents.data_analyzer_agent import DataAnalyzerAgent
 from drsr_420.agents.messages import EvaluationRequest
+
+
+@dataclasses.dataclass
+class PipelineOptions:
+    """一次实验的编排选项。
+
+    为什么要有这个类型：``main(**kwargs)`` 的键名是"调用方与实现之间的口头约定"，
+    写错一个键只会静默取到默认值（实测 ``llm_config`` 由 cli 传入却从无人读取）。
+    原先 5 个内部函数各自 ``kwargs.get(...)`` 一遍同一批键，读者无法从任何一处看出
+    "一次编排到底需要哪些输入"。改成 dataclass 后，字段拼错在构造时即报错，
+    内部函数收字段而非袋子。
+
+    ``llm_config`` 仍被 cli 传入但本层不使用（客户端与角色档案在 cli 侧已解析完），
+    故列在 :data:`_IGNORED_KEYS` 里，不参与"未知键"告警。
+    """
+    results_root: str | None = None
+    persist_all_samples: bool = True
+    llm_client: Any = None
+    role_clients: Any = None
+    seed: int | None = None
+    prompt_ctx: Any = None
+    rag_query: str | None = None
+    test_csv: str | None = None
+    test_ood_csv: str | None = None
+
+    #: 允许传入但本层不读取的键（避免把"设计如此"误报成拼写错误）。
+    _IGNORED_KEYS = frozenset({"llm_config"})
+
+    @classmethod
+    def from_kwargs(cls, kwargs: dict) -> "PipelineOptions":
+        """从旧式 ``**kwargs`` 构造；未知键只告警不报错（兼容外部脚本）。"""
+        known = {field.name for field in dataclasses.fields(cls)}
+        unknown = sorted(set(kwargs) - known - cls._IGNORED_KEYS)
+        if unknown:
+            print(f"[WARN] pipeline 收到未使用的参数（已忽略）：{unknown}")
+        return cls(**{key: value for key, value in kwargs.items() if key in known})
 
 
 def _extract_function_names(specification: str) -> Tuple[str, str]:
@@ -128,7 +165,7 @@ def _target_score_from_config(config: config_lib.Config,
 def _init_profiler(
         inputs: Sequence[Any],
         config: config_lib.Config,
-        kwargs,
+        options: PipelineOptions,
         results_root: str,
 ):
     """根据数据方差与配置构造 Profiler（记录样本与中间结果）。"""
@@ -140,7 +177,7 @@ def _init_profiler(
         target_variance=target_variance,
         # 默认全量落盘（每样本一个 samples_<order>.json）：只有 top-10 的产物无法
         # 支撑事后复盘/消融/因果链分析。显式传 persist_all_samples=False 才退回省盘模式。
-        persist_all_samples=bool(kwargs.get('persist_all_samples', True)),
+        persist_all_samples=bool(options.persist_all_samples),
     ) if results_root else None
     return profiler
 
@@ -171,17 +208,16 @@ def _init_evaluators(
 def _run_initial_analysis(
         inputs: Sequence[Any],
         config: config_lib.Config,
-        kwargs,
+        options: PipelineOptions,
         evaluators: Sequence[EvaluatorAgent],
         profiler,
         template: code_manipulation.Program,
         function_to_evolve: str,
 ):
     """初次数据分析：先评估初始模板，再由 DataAnalyzerAgent 分析数据集（含 RAG 注入）。"""
-    llm_client = kwargs.get('llm_client', None)
-    role_clients = kwargs.get('role_clients', None)
-    seed = kwargs.get('seed', None)
-    results_root = kwargs.get('results_root', None) or config.results_root
+    llm_client = options.llm_client
+    role_clients = options.role_clients
+    results_root = options.results_root or config.results_root
 
     initial = template.get_function(function_to_evolve).body
     # 初始模板评估：结果不参与后续流程（只为确认模板可运行并写入样本记录），
@@ -193,10 +229,10 @@ def _run_initial_analysis(
     # 客户端按角色取：analysis 在 config/agents.config.json 里可绑定独立档案。
     if role_clients is not None:
         llm_client = role_clients.get('analysis')
-    prompt_ctx = kwargs.get('prompt_ctx', None)
+    prompt_ctx = options.prompt_ctx
     # 事实表里的相关性对名要与提示词里的变量名一致，否则模型无法把两者对上号
     analyzer = DataAnalyzerAgent(
-        timeout=600, base_dir=results_root, llm_client=llm_client, seed=seed,
+        timeout=600, base_dir=results_root, llm_client=llm_client, seed=options.seed,
         feature_names=prompt_ctx.features if prompt_ctx else None,
         dependent_name=prompt_ctx.dependent if prompt_ctx else None,
     )
@@ -208,7 +244,7 @@ def _run_initial_analysis(
             from drsr_420.knowledge.rag_kb import get_kb, load_config
             _rag_cfg = load_config()
             _rag_query = (
-                kwargs.get('rag_query', None)
+                options.rag_query
                 or (prompt_ctx.background_text if prompt_ctx else None)
                 or _rag_cfg.get('default_query', '')
             )
@@ -241,7 +277,7 @@ def _launch_samplers(
         config: config_lib.Config,
         max_sample_nums: int | None,
         class_config: config_lib.ClassConfig,
-        kwargs,
+        options: PipelineOptions,
         profiler,
 ):
     """以 Sampler-i 线程并行启动多个 CoordinatorAgent，直至全部结束。
@@ -249,9 +285,9 @@ def _launch_samplers(
     每个 sampler 独享一份 EvaluatorAgent 列表：避免多线程并发调用同一 Evaluator/Sandbox，
     防止 sandbox 上的 _last_params 等实例可变状态竞态。
     """
-    llm_client = kwargs.get('llm_client', None)
-    prompt_ctx = kwargs.get('prompt_ctx', None)
-    role_clients = kwargs.get('role_clients', None)
+    llm_client = options.llm_client
+    prompt_ctx = options.prompt_ctx
+    role_clients = options.role_clients
     # target_nmse → 目标分（score = -MSE，NMSE = MSE/var(outputs)）
     target_score = _target_score_from_config(config, inputs)
 
@@ -312,25 +348,29 @@ def main(
         inputs       : the data instances for the problem.
         config       : config file.
         max_sample_nums: the maximum samples nums from LLM. 'None' refers to no stop.
+
+    ``**kwargs`` 仍被接受（外部脚本按旧写法调用），但**立即归一化**成
+    :class:`PipelineOptions`，内部一律传类型化对象，不再逐层 ``kwargs.get``。
     """
-    results_root = kwargs.get('results_root', None) or config.results_root
+    options = PipelineOptions.from_kwargs(kwargs)
+    results_root = options.results_root or config.results_root
 
     database, template, function_to_evolve, function_to_run = _init_experience_buffer(
         specification, config, results_root)
-    profiler = _init_profiler(inputs, config, kwargs, results_root)
+    profiler = _init_profiler(inputs, config, options, results_root)
     evaluators = _init_evaluators(
         database, template, function_to_evolve, function_to_run,
         inputs, config, class_config)
     _run_initial_analysis(
-        inputs, config, kwargs, evaluators, profiler, template, function_to_evolve)
+        inputs, config, options, evaluators, profiler, template, function_to_evolve)
     # 初始 evaluator 集合只用于初次模板评估：其 LocalSandbox 常驻 worker 若不用
     # 显式释放，会整场实验闲置占内存（_launch_samplers 为每个 sampler 另建独享集合）
     for _ev in evaluators:
         _ev.close()
     _launch_samplers(
         database, template, function_to_evolve, function_to_run,
-        inputs, config, max_sample_nums, class_config, kwargs, profiler)
+        inputs, config, max_sample_nums, class_config, options, profiler)
 
-    find_best_eq(results_root, role_clients=kwargs.get('role_clients'),
-                 test_csv=kwargs.get('test_csv'),
-                 test_ood_csv=kwargs.get('test_ood_csv'))
+    find_best_eq(results_root, role_clients=options.role_clients,
+                 test_csv=options.test_csv,
+                 test_ood_csv=options.test_ood_csv)

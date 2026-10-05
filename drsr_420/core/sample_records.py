@@ -74,6 +74,25 @@ def load_sample_records(results_root: str) -> list[dict]:
     return sorted(records.values(), key=lambda r: r["score"], reverse=True)
 
 
+def top_sample(results_root: str) -> tuple[float, str, str, list] | None:
+    """分数最高的样本 ``(score, path, function, params)``；无有效样本返回 ``None``。
+
+    **不带病理门禁**：这里只回答"谁是最高分"。要不要发布它、要不要因为体检罚分改发
+    另一个样本，是 :func:`drsr_420.analysis.find_best_eq.select_published_sample` 的
+    决策（优先发布无病理的最高分）。两者语义不同，不要混用——直接拿 ``top_sample``
+    当"发布解"正是旧实现的口径问题（见其 docstring 里的实测反例）。
+
+    放在 core 而非 analysis：``analysis.expr_curves`` 需要它（独立补跑曲线时先选样本），
+    而 ``expr_curves`` 若 import ``find_best_eq`` 会与其形成环形依赖。选样本的判据只依赖
+    "读落盘记录"，本就属于本模块。
+    """
+    records = load_sample_records(results_root)
+    if not records:
+        return None
+    best = records[0]
+    return best["score"], best["path"], best["function"], best["params"]
+
+
 def _finite(value):
     """有限实数（不是 bool）；其余（None / 字符串 / NaN / inf）返回 ``None``。"""
     if isinstance(value, bool) or not isinstance(value, (int, float)):

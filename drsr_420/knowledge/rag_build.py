@@ -9,7 +9,7 @@ import argparse
 import json
 from pathlib import Path
 
-from drsr_420.knowledge.rag_kb import RagKB, load_config, _REPO_ROOT
+from drsr_420.knowledge.rag_kb import RagKB, load_config, REPO_ROOT
 
 
 def _resolve_dir(path: str) -> str:
@@ -18,7 +18,7 @@ def _resolve_dir(path: str) -> str:
     p = Path(path)
     if p.is_absolute() or p.exists():
         return str(p)
-    candidate = _REPO_ROOT / p
+    candidate = REPO_ROOT / p
     return str(candidate) if candidate.exists() else str(p)
 
 

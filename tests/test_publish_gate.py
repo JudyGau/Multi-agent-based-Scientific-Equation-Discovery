@@ -10,6 +10,8 @@
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import pathlib
@@ -295,6 +297,58 @@ class FullSampleRetentionTest(unittest.TestCase):
                             f"缺失 samples_{order}.json——默认落盘没有生效")
         # Top-K 排行文件照旧存在（收尾分析依赖它）
         self.assertTrue(os.path.exists(os.path.join(samples, "top01_samples_3.json")))
+
+
+class PruningSummarySchemaTest(unittest.TestCase):
+    """剪枝摘要的**键集合**是声明式契约：写错一个键只会静默取到 None。
+
+    ``prune_and_visualize`` 的返回值被 ``explain``（提示词块 + report.md 小节）与多个
+    测试按字符串键消费，键名原先靠"约定对齐"。``PRUNING_SUMMARY_KEYS`` 把它变成可断言
+    的对象，这里比对"实际返回的键 == 声明的键"，防止新增/改名时漏改消费方。
+    """
+
+    FUNC = ("Variables:\n"
+            "- Independents: x1, x2\n"
+            "- Dependent: y\n"
+            "def equation_v1(x1, x2, params):\n"
+            "    return params[0] * x1 + params[1] * x2")
+
+    def test_returned_keys_match_declared_schema(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "p_20260101-000000"
+            root.mkdir()
+            summary = fbe.prune_and_visualize(
+                str(root), self.FUNC, [2.0, 3.0], threshold=0.1,
+                sample_range=(1, 6), test_csv="none")
+        self.assertIsNotNone(summary)
+        self.assertEqual(sorted(summary), sorted(fbe.PRUNING_SUMMARY_KEYS))
+
+    def test_selection_is_part_of_the_summary_not_filled_in_afterwards(self):
+        """``selection`` 由调用方在调用时传入，不再返回后回填（旧写法见其 docstring）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "p_20260101-000000"
+            root.mkdir()
+            marker = {"n_candidates": 0, "n_clean": 0, "degraded": False, "best": None,
+                      "chosen": None, "rejected": [], "n_rejected": 0,
+                      "n_unknown_skipped": 0}
+            summary = fbe.prune_and_visualize(
+                str(root), self.FUNC, [2.0, 3.0], threshold=0.1,
+                sample_range=(1, 6), test_csv="none", selection=marker)
+        self.assertIs(summary["selection"], marker)
+
+    def test_unknown_pipeline_option_is_reported_not_silently_dropped(self):
+        """``PipelineOptions`` 让"键名写错"从静默变成可诊断（原先只有 kwargs.get）。"""
+        from drsr_420.runtime.pipeline import PipelineOptions
+
+        with io.StringIO() as buf, contextlib.redirect_stdout(buf):
+            options = PipelineOptions.from_kwargs({"test_csv": "a.csv", "test_cvs": "typo"})
+            printed = buf.getvalue()
+        self.assertEqual(options.test_csv, "a.csv")
+        self.assertIn("test_cvs", printed)          # 拼错的键被点名
+        # cli 会传但本层不用的键不应刷告警
+        with io.StringIO() as buf, contextlib.redirect_stdout(buf):
+            PipelineOptions.from_kwargs({"llm_config": {"model": "m"}})
+            self.assertEqual(buf.getvalue(), "")
 
 
 if __name__ == "__main__":

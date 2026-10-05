@@ -19,9 +19,9 @@ from pathlib import Path
 import numpy as np
 
 from drsr_420.knowledge.rag_config import (      # noqa: F401  （转发：对外契约不变）
+    CONFIG_NAME,
     DEFAULT_CONFIG,
-    _CONFIG_NAME,
-    _REPO_ROOT,
+    REPO_ROOT,
     load_config,
 )
 
@@ -566,7 +566,7 @@ class RagKB:
             # 相对路径统一解析到项目根目录，避免在不同 cwd 下产生多个知识库；绝对路径尊重原样
             p = Path(persist)
             if not p.is_absolute():
-                persist = str(_REPO_ROOT / p)
+                persist = str(REPO_ROOT / p)
             self._client = chromadb.PersistentClient(path=persist)
         return self._client
 

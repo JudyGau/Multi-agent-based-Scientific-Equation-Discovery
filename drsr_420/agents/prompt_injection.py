@@ -34,6 +34,7 @@ import traceback
 from drsr_420.core import config as config_lib
 from drsr_420.core import prompt_config as pc
 from drsr_420.core.console import print_block
+from drsr_420.core.sample_header import parse_independents_text, split_names
 from drsr_420.core.sample_records import load_sample_records
 from drsr_420.evaluation.architecture_facts import (
     features_from_equation,
@@ -84,8 +85,7 @@ _RESIDUAL_CHAR_LIMIT = 2000
 #: 名额留给不同族。
 _MAX_PER_SKELETON_FAMILY = 1
 
-#: 经验条目里独立变量声明的形态（样本文本自带的 "Independents: lambda12, lambda23"）。
-_INDEPENDENTS_RE = re.compile(r"Independents:\s*(.*)")
+#: 经验条目里 ``params[i]`` 的下标（骨架签名归一化用）。
 _PARAM_INDEX_RE = re.compile(r"params\s*\[\s*(\d+)\s*\]")
 
 
@@ -105,9 +105,7 @@ def skeleton_signature(equation: str) -> str:
     if not match:
         return ""
     expr = match.group(1)
-    names_match = _INDEPENDENTS_RE.search(text)
-    names = [v.strip() for v in re.split(r"[,，\s]+", names_match.group(1) if names_match else "")
-             if v.strip()]
+    names = split_names(parse_independents_text(text) or "")
     for i, name in enumerate(names):
         expr = re.sub(rf"\b{re.escape(name)}\b", f"@{i}", expr)
     expr = _PARAM_INDEX_RE.sub("p", expr).replace("np.", "").replace("**", "^")

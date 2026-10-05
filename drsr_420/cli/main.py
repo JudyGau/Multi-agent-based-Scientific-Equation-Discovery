@@ -25,7 +25,6 @@ from argparse import ArgumentParser
 import numpy as np
 import pandas as pd
 
-from drsr_420.agents.evaluator_agent import LocalSandbox
 from drsr_420.agents.sampler_agent import SamplerAgent
 from drsr_420.cli.llm_setup import (
     build_llm_client,
@@ -34,8 +33,9 @@ from drsr_420.cli.llm_setup import (
 )
 from drsr_420.core import config as config_lib
 from drsr_420.core import prompt_config as pc
-from drsr_420.runtime import pipeline
 from drsr_420.evaluation.problems import MAX_NPARAMS, N_STARTS, PARAMS_BOUNDS
+from drsr_420.evaluation.sandbox import LocalSandbox
+from drsr_420.runtime import pipeline
 
 DEFAULT_BACKGROUND = (
     "The physical properties of this equation are unknown and need to be analyzed "

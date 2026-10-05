@@ -31,13 +31,14 @@ import os
 import numpy as np
 import sympy as sp
 
+from drsr_420.analysis.data_io import (load_training_data, resolve_columns,
+                                       resolve_csv as _resolve_csv, warn_once)
+from drsr_420.analysis.expr_numeric import compile_expr
 from drsr_420.analysis.expr_parse import expr_substitution
-from drsr_420.analysis.find_best_eq import _parse_symbols, find_best_sample
 from drsr_420.analysis.holdout import load_test_data
-from drsr_420.analysis.prune_report import (_warn_once, load_training_data,
-                                            resolve_columns,
-                                            resolve_csv as _resolve_csv)
 from drsr_420.analysis.sensitivity_prune import SensitivityPruner
+from drsr_420.core.sample_header import parse_symbols
+from drsr_420.core.sample_records import top_sample
 
 __all__ = ["plot_data_curves", "plot_expr_curves", "_resolve_csv"]
 
@@ -73,7 +74,7 @@ def plot_data_curves(results_root: str, dependent: str, sym_names: list[str],
         print(f"[WARN] {e}，跳过曲线绘制。")
         return []
     if note:
-        _warn_once(f"变量名与数据列不完全一致：{note}")
+        warn_once(f"变量名与数据列不完全一致：{note}")
 
     # held-out 点（没参与拟合与选择）：只画散点，不参与曲线求值
     test_data = load_test_data(results_root, test_csv)
@@ -83,14 +84,13 @@ def plot_data_curves(results_root: str, dependent: str, sym_names: list[str],
             test_dep, test_ind, test_note = resolve_columns(test_data, dependent, sym_names)
             test_cols = (test_dep, test_ind)
             if test_note:
-                _warn_once(f"样本外数据的变量名与列不完全一致：{test_note}")
+                warn_once(f"样本外数据的变量名与列不完全一致：{test_note}")
         except KeyError as e:
             print(f"[WARN] 样本外数据无法用于绘图，仅画训练点：{e}")
 
-    syms = list(sp.symbols(sym_names))
     try:
-        f_orig = sp.lambdify(syms, expr, modules="numpy")
-        f_pruned = (sp.lambdify(syms, pruned, modules="numpy")
+        f_orig = compile_expr(expr, sym_names)
+        f_pruned = (compile_expr(pruned, sym_names)
                     if pruned is not None else None)
     except Exception as e:
         print(f"[WARN] 表达式数值化失败，跳过曲线绘制: {e}")
@@ -172,12 +172,12 @@ def plot_expr_curves(results_root: str, threshold: float = 0.1,
     绘图走 ``prune_and_visualize → plot_data_curves``，不经过这里（避免重复剪枝）。
     ``test_csv`` 语义同 ``plot_data_curves``（``None`` = 自动探测）。
     """
-    best = find_best_sample(results_root)
+    best = top_sample(results_root)
     if best is None:
         print("[WARN] 未找到有效样本，跳过曲线绘制。")
         return []
     _score, _path, func, params = best
-    parsed = _parse_symbols(func)
+    parsed = parse_symbols(func)
     if parsed is None:
         print("[WARN] 无法解析 Dependent/Independents，跳过曲线绘制。")
         return []

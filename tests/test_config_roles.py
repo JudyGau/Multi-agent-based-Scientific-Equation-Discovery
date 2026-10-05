@@ -920,7 +920,7 @@ class PingRolesTest(unittest.TestCase):
         return roles_mod.RoleRegistry.load(path)
 
     def _ping(self, registry, resp):
-        with mock.patch.object(diag_mod, "_post_with_retry", return_value=resp) as post:
+        with mock.patch.object(diag_mod, "post_with_retry", return_value=resp) as post:
             outcomes = diag_mod.ping_roles(registry=registry, environ={})
         return outcomes, post
 
@@ -1027,7 +1027,7 @@ class PingCliTest(unittest.TestCase):
 
     def _run(self, argv):
         out = io.StringIO()
-        with mock.patch.object(diag_mod, "_post_with_retry",
+        with mock.patch.object(diag_mod, "post_with_retry",
                                return_value=self._Resp({"choices": [{"message": {"content": "pong"}}]})), \
              contextlib.redirect_stdout(out):
             code = roles_mod.main(argv)
