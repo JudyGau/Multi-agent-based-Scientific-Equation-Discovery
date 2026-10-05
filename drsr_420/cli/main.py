@@ -397,6 +397,89 @@ def resolve_background(parser: ArgumentParser, args) -> str | None:
     return text
 
 
+def _positive_or_none(value, cast=int):
+    """命令行数值归一化：``None`` / 0 / 负数一律视为"未设置"（返回 ``None``）。
+
+    同一规则原先在 5 处各写一遍（``x if x and x > 0 else None``）。重复的代价不是行数，
+    而是**阈值类参数上的静默行为差异**：只要有一处写成 ``>= 0`` 或漏掉类型转换，
+    就会出现"0 被当成有效阈值"这种只在某个参数上发生的怪行为。
+    """
+    if value is None:
+        return None
+    try:
+        casted = cast(value)
+    except (TypeError, ValueError):
+        return None
+    return casted if casted > 0 else None
+
+
+def _prepare_run_environment(args) -> tuple[str, int | None]:
+    """改随机种子、建结果目录、装日志旁路；返回 ``(results_root, 实验总时长秒数)``。
+
+    这些步骤都有副作用且**顺序有意义**：必须先定位结果目录，才能把 stdout 旁路进它的
+    ``run.out``；日志配置要在任何库输出之前。整体命名比散在 ``main`` 里更容易看出这个依赖。
+    """
+    wall_limit_seconds = _positive_or_none(args.timeout_in_seconds, int)
+    apply_seed(args.seed)
+    results_root = resolve_results_root(args.problem_name, args.experiment_dir)
+    setup_output_tee(results_root)
+    print(f"[INFO] Results root: {results_root}")
+    configure_logging()
+    return results_root, wall_limit_seconds
+
+
+def _build_config(args, results_root: str,
+                  wall_limit_seconds: int | None) -> config_lib.Config:
+    """按命令行覆盖项构造实验配置。
+
+    ``samples_per_iteration`` 是唯一"给了才覆盖"的字段（其余默认值由 dataclass 提供），
+    故用 ``**overrides`` 表达，而不是把整段 ``Config(...)`` 复制两份——旧实现的两个分支
+    只差这一个字段，于是**任何新增字段都得改两处**，漏一处就会在某条启动路径上静默失效。
+    """
+    overrides = {}
+    samples_per_iteration = _positive_or_none(args.samples_per_iteration, int)
+    if samples_per_iteration is not None:
+        overrides["samples_per_prompt"] = samples_per_iteration
+    default_islands = config_lib.ExperienceBufferConfig().num_islands
+    return config_lib.Config(
+        results_root=results_root,
+        wall_time_limit_seconds=wall_limit_seconds,
+        experience_buffer=config_lib.ExperienceBufferConfig(
+            num_islands=_positive_or_none(args.num_islands, int) or default_islands),
+        num_samplers=_positive_or_none(args.num_samplers, int) or 1,
+        # 收敛型早停（None = 关闭；预算型条件 --niterations/--timeout_in_seconds 照常兜底）
+        target_nmse=_positive_or_none(args.target_nmse, float),
+        early_stop_patience=_positive_or_none(args.early_stop_patience, int),
+        min_batches_before_early_stop=_positive_or_none(args.min_batches, int),
+        max_failed_batches=_positive_or_none(args.max_failed_batches, int),
+        **overrides,
+    )
+
+
+def _resolve_max_sample_nums(args, exp_config: config_lib.Config) -> int:
+    """最大采样数：``--niterations`` 给了就按 迭代数×采样器数×每轮样本数 推导，否则 1000。"""
+    niterations = _positive_or_none(args.niterations, int)
+    if niterations is None:
+        return 1000
+    return (niterations * int(exp_config.num_samplers)
+            * int(exp_config.samples_per_prompt))
+
+
+def _llm_snapshot(client, llm_config: dict, role_clients) -> dict:
+    """快照这次实验的 LLM 侧配置（``api_key`` 打码）。"""
+    return {
+        "provider": client._provider_name() if client else None,
+        "model": client.model if client else llm_config.get('model', ''),
+        "base_url": (client.base_url if client else '') or llm_config.get('base_url', ''),
+        "api_key": ("***" if (client and client.api_key) else ""),
+        "kwargs": getattr(client, 'kwargs', None) if client else None,
+        # 每个角色最终生效的档案与来源（含 --role-config / 环境变量 / 注册表默认），
+        # 让"这次实验的 explain 到底用了哪个模型"可追溯——旧结构下这无从查起，
+        # 因为 explain 会自己硬编码另一个档案文件。
+        "roles": role_clients.describe(),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     """完整运行一次方程发现实验。返回进程退出码。"""
     parser = build_parser()
@@ -406,70 +489,15 @@ def main(argv: list[str] | None = None) -> int:
     class_config = config_lib.ClassConfig(
         llm_class=SamplerAgent, sandbox_class=LocalSandbox)
 
-    # 实验总时长（秒）
-    wall_limit_seconds = (int(args.timeout_in_seconds)
-                          if args.timeout_in_seconds and args.timeout_in_seconds > 0 else None)
-
-    apply_seed(args.seed)
-
-    results_root = resolve_results_root(args.problem_name, args.experiment_dir)
-    setup_output_tee(results_root)
-    print(f"[INFO] Results root: {results_root}")
-    configure_logging()
-
-    # 允许从命令行覆盖 samples_per_iteration（映射到 Config.samples_per_prompt）与岛屿数
-    eb_cfg = config_lib.ExperienceBufferConfig(
-        num_islands=(int(args.num_islands) if args.num_islands and args.num_islands > 0
-                     else config_lib.ExperienceBufferConfig().num_islands))
-    num_samplers = int(args.num_samplers) if args.num_samplers and args.num_samplers > 0 else 1
-
-    # 收敛型早停参数（None = 关闭）
-    early_stop_cfg = dict(
-        target_nmse=(float(args.target_nmse)
-                     if args.target_nmse and args.target_nmse > 0 else None),
-        early_stop_patience=(int(args.early_stop_patience)
-                             if args.early_stop_patience and args.early_stop_patience > 0
-                             else None),
-        min_batches_before_early_stop=(int(args.min_batches)
-                                       if args.min_batches and args.min_batches > 0
-                                       else None),
-        max_failed_batches=(int(args.max_failed_batches)
-                            if args.max_failed_batches and args.max_failed_batches > 0
-                            else None),
-    )
-
-    # 注意：局部变量名用 exp_config，绝不再覆盖 config 模块名（重构前的真实陷阱）
-    if args.samples_per_iteration is not None and args.samples_per_iteration > 0:
-        exp_config = config_lib.Config(
-            results_root=results_root,
-            samples_per_prompt=int(args.samples_per_iteration),
-            wall_time_limit_seconds=wall_limit_seconds,
-            experience_buffer=eb_cfg,
-            num_samplers=num_samplers,
-            **early_stop_cfg,
-        )
-    else:
-        exp_config = config_lib.Config(
-            results_root=results_root,
-            wall_time_limit_seconds=wall_limit_seconds,
-            experience_buffer=eb_cfg,
-            num_samplers=num_samplers,
-            **early_stop_cfg,
-        )
+    results_root, wall_limit_seconds = _prepare_run_environment(args)
+    exp_config = _build_config(args, results_root, wall_limit_seconds)
+    global_max_sample_num = _resolve_max_sample_nums(args, exp_config)
 
     llm_config = load_llm_config_file(args.llm_config)
     client = build_llm_client(llm_config)
     # 角色化的客户端池：sampling/analysis/experience/residual/explain/summary 各自
     # 按 config/agents.config.json 解析（可用 --role-config 覆盖）
     role_clients = build_role_clients(args.llm_config, args.role_config)
-
-    # 最大采样数量：优先由 --niterations 推导；否则使用默认 1000
-    if args.niterations is not None and args.niterations > 0:
-        global_max_sample_num = (int(args.niterations)
-                                 * int(getattr(exp_config, 'num_samplers', 1))
-                                 * int(getattr(exp_config, 'samples_per_prompt', 4)))
-    else:
-        global_max_sample_num = 1000
 
     X, y, feature_names, y_name = load_csv(args.data_csv)
 
@@ -519,17 +547,7 @@ def main(argv: list[str] | None = None) -> int:
         },
         "background": background,
         "background_file": args.background_file,
-        "llm": {
-            "provider": client._provider_name() if client else None,
-            "model": client.model if client else llm_config.get('model', ''),
-            "base_url": (client.base_url if client else '') or llm_config.get('base_url', ''),
-            "api_key": ("***" if (client and client.api_key) else ""),
-            "kwargs": getattr(client, 'kwargs', None) if client else None,
-            # 每个角色最终生效的档案与来源（含 --role-config / 环境变量 / 注册表默认），
-            # 让"这次实验的 explain 到底用了哪个模型"可追溯——旧结构下这无从查起，
-            # 因为 explain 会自己硬编码另一个档案文件。
-            "roles": role_clients.describe(),
-        },
+        "llm": _llm_snapshot(client, llm_config, role_clients),
         "results_root": results_root,
     })
 

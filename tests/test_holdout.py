@@ -357,11 +357,12 @@ class HoldoutSectionTest(unittest.TestCase):
         self.assertIn("## 参考文献", stripped)
 
     def test_assemble_keeps_body_and_appends_authoritative_section(self):
-        from drsr_420.analysis.explain import _assemble_explain
+        from drsr_420.analysis.report_sections import ReportData, assemble_explain
 
         body = "## 结论\n\n正文\n\n## 样本外验证\n\nLLM 编的\n"
-        text = _assemble_explain(body, [], holdout=self._holdout(),
-                                 fit={"mse_before": 1e-6, "nmse_before": 1e-7})
+        text = assemble_explain(body, ReportData(holdout=self._holdout(),
+                                                fit={"mse_before": 1e-6,
+                                                     "nmse_before": 1e-7}))
         self.assertIn("正文", text)
         self.assertNotIn("LLM 编的", text)
         self.assertIn(ho.HOLDOUT_HEADING, text)

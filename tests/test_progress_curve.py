@@ -15,6 +15,7 @@ from unittest import mock
 import numpy as np
 
 from drsr_420.analysis import progress_curve as pcur
+from drsr_420.analysis.report_sections import ReportData
 
 
 def _matplotlib_available() -> bool:
@@ -693,6 +694,7 @@ class SectionOrderAndSingleSourceTest(unittest.TestCase):
     def test_anchor_matches_explain_reference_heading(self):
         """锚点是"参考文献之前"，必须与 explain 的标题字面一致（不能各写一份漂移）。"""
         from drsr_420.analysis import explain as explain_mod
+
         self.assertEqual(pcur._REFERENCE_ANCHOR, explain_mod.REFERENCE_HEADING)
 
     def test_progress_sits_between_range_check_and_references(self):
@@ -701,12 +703,12 @@ class SectionOrderAndSingleSourceTest(unittest.TestCase):
                     "first": {"sample_order": 0, "mse": 100.0, "nmse": 0.05},
                     "best": {"sample_order": 7, "mse": 1.0, "nmse": 5e-4},
                     "points": []}
-        text = explain_mod._assemble_explain(
-            "正文", [{"title": "T", "doi": "10.1/x", "source": "s"}],
-            holdout=None, fit=None, range_check={"span_ratio": 1.0, "limit": 15.0,
-                                                 "slope_max": 0.1, "slope_limit": 2.0,
-                                                 "coef_ratio": 1.0, "coef_limit": 8.0},
-            progress=progress)
+        text = explain_mod.assemble_explain(
+            "正文", ReportData(
+                refs=[{"title": "T", "doi": "10.1/x", "source": "s"}],
+                range_check={"span_ratio": 1.0, "limit": 15.0, "slope_max": 0.1,
+                             "slope_limit": 2.0, "coef_ratio": 1.0, "coef_limit": 8.0},
+                progress=progress))
         i_range = text.index(explain_mod.RANGE_HEADING)
         i_prog = text.index(pcur.PROGRESS_HEADING)
         i_ref = text.index(explain_mod.REFERENCE_HEADING)
@@ -715,7 +717,7 @@ class SectionOrderAndSingleSourceTest(unittest.TestCase):
 
     def test_no_progress_means_no_section(self):
         from drsr_420.analysis import explain as explain_mod
-        text = explain_mod._assemble_explain("正文", [], progress=None)
+        text = explain_mod.assemble_explain("正文", ReportData(progress=None))
         self.assertNotIn(pcur.PROGRESS_HEADING, text)
 
 

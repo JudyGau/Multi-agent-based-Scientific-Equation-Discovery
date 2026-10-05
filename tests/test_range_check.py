@@ -334,9 +334,10 @@ class ExplainRangeSectionTest(unittest.TestCase):
             self.GATE_ONLY, slope_max=0.5, slope_penalty=0.0, penalty=0.0)))
 
     def test_assemble_replaces_llm_authored_range_section(self):
-        from drsr_420.analysis.explain import _assemble_explain
+        from drsr_420.analysis.report_sections import ReportData, assemble_explain
         body = "正文\n\n## 动态范围体检\nLLM 编造的数字 12345\n\n## 其他\n内容"
-        text = _assemble_explain(body, refs=[], range_check=self.PRUNING["range_check"])
+        text = assemble_explain(
+            body, ReportData(range_check=self.PRUNING["range_check"]))
         self.assertEqual(text.count("## 动态范围体检"), 1)
         self.assertNotIn("12345", text)
         self.assertIn("病理性", text)

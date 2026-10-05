@@ -31,6 +31,7 @@
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import re
@@ -534,7 +535,8 @@ from drsr_420.analysis.report_sections import (  # noqa: F401
     RANGE_HEADING,
     REPORT_FILENAME,
     SELECTION_HEADING,
-    assemble_explain as _assemble_explain,   # 兼容旧私有名（测试按它引用）
+    ReportData,
+    assemble_explain,
     backfill_parse_audit,
     range_check_hit as _range_check_hit,     # 剪枝摘要块与权威小节共用同一套措辞
     range_check_lines as _range_check_lines,
@@ -548,10 +550,7 @@ from drsr_420.analysis.report_sections import (  # noqa: F401
 
 
 def explain_best_sample(results_root: str, func: str, sample_order: str,
-                        role_clients=None, pruning: dict | None = None,
-                        holdout: dict | None = None,
-                        holdout_ood: dict | None = None,
-                        progress: dict | None = None) -> None:
+                        *, role_clients=None, pruning: dict | None = None) -> None:
     """按 sample_order 匹配 Good 经验，调用 LLM 生成物理解释并落盘 report.md。
 
     任意环节失败（无经验文件 / 无匹配条目 / 提示词构造失败 / LLM 初始化失败）都不抛出，
@@ -561,19 +560,67 @@ def explain_best_sample(results_root: str, func: str, sample_order: str,
 
     Args:
         pruning: ``find_best_eq.prune_and_visualize`` 的剪枝摘要；给定时解释会覆盖
-            剪枝后的表达式、被移除项与剪枝前后拟合对比。
-        holdout: 同一次收尾里的样本外验证结果（``holdout.evaluate_holdout``）；
-            省略时从 ``pruning["holdout"]`` 取。给定时 report.md 会附加机器生成的
-            「样本外验证」小节（样本外指标只报告，不参与任何选择）。
-        progress: 训练进度摘要（``progress_curve.plot_progress_curve``）；省略时从
-            ``pruning["progress"]`` 取。给定时 report.md 会附加机器生成的
-            「训练进度」小节（MSE 随 sample_order 的历史最优曲线）；为 ``None``
-            时该小节整节不出现。
+            剪枝后的表达式、被移除项与剪枝前后拟合对比。机器小节所需的数据
+            （样本外 / LOO / 体检 / 进度 / 选解依据）**全部从它取一次**
+            （``ReportData.from_pruning``），提示词与报告共用同一份，不会出现两套数字。
         role_clients: ``llm.roles.RoleClients``；取其中的 ``explain`` 角色客户端。
             省略时按 ``config/agents.config.json`` 自行解析——**不再硬编码档案
             文件名**。旧实现在这里写死了 ``deepseek_deepseek-v4-flash.config``，
             该文件在仓库中并不存在，异常被下面的 ``except`` 吞掉后静默写出空的
             ``report.md``（物理解释长期失效且无人发现）。
+
+    本函数只做编排，四段实现分别在 ``_match_good_experience``（读盘 + 匹配经验）、
+    ``_render_explain_body``（提示词 + LLM）、``ReportData.from_pruning``（机器数据一次
+    解析）、``assemble_explain``（装配）与 ``_persist_report``（落盘）。
+    """
+    matched, note = _match_good_experience(results_root, sample_order)
+    background = _read_background(results_root)
+
+    # 先自己检索一次文献：既进提示词（按 [n] 编号），又是文末参考文献清单的来源。
+    # 解析失败时不传 references，让 build_explain_content 内部按同样规则兜底。
+    references = None
+    parsed = _parse_func_header(func)
+    if parsed is not None:
+        references = retrieve_rag(_explain_query(parsed[1]))
+
+    # 机器小节的数据**只解析这一次**，提示词块与报告小节共用（见 ReportData 的说明）。
+    data = ReportData.from_pruning(
+        pruning, parse_audit=audit_parse_failures(results_root), note=note)
+
+    tool_refs: list[dict] = []
+    explain = ""
+    if matched is not None:
+        content = build_explain_content(func, matched, background=background,
+                                        pruning=pruning, references=references,
+                                        holdout=data.holdout,
+                                        holdout_ood=data.holdout_ood,
+                                        facts=_load_facts(results_root))
+        if content is None:
+            data = dataclasses.replace(data, note="构造物理解释提示词失败")
+            print("[WARN] 构造物理解释提示词失败，物理解释正文未生成。")
+        else:
+            explain = _render_explain_body(content, tool_refs, role_clients)
+            if not explain.strip():
+                data = dataclasses.replace(data, note="物理解释为空（LLM 调用失败或返回空）")
+                print(f"[WARN] {data.note}。")
+
+    # 正文 + 权威参考文献清单（知识库检索命中 ∪ 解释过程中工具检索命中）
+    #        + 权威「发布解选择 / 样本外验证 / 动态范围体检 / 训练进度」小节（数字由
+    #        系统直接算，不经过 LLM 转述）
+    #
+    # 落盘策略（2026-09-26 修正）：**无论物理解释是否生成都要写 report.md**。这些机器
+    # 小节本身就是可引用的产物，而旧实现"失败就不写"，导致 490 个 run 只剩 4 份报告、
+    # 失败原因只留在 run.out 里没人看；现在把原因写在报告开头，照写不会掩盖故障。
+    data = dataclasses.replace(data, refs=merge_references(references, tool_refs))
+    _persist_report(results_root, assemble_explain(explain, data), len(data.refs), data.note)
+
+
+def _match_good_experience(results_root: str, sample_order: str):
+    """读 ``experiences.json`` 并匹配该 sample_order 的 Good 条目。
+
+    Returns:
+        ``(matched, note)``；``note`` 非空表示物理解释正文无法生成及其原因
+        （读盘失败 / 未找到该序号的 Good 经验）。
     """
     exp_data = None
     note = None
@@ -585,15 +632,6 @@ def explain_best_sample(results_root: str, func: str, sample_order: str,
         print(f"[WARN] 读取经验文件失败，本次报告将不含物理解释: {e}")
         note = f"读取 experiences.json 失败（{e}）"
 
-    # 问题背景来自 config_snapshot.json（--background / --background_file 的最终
-    # 文本）：解释 LLM 必须知道材料体系与自变量定义，否则会把 MRF 解释成 MRE
-    background = None
-    snapshot, snap_error = read_snapshot(results_root)
-    if snap_error is not None:
-        print(f"[WARN] 读取 config_snapshot.json 的问题背景失败（解释将不含背景块）: {snap_error}")
-    else:
-        background = (snapshot or {}).get("background")
-
     matched = None
     for exp in (exp_data or {}).get("Good", []):
         if str(exp.get("sample_order")) == sample_order:
@@ -603,73 +641,45 @@ def explain_best_sample(results_root: str, func: str, sample_order: str,
         note = (f"未找到 sample_order={sample_order} 的 Good 经验（该样本当时被分类为 "
                 f"Bad/None，或该条经验已不在 experiences.json 中）")
         print(f"[WARN] {note}，物理解释正文未生成。")
+    return matched, note
 
-    # 先自己检索一次文献：既进提示词（按 [n] 编号），又是文末参考文献清单的来源。
-    # 解析失败时不传 references，让 build_explain_content 内部按同样规则兜底。
-    references = None
-    parsed = _parse_func_header(func)
-    if parsed is not None:
-        references = retrieve_rag(_explain_query(parsed[1]))
 
-    tool_refs: list[dict] = []
-    explain = ""
-    if matched is not None:
-        content = build_explain_content(func, matched, background=background,
-                                        pruning=pruning, references=references,
-                                        holdout=holdout if holdout is not None
-                                        else (pruning or {}).get("holdout"),
-                                        holdout_ood=holdout_ood if holdout_ood is not None
-                                        else (pruning or {}).get("holdout_ood"),
-                                        facts=_load_facts(results_root))
-        if content is None:
-            note = "构造物理解释提示词失败"
-            print("[WARN] 构造物理解释提示词失败，物理解释正文未生成。")
+def _read_background(results_root: str) -> str | None:
+    """读 ``config_snapshot.json`` 的问题背景（``--background/--background_file`` 终值）。
+
+    解释 LLM 必须知道材料体系与自变量定义，否则会把 MRF（磁流变液）解释成 MRE
+    （磁流变弹性体）——实测 ``MRFCompress-Cuboid_20260917-134427`` 的收尾报告即如此。
+    """
+    snapshot, snap_error = read_snapshot(results_root)
+    if snap_error is not None:
+        print(f"[WARN] 读取 config_snapshot.json 的问题背景失败（解释将不含背景块）: {snap_error}")
+        return None
+    return (snapshot or {}).get("background")
+
+
+def _render_explain_body(content: str, tool_refs: list, role_clients) -> str:
+    """初始化 explain 角色客户端并以 ReAct 循环生成正文；失败返回空串（只告警）。
+
+    档案与参数由 ``config/agents.config.json`` 决定；未注入 ``role_clients`` 时按注册表
+    自行解析，因此直接调用本函数也能拿到正确档案。
+    """
+    client = None
+    try:
+        if role_clients is not None:
+            client = role_clients.get('explain')
         else:
-            # 初始化 LLM 客户端（explain 角色；档案与参数由 config/agents.config.json
-            # 决定，未注入 role_clients 时按注册表自行解析，因此直接调用本函数也能拿到
-            # 正确档案）
-            client = None
-            try:
-                if role_clients is not None:
-                    client = role_clients.get('explain')
-                else:
-                    client = llm.build_role_client('explain')
-                if client is not None:
-                    print(f"[INFO] LLM client initialized: provider={client._provider_name()}, "
-                          f"model={client.model}, kwargs={client.kwargs}")
-            except Exception as e:
-                print(f"[WARN] Failed to init LLM client: {e}")
-                print("[WARN] 提示：运行 `python -m drsr_420.llm.roles --check` 查看角色档案解析情况")
+            client = llm.build_role_client('explain')
+        if client is not None:
+            print(f"[INFO] LLM client initialized: provider={client._provider_name()}, "
+                  f"model={client.model}, kwargs={client.kwargs}")
+    except Exception as e:
+        print(f"[WARN] Failed to init LLM client: {e}")
+        print("[WARN] 提示：运行 `python -m drsr_420.llm.roles --check` 查看角色档案解析情况")
+    return explain_re_act(client, content, tool_refs=tool_refs) or ""
 
-            explain = explain_re_act(client, content, tool_refs=tool_refs)
-            if not (explain or "").strip():
-                note = "物理解释为空（LLM 调用失败或返回空）"
-                print(f"[WARN] {note}。")
 
-    # 正文 + 权威参考文献清单（知识库检索命中 ∪ 解释过程中工具检索命中）
-    #        + 权威「发布解选择 / 样本外验证 / 动态范围体检 / 训练进度」小节（数字由
-    #        系统直接算，不经过 LLM 转述）
-    #
-    # 落盘策略（2026-09-26 修正）：**无论物理解释是否生成都要写 report.md**。这些机器
-    # 小节本身就是可引用的产物，而旧实现"失败就不写"，导致 490 个 run 只剩 4 份报告、
-    # 失败原因只留在 run.out 里没人看；现在把原因写在报告开头，照写不会掩盖故障。
-    refs = merge_references(references, tool_refs)
-    holdout_result = holdout if holdout is not None else (pruning or {}).get("holdout")
-    holdout_ood_result = (holdout_ood if holdout_ood is not None
-                          else (pruning or {}).get("holdout_ood"))
-    progress_result = progress if progress is not None else (pruning or {}).get("progress")
-    # 收尾自检：这次全部已落盘样本的解析失败率（分「截断样本」/「解析器不支持的写法」）。
-    # 解析失败从前只在 run.out 里留 WARN、报告不提示，读者看不到总体失败率。
-    parse_audit_result = audit_parse_failures(results_root)
-    final_text = _assemble_explain(explain, refs, holdout=holdout_result,
-                                   fit=(pruning or {}).get("fit"),
-                                   holdout_ood=holdout_ood_result,
-                                   loo=(pruning or {}).get("loo"),
-                                   range_check=(pruning or {}).get("range_check"),
-                                   progress=progress_result,
-                                   parse_audit=parse_audit_result,
-                                   selection=(pruning or {}).get("selection"),
-                                   note=note)
+def _persist_report(results_root: str, final_text: str, n_refs: int, note: str | None) -> None:
+    """把装配好的报告落盘（含两条"不写"的例外：内容为空、已有报告且本次无正文）。"""
     if not final_text.strip():
         print(f"[WARN] 报告无任何可用内容（物理解释与机器小节都为空），"
               f"不写 {REPORT_FILENAME}。")
@@ -682,9 +692,8 @@ def explain_best_sample(results_root: str, func: str, sample_order: str,
         print(f"[WARN] 物理解释未生成（{note}），保留既有 {REPORT_FILENAME} 不覆盖。")
         return
     print_block(final_text)
-    print(f"[INFO] 参考文献 {len(refs)} 条"
-          + ("" if refs else "（本次未检索到可引用文献）"))
-
+    print(f"[INFO] 参考文献 {n_refs} 条"
+          + ("" if n_refs else "（本次未检索到可引用文献）"))
     try:
         with open(explain_out_path, "w", encoding="utf-8") as f:
             f.write(final_text)

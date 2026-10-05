@@ -20,6 +20,7 @@ import unittest
 from unittest import mock
 
 import sympy as sp
+from drsr_420.analysis.report_sections import ReportData
 
 _FUNC = ("Variables:\n"
          "- Independents: x1, x2\n"
@@ -484,8 +485,9 @@ class ParseAuditSectionTest(unittest.TestCase):
     def test_assemble_places_audit_before_references(self):
         from drsr_420.analysis import explain as explain_mod
 
-        text = explain_mod._assemble_explain(
-            "正文", [{"title": "T", "doi": "10.1/x"}], parse_audit=self._AUDIT)
+        text = explain_mod.assemble_explain(
+            "正文", ReportData(refs=[{"title": "T", "doi": "10.1/x"}],
+                               parse_audit=self._AUDIT))
         self.assertIn(explain_mod.PARSE_AUDIT_HEADING, text)
         self.assertLess(text.index(explain_mod.PARSE_AUDIT_HEADING),
                         text.index(explain_mod.REFERENCE_HEADING))
@@ -494,7 +496,7 @@ class ParseAuditSectionTest(unittest.TestCase):
         from drsr_420.analysis import explain as explain_mod
 
         body = "正文\n\n## 表达式解析自检\nLLM 编造的数字 999\n\n## 其他\n内容"
-        text = explain_mod._assemble_explain(body, [], parse_audit=self._AUDIT)
+        text = explain_mod.assemble_explain(body, ReportData(parse_audit=self._AUDIT))
         self.assertEqual(text.count(explain_mod.PARSE_AUDIT_HEADING), 1)
         self.assertNotIn("999", text)
 

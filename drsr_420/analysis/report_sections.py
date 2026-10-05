@@ -18,6 +18,7 @@ LOO / 动态范围体检 / 表达式解析自检 / 训练进度）再加参考�
 """
 from __future__ import annotations
 
+import dataclasses
 import math
 import os
 import re
@@ -355,45 +356,83 @@ def backfill_parse_audit(results_root: str, report_name: str = REPORT_FILENAME) 
     return audit
 
 
-def assemble_explain(answer: str | None, refs: list[dict],
-                      holdout: dict | None = None, fit: dict | None = None,
-                      holdout_ood: dict | None = None,
-                      loo: dict | None = None,
-                      range_check: dict | None = None,
-                      progress: dict | None = None,
-                      parse_audit: dict | None = None,
-                      selection: dict | None = None,
-                      note: str | None = None) -> str:
+@dataclasses.dataclass(frozen=True)
+class ReportData:
+    """report.md 各机器小节的数据（``None`` = 该小节整节不出现）。
+
+    为什么要有这个类型
+    -----------------
+    这些值原先在两处**各解析一次**——提示词块一处、报告装配一处——形式都是
+    ``x if x is not None else (pruning or {}).get("x")``（``holdout`` / ``holdout_ood`` /
+    ``progress`` 三条回退链各写两遍）。同一件事写两遍的代价不是行数，而是**两处可能给出
+    不同数字**：提示词告诉模型"样本外 MSE=…"，报告小节却渲染另一个值，而这类"两处各判
+    一次"正是本仓库反复记录过的缺陷成因（见 ``core/range_check`` 的判据共用说明）。
+
+    现在由 :meth:`from_pruning` **一次解析**，提示词与报告小节共用同一份；装配侧也顺带
+    从 11 个位置参数收到 1 个对象——位置参数一多，调用点就变成"阅读时数不清哪个是哪个"
+    的对照表。
+
+    ``note`` 是**物理解释未能生成**的原因（无匹配经验 / LLM 返回空…）。旧实现在这些
+    情况下直接不写文件，结果 490 个 run 只有 4 份 report.md，而失败原因只留在 run.out
+    里没人看；现在改成"照写报告 + 在开头显式写明原因"，既保证产物齐全，也不掩盖故障。
+    """
+    refs: list = dataclasses.field(default_factory=list)
+    holdout: dict | None = None
+    holdout_ood: dict | None = None
+    loo: dict | None = None
+    fit: dict | None = None
+    range_check: dict | None = None
+    progress: dict | None = None
+    parse_audit: dict | None = None
+    selection: dict | None = None
+    note: str | None = None
+
+    @classmethod
+    def from_pruning(cls, pruning: dict | None, refs=None, *,
+                     parse_audit: dict | None = None,
+                     note: str | None = None) -> "ReportData":
+        """从 ``find_best_eq.prune_and_visualize`` 的剪枝摘要取出全部小节的机器数据。
+
+        ``pruning`` 为 ``None``（本次没有剪枝结果）时各字段取 ``None``——机器小节里
+        只有参考文献会照常出现，与旧行为一致。
+        """
+        P = pruning or {}
+        return cls(refs=list(refs or []),
+                   holdout=P.get("holdout"), holdout_ood=P.get("holdout_ood"),
+                   loo=P.get("loo"), fit=P.get("fit"), range_check=P.get("range_check"),
+                   progress=P.get("progress"), parse_audit=parse_audit,
+                   selection=P.get("selection"), note=note)
+
+
+def assemble_explain(answer: str | None, data: ReportData) -> str:
     """正文 + 权威「发布解选择」「样本外验证」「动态范围体检」「表达式解析自检」「训练进度」
     小节 + 参考文献。
 
     正文自带的同名小节会被替换（数字一律由系统算，避免 LLM 转述出两套数字）。
     没有训练进度记录（``best_history`` 为空）时该小节整节不出现，而不是写一句
     "本次无数据"。
-
-    ``note`` 是**物理解释未能生成**的原因（无匹配经验 / LLM 返回空…）。旧实现在这些
-    情况下直接不写文件，结果 490 个 run 只有 4 份 report.md，而失败原因只留在 run.out
-    里没人看；现在改成"照写报告 + 在开头显式写明原因"，既保证产物齐全，也不掩盖故障。
     """
+    refs = data.refs
     body = strip_holdout_section(answer or "")
     body = strip_loo_section(body)
     body = _strip_range_section(body)
     body = _strip_parse_audit_section(body)
     body = _strip_reference_section(body).rstrip()
     # LOO 生效时不再渲染"本次没有 held-out 数据"的空小节，避免与 LOO 小节自相矛盾
-    holdout_section = ("" if (loo and not holdout and not holdout_ood)
-                       else render_holdout_section(holdout, fit, ood=holdout_ood))
-    sections = [render_selection_section(selection),
+    holdout_section = ("" if (data.loo and not data.holdout and not data.holdout_ood)
+                       else render_holdout_section(data.holdout, data.fit,
+                                                   ood=data.holdout_ood))
+    sections = [render_selection_section(data.selection),
                 holdout_section,
-                render_loo_section(loo) if loo else "",   # 未启用 LOO 时整节不出现
-                render_range_section(range_check),
-                render_parse_audit_section(parse_audit),
-                render_progress_section(progress),
+                render_loo_section(data.loo) if data.loo else "",  # 未启用时整节不出现
+                render_range_section(data.range_check),
+                render_parse_audit_section(data.parse_audit),
+                render_progress_section(data.progress),
                 render_reference_section(refs)]
     tail = "\n\n".join(s for s in sections if s)
     parts = []
-    if note:
-        parts.append(f"> ⚠️ 物理解释未生成：{note}。"
+    if data.note:
+        parts.append(f"> ⚠️ 物理解释未生成：{data.note}。"
                      f"本节以下的机器小节仍由系统直接计算，不依赖 LLM。")
     if body:
         parts.append(body)
