@@ -579,5 +579,80 @@ class CliOptionTest(unittest.TestCase):
                          "none")
 
 
+class LooChannelTest(unittest.TestCase):
+    """留一交叉验证（LOO）：训练点太少（< 30）时取代 held-out。
+
+    MRF 六体系只有 7–19 点、``test.csv`` 仅 2 行且为插值，切不出可信的独立 held-out；
+    LOO 每次留出 1 点、用其余点**重新拟合参数**再预测，是 n 很小时统计上诚实的口径。
+    """
+
+    _SKEL = ("Variables:\n- Independents: x1\n- Dependent: y\n"
+             "def equation(x1, params):\n    return params[0]*x1 + params[1]\n")
+
+    @staticmethod
+    def _data(xs, ys):
+        arr = np.zeros(len(xs), dtype=[("x1", "f8"), ("y", "f8")])
+        arr["x1"] = xs
+        arr["y"] = ys
+        return arr
+
+    def test_fit_constants_mirror_evaluator(self):
+        """LOO 的自包含拟合口径必须与评估器一致（防漂移）。"""
+        from drsr_420.evaluation import problems as ev
+        self.assertEqual(ho.LOO_FIT_BOUNDS, ev.PARAMS_BOUNDS)
+        self.assertEqual(ho.LOO_FIT_N_STARTS, ev.N_STARTS)
+        self.assertEqual(ho.LOO_FIT_MAX_ITER, ev.MAX_ITER)
+
+    def test_skeleton_callable_compiles_and_rejects(self):
+        self.assertTrue(callable(ho.skeleton_callable(self._SKEL)))
+        self.assertIsNone(ho.skeleton_callable("no def here"))
+        self.assertIsNone(ho.skeleton_callable(""))
+
+    def test_loo_refits_and_recovers_line(self):
+        xs = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        ys = [2 * x + 1 for x in xs]
+        out = ho.evaluate_loo("y", ["x1"], self._SKEL, self._data(xs, ys), n_params=2)
+        self.assertIsNotNone(out)
+        self.assertEqual(out["n_points"], 6)
+        self.assertEqual(out["n_ok"], 6)          # 每折都能拟合
+        self.assertLess(out["mse"], 1e-6)         # 每折用 5 点拟合一条直线 → 近乎精确
+        self.assertLess(out["median_rel_err"], 1e-3)
+        self.assertEqual(len(out["rows"]), 6)
+
+    def test_loo_requires_min_points(self):
+        out = ho.evaluate_loo("y", ["x1"], self._SKEL,
+                              self._data([1.0, 2.0], [1.0, 2.0]), n_params=2)
+        self.assertIsNone(out)
+
+    def test_loo_none_on_missing_data_or_bad_columns(self):
+        self.assertIsNone(ho.evaluate_loo("y", ["x1"], self._SKEL, None, 2))
+        d = self._data([1.0, 2.0, 3.0], [1.0, 2.0, 3.0])
+        self.assertIsNone(ho.evaluate_loo("y", ["nope"], self._SKEL, d, 2))
+
+    def test_section_states_no_generalization_claim(self):
+        out = ho.evaluate_loo("y", ["x1"], self._SKEL,
+                              self._data([1., 2., 3., 4.], [2., 5., 8., 11.]), n_params=2)
+        text = ho.render_loo_section(out)
+        self.assertIn(ho.LOO_HEADING, text)
+        self.assertIn("不构成泛化能力声明", text)
+        self.assertIn("重新拟合参数", text)
+        self.assertIn("不是外推", text)
+
+    def test_section_without_loo_says_why(self):
+        text = ho.render_loo_section(None)
+        self.assertIn(ho.LOO_HEADING, text)
+        self.assertIn("未执行", text)
+
+    def test_summary_without_loo(self):
+        self.assertIn("未执行", ho.format_loo_summary(None))
+
+    def test_strip_removes_llm_written_section(self):
+        text = "# A\n\n## 留一交叉验证（LOO）\n\n乱写\n\n## 参考文献\n\nx"
+        out = ho.strip_loo_section(text)
+        self.assertNotIn("乱写", out)
+        self.assertIn("## 参考文献", out)
+        self.assertIn("# A", out)
+
+
 if __name__ == "__main__":
     unittest.main()

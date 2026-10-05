@@ -41,7 +41,8 @@ import sympy as sp
 from drsr_420.analysis.expr_parse import expr_substitution
 from drsr_420.analysis.expr_viz import render_expr_trees, safe_preview
 from drsr_420.analysis.explain import explain_best_sample
-from drsr_420.analysis.holdout import (evaluate_holdout, format_holdout_summary,
+from drsr_420.analysis.holdout import (LOO_MAX_TRAIN, evaluate_holdout, evaluate_loo,
+                                       format_holdout_summary, format_loo_summary,
                                        load_ood_data, load_test_data,
                                        resolve_ood_csv, resolve_test_csv)
 from drsr_420.analysis.prune_report import (classify_pruning, compare_fits,
@@ -334,13 +335,34 @@ def prune_and_visualize(results_root: str, func: str, params,
                                 path=(resolver(results_root, explicit) or ""),
                                 train_data=data)
 
-    holdout = _eval_holdout(load_test_data(results_root, test_csv), test_csv,
-                            resolve_test_csv)
-    holdout_ood = _eval_holdout(load_ood_data(results_root, test_ood_csv), test_ood_csv,
-                                resolve_ood_csv)
-    print(f"[HOLDOUT] {format_holdout_summary(holdout, fit)}")
-    if holdout_ood is not None:
-        print(f"[HOLDOUT-OOD] {format_holdout_summary(holdout_ood, fit)}")
+    # 留一交叉验证（LOO）：训练点少于阈值时改用留一法，并**关闭 held-out 通道**——
+    # MRF 六体系只有 7–19 点，其 test.csv 仅 2 行且落在训练区间内（插值），
+    # 报出来的"样本外"只是存在性提示，不能作泛化依据（见 holdout 模块说明）。
+    loo = None
+    n_train = None
+    if data is not None:
+        try:
+            _dep, _ind, _ = resolve_columns(data, dependent, sym_names)
+            n_train = int(len(data[_dep]))
+        except KeyError:
+            n_train = None
+    if n_train is not None and n_train < LOO_MAX_TRAIN:
+        loo = evaluate_loo(dependent, sym_names, func, data, n_params=len(params or []))
+        print(f"[LOO] {format_loo_summary(loo)}")
+
+    holdout = None
+    holdout_ood = None
+    if loo is not None:
+        print(f"[LOO] 训练点 {n_train} < {LOO_MAX_TRAIN}：改用留一法，"
+              f"样本外（test.csv / OOD）通道本次跳过。")
+    else:
+        holdout = _eval_holdout(load_test_data(results_root, test_csv), test_csv,
+                                resolve_test_csv)
+        holdout_ood = _eval_holdout(load_ood_data(results_root, test_ood_csv), test_ood_csv,
+                                    resolve_ood_csv)
+        print(f"[HOLDOUT] {format_holdout_summary(holdout, fit)}")
+        if holdout_ood is not None:
+            print(f"[HOLDOUT-OOD] {format_holdout_summary(holdout_ood, fit)}")
 
     return {
         "dependent": dependent,
@@ -376,6 +398,8 @@ def prune_and_visualize(results_root: str, func: str, params,
         # 样本外验证（held-out）：只报告，不参与任何选择。ID 与 OOD 分开。
         "holdout": holdout,
         "holdout_ood": holdout_ood,
+        # 留一交叉验证（LOO）：训练点 < LOO_MAX_TRAIN 时启用，取代 held-out 通道
+        "loo": loo,
         # 训练进度（历史最优刷新点）：只报告；None=没有 best_history 记录
         "progress": progress,
     }

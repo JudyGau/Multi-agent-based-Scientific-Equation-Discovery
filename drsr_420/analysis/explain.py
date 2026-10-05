@@ -41,8 +41,9 @@ from drsr_420.core import prompt_config as pc
 import drsr_420.llm as llm
 from drsr_420.analysis.prune_report import format_fit_summary
 from drsr_420.knowledge.tool_runner import mcp_call_tool
-from drsr_420.analysis.holdout import (in_sample_metrics, render_holdout_section,
-                                       strip_holdout_section)
+from drsr_420.analysis.holdout import (LOO_MAX_TRAIN, in_sample_metrics,
+                                       render_holdout_section, render_loo_section,
+                                       strip_holdout_section, strip_loo_section)
 from drsr_420.analysis.progress_curve import render_progress_section
 from drsr_420.analysis.expr_parse import audit_parse_failures
 # 体检判据的参数：小节里要写明探针偏移口径（数字必须与机器判定同一来源，
@@ -540,6 +541,8 @@ def build_explain_content(func: str, exp: dict, background: str | None = None,
     # 样本外验证块：泛化性数字（机器算的），并明确"样本内 NMSE 不是泛化误差"
     holdout_block = _format_holdout_block(holdout, (pruning or {}).get("fit"),
                                           ood=holdout_ood)
+    # 留一交叉验证块：训练点 < 阈值时取代 held-out（数字同样是机器算的）
+    loo_block = _format_loo_block((pruning or {}).get("loo"))
 
     # 代码实测的数据事实块：候选骨架基线与可辨识性告警，用于对质物理先验
     facts_block = _format_facts_block(facts)
@@ -552,7 +555,7 @@ def build_explain_content(func: str, exp: dict, background: str | None = None,
     rag_block = _numbered_rag_context(refs)
     ref_list_block = _format_reference_list(refs)
 
-    return (head + bg_block + facts_block + prune_block + holdout_block + "\n" + eq + "\n" + thinking
+    return (head + bg_block + facts_block + prune_block + holdout_block + loo_block + "\n" + eq + "\n" + thinking
             + ("\n\n### 以下是相关文献背景，供力学解释参考 ###\n\n" + rag_block if rag_block else "")
             + ("\n\n" + ref_list_block if ref_list_block else "")
             + _REQUIRED_STRUCTURE + "\n"
@@ -611,6 +614,34 @@ def _format_holdout_block(holdout: dict | None, fit: dict | None = None,
                          f"OOD/样本内 NMSE 之比={ood['nmse'] / o_in:.3g} 倍")
         lines.append("OOD 是分布外外推：若它明显差于同分布 held-out，必须在正文里如实"
                      "说明外推失效，不得用样本内或 ID 的数字替代 OOD。")
+    return "\n".join(lines)
+
+
+def _format_loo_block(loo: dict | None) -> str:
+    """渲染留一交叉验证块（进解释提示词）。
+
+    训练点太少（< holdout.LOO_MAX_TRAIN）时 held-out 不可信，系统改用留一法；这里把
+    机器算出的 LOO 数字交给模型，使正文谈"样本外表现"时只能依据这些量，且必须写明
+    "n 小、不作泛化声明"。模型自写的小节会被 ``strip_loo_section`` 去掉。
+    """
+    if not loo:
+        return ""
+    lines = ["\n\n### 留一交叉验证（LOO） ###\n",
+             f"训练数据仅 {loo['n_points']} 个点（不足 {LOO_MAX_TRAIN}）：切不出可信的"
+             f"独立 held-out，故改用留一法（每次留出 1 点、用其余点重新拟合参数后预测"
+             f"该点），共 {loo['n_points']} 折、成功 {loo['n_ok']} 折。",
+             f"LOO MSE={loo['mse']:.6g}"]
+    if loo.get("nmse") is not None:
+        lines.append(f"LOO NMSE（分母=训练集方差）={loo['nmse']:.6g}")
+    if loo.get("median_abs_err") is not None:
+        lines.append(f"逐点绝对误差：中位数={loo['median_abs_err']:.6g}，"
+                     f"95 分位={loo['p95_abs_err']:.6g}")
+    if loo.get("median_rel_err") is not None:
+        lines.append(f"逐点相对误差：中位数={loo['median_rel_err']:.2%}，"
+                     f"95 分位={loo['p95_rel_err']:.2%}")
+    lines.append("谈样本外表现时只能以上述数字为依据；样本内 NMSE 不是泛化误差。"
+                 "LOO 是**插值式**泛化（不是外推），且 **n 很小，不得据此声称公式已具备"
+                 "预测能力**，也不得做 OOD 结论。")
     return "\n".join(lines)
 
 
@@ -1042,6 +1073,7 @@ def backfill_parse_audit(results_root: str, report_name: str = REPORT_FILENAME) 
 def _assemble_explain(answer: str | None, refs: list[dict],
                       holdout: dict | None = None, fit: dict | None = None,
                       holdout_ood: dict | None = None,
+                      loo: dict | None = None,
                       range_check: dict | None = None,
                       progress: dict | None = None,
                       parse_audit: dict | None = None,
@@ -1059,11 +1091,16 @@ def _assemble_explain(answer: str | None, refs: list[dict],
     里没人看；现在改成"照写报告 + 在开头显式写明原因"，既保证产物齐全，也不掩盖故障。
     """
     body = strip_holdout_section(answer or "")
+    body = strip_loo_section(body)
     body = _strip_range_section(body)
     body = _strip_parse_audit_section(body)
     body = _strip_reference_section(body).rstrip()
+    # LOO 生效时不再渲染"本次没有 held-out 数据"的空小节，避免与 LOO 小节自相矛盾
+    holdout_section = ("" if (loo and not holdout and not holdout_ood)
+                       else render_holdout_section(holdout, fit, ood=holdout_ood))
     sections = [render_selection_section(selection),
-                render_holdout_section(holdout, fit, ood=holdout_ood),
+                holdout_section,
+                render_loo_section(loo) if loo else "",   # 未启用 LOO 时整节不出现
                 render_range_section(range_check),
                 render_parse_audit_section(parse_audit),
                 render_progress_section(progress),
@@ -1199,6 +1236,7 @@ def explain_best_sample(results_root: str, func: str, sample_order: str,
     final_text = _assemble_explain(explain, refs, holdout=holdout_result,
                                    fit=(pruning or {}).get("fit"),
                                    holdout_ood=holdout_ood_result,
+                                   loo=(pruning or {}).get("loo"),
                                    range_check=(pruning or {}).get("range_check"),
                                    progress=progress_result,
                                    parse_audit=parse_audit_result,
