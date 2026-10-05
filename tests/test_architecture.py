@@ -60,7 +60,7 @@ _ALLOWED_LAYER_DEPS = {
 # 规范模块 → 该模块内的公开类
 _CANONICAL_AGENTS = {
     "drsr_420.agents.coordinator_agent": ["CoordinatorAgent"],
-    "drsr_420.agents.sampler_agent": ["SamplerAgent", "LLM"],
+    "drsr_420.agents.sampler_agent": ["SamplerAgent", "SamplingBackend", "LLM"],
     "drsr_420.agents.tool_caller_agent": ["ToolCallerAgent"],
     "drsr_420.agents.evaluator_agent": ["EvaluatorAgent", "Sandbox", "LocalSandbox"],
     "drsr_420.agents.experience_summarizer_agent": ["ExperienceSummarizerAgent"],
@@ -93,6 +93,9 @@ _REMOVED_LEGACY_PATHS: dict[str, str] = {
     # analysis
     "drsr_420.find_best_eq": "drsr_420.analysis.find_best_eq",
     "drsr_420.sensitivity_prune": "drsr_420.analysis.sensitivity_prune",
+    # analysis 层内重命名：prune_report 名实不符（当时兼当全层数据工具库），
+    # 数据工具拆到 data_io / expr_numeric 后改名为 prune_eval。旧路径不得复活。
+    "drsr_420.analysis.prune_report": "drsr_420.analysis.prune_eval",
     # runtime
     "drsr_420.pipeline": "drsr_420.runtime.pipeline",
     # agents
@@ -234,6 +237,44 @@ class RootEntrypointRemovalTest(unittest.TestCase):
             sorted(set(offenders)), [],
             "这些 import 指向已删除的仓库根模块（运行时会 ImportError 或解析到别的库）:\n"
             + "\n".join(sorted(set(offenders))))
+
+
+class RenamedSymbolAliasTest(unittest.TestCase):
+    """重命名后的旧名必须是**同一对象**（不是副本），且定义处是规范名。
+
+    与 :class:`LegacyPathRemovalTest` 的分工：那个管"模块路径"（必须彻底消失），
+    这个管"类名"（保留别名但要锁死同一性与规范名）。区分的理由是使用方式不同——
+    模块路径靠 import 语句引用，改名后旧写法必然 ImportError（应当立刻炸）；
+    而 ``llm_class`` / ``Type[...]`` 这类**类型注解**与外部 isinstance 检查引用类名，
+    别名留着成本为零，但必须防"复制粘贴式分叉"（副本会让 ``isinstance`` 悄悄失效）。
+    """
+
+    def test_sampling_backend_is_canonical_and_alias_is_identical(self):
+        from drsr_420.agents import sampler_agent
+
+        self.assertIs(sampler_agent.LLM, sampler_agent.SamplingBackend,
+                      "LLM 必须是 SamplingBackend 的同一对象（别名），不是副本")
+        self.assertEqual(sampler_agent.SamplingBackend.__name__, "SamplingBackend",
+                         "规范名（定义处）应为 SamplingBackend")
+        self.assertTrue(issubclass(sampler_agent.SamplerAgent,
+                                   sampler_agent.SamplingBackend))
+
+    def test_no_llm_abstract_base_is_defined_anywhere(self):
+        """全局只应有一个采样后端抽象，且叫 SamplingBackend。
+
+        这条堵的是"改名不彻底"：若别处又冒出一个 ``class LLM``，同名歧义就回来了
+        （``LLMClient`` 与 ``LLM`` 曾让"LLM 指哪一个"每次都要重新推断）。
+        """
+        offenders: list[str] = []
+        for path in sorted(Path(_PKG_DIR).rglob("*.py")):
+            if "__pycache__" in path.parts:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef) and node.name == "LLM":
+                    offenders.append(f"{path.relative_to(_PKG_DIR)}:{node.lineno}")
+        self.assertEqual(offenders, [],
+                         f"不允许再定义名为 LLM 的类（应叫 SamplingBackend）: {offenders}")
 
 
 class ModuleImportabilityTest(unittest.TestCase):
@@ -492,9 +533,10 @@ class IntraLayerPrivateImportTest(unittest.TestCase):
 
     ``LayerDependencyTest`` 管的是层与层之间的方向（``agents`` 不能反向依赖
     ``runtime``）；本类管**同一层内部**的接口纪律：``analysis.holdout`` 曾经
-    ``from ...prune_report import _warn_once``——下划线是"别碰我"的信号，一旦跨模块
-    引用，等于**声明了一个不存在于任何文档、``__all__`` 或类型里的接口**。这类引用
-    会随模块拆分/改名静默失效，也让"这个私有名到底能不能改"变得无从判断。
+    ``from ...prune_eval import _warn_once``（当时那个模块叫 ``prune_report``）——
+    下划线是"别碰我"的信号，一旦跨模块引用，等于**声明了一个不存在于任何文档、
+    ``__all__`` 或类型里的接口**。这类引用会随模块拆分/改名静默失效，也让"这个私有名
+    到底能不能改"变得无从判断。
 
     实测的成因（本护栏要堵的正是它）：把不同职责的函数塞进同一个模块后，其他模块
     只能靠私有名取用；正确做法是把它们提升为公开名或移到共享模块（本次重构已把

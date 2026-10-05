@@ -5,7 +5,7 @@
 
 1. ``SensitivityPruner.prune`` 在**没有真移除任何项**（``nodes_pruned == 0``）时返回
    **原表达式本身**（``stats.simplified_expr`` 只作诊断，用来说明形式重排的规模）；
-2. ``prune_report.classify_pruning`` 给出判定与证据，且"公式到底变没变"用**有效定义域
+2. ``prune_eval.classify_pruning`` 给出判定与证据，且"公式到底变没变"用**有效定义域
    上的数值比较**判定：``sp.simplify(a - b) == 0`` 与 ``a.equals(b)`` 在含浮点指数的
    表达式上会给**假阴性**（实测某次 ``equals() == False``，而 8 个数据点 + 采样点上
    相对差恰为 0 —— 见下面的真实样本回归）；
@@ -21,7 +21,7 @@ from unittest import mock
 import numpy as np
 import sympy as sp
 
-from drsr_420.analysis import prune_report as pr
+from drsr_420.analysis import prune_eval as pr
 from drsr_420.analysis.prune_stats import PruneStats
 from drsr_420.analysis.sensitivity_prune import SensitivityPruner
 

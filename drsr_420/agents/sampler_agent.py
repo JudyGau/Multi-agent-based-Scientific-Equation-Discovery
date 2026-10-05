@@ -34,8 +34,14 @@ from drsr_420.agents.base import THREAD_PER_SAMPLER, AgentSpec, BaseAgent
 _MAX_SAMPLE_ATTEMPTS = 5
 
 
-class LLM(ABC):
-    """采样接口（FunSearch 遗留抽象基类）：一次提示词 → 多条候选续写。"""
+class SamplingBackend(ABC):
+    """采样后端抽象（FunSearch 遗留基类）：一次提示词 → 多条候选续写。
+
+    命名由来：本类曾叫 ``LLM``，与 :class:`drsr_420.llm.client.LLMClient` 形成**两个
+    都叫 LLM 的概念**——一个是"HTTP 客户端"（连接、重试、流式、记账），一个是"采样
+    后端接口"（一条 prompt 变多条候选）。`SamplerAgent` 继承的是后者，与前者只是
+    委托关系；同名会让"LLM 到底指哪一个"在每次阅读时都要重新推断。
+    """
 
     def __init__(self, samples_per_prompt: int) -> None:
         self._samples_per_prompt = samples_per_prompt
@@ -51,7 +57,12 @@ class LLM(ABC):
     # self._samples_per_prompt = 4 每一次prompt都生成四个相互独立的回答
 
 
-class SamplerAgent(LLM, BaseAgent):
+#: 旧名兼容别名（同一对象）。**新代码请用 :class:`SamplingBackend`**——保留它只为
+#: 不打断既有导入（``tests/test_architecture.py`` 的 Agent 契约表按旧名断言）。
+LLM = SamplingBackend
+
+
+class SamplerAgent(SamplingBackend, BaseAgent):
     """采样 Agent：调用 LLM 生成方程程序骨架。
 
     提示词构造（指令、任务头、历史经验/残差注入）委托 :class:`PromptInjector`，

@@ -63,7 +63,7 @@ def plot_data_curves(results_root: str, dependent: str, sym_names: list[str],
     matplotlib.use("Agg")            # 无头环境；必须在 pyplot 之前
     import matplotlib.pyplot as plt
 
-    # 训练数据（CSV 列名 = 自变量名 + 因变量名）；定位与读取复用 prune_report
+    # 训练数据（CSV 列名 = 自变量名 + 因变量名）；定位与读取复用 prune_eval
     data = load_training_data(results_root)
     if data is None:
         return []

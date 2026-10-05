@@ -2,7 +2,7 @@
 
 角色归属
 --------
-收尾分析（analysis）阶段的泛化性检查，与 :mod:`drsr_420.analysis.prune_report` 并列：
+收尾分析（analysis）阶段的泛化性检查，与 :mod:`drsr_420.analysis.prune_eval` 并列：
 后者回答"剪枝有没有削弱模型"，本模块回答"模型在没参与拟合的点上还准不准"。
 
 为什么必须与训练点分开

@@ -3,7 +3,7 @@
 角色归属
 --------
 ``analysis`` 层的共享数值内核。此前 ``lambdify`` + ``errstate`` + 标量广播这套
-样板在 4 个模块里各写了一遍（``prune_report._evaluate``、``holdout.evaluate_holdout``、
+样板在 4 个模块里各写了一遍（``prune_eval._evaluate``、``holdout.evaluate_holdout``、
 ``expr_curves.plot_data_curves``、``find_best_eq.prune_and_visualize`` 内联探针）。
 样板重复本身没多大事，代价在于**口径会漂**：某处补了标量广播、另一处忘了，于是
 "剪枝后表达式退化成常数"这类情形只有一半的调用方能算出来。
@@ -48,7 +48,7 @@ def lambdify_eval(expr, sym_names, args) -> tuple[np.ndarray | None, Exception |
 
     常量表达式（``lambdify`` 出来是 0 维标量）按点数广播成 1 维：否则下游的
     ``vals[mask]`` 会抛 ``IndexError: too many indices for array``——剪枝结果退化
-    成常数时走的正是这条路（``prune_report`` 要判定的那种情形）。
+    成常数时走的正是这条路（``prune_eval`` 要判定的那种情形）。
     """
     try:
         func = compile_expr(expr, sym_names)

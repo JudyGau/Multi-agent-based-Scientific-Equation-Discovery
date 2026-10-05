@@ -112,7 +112,7 @@
 - `drsr_420/core/range_check.py`：纯 numpy 病理内核，无上层依赖，适合独立成评测指标。
 - `drsr_420/evaluation/problems.py` + `evaluation/sandbox.py`：拟合/打分口径清晰，常驻 worker 稳健。
 - `drsr_420/core/buffer.py`：FunSearch 式多岛缓冲，可作消融对象。
-- `drsr_420/analysis/**`：`holdout.py`、`prune_report.py`、`sensitivity_prune.py`、`expr_parse.py`、`expr_curves.py`、`progress_curve.py` 全部单职责、可回填、可单测。
+- `drsr_420/analysis/**`：`holdout.py`、`prune_eval.py`、`sensitivity_prune.py`、`expr_parse.py`、`expr_curves.py`、`progress_curve.py` 全部单职责、可回填、可单测。
 - `drsr_420/evaluation/data_facts.py`：事实表 + 骨架基线 + 可辨识性，天然的报告底座。
 - `drsr_420/core/profile.py` 的 `samples/`、`best_history/`、`round_progress.csv`、`config_snapshot.json`：可支撑复现与统计。
 - 分层护栏 `tests/test_architecture.py` + 33 个测试文件：保证重构不改口径。

@@ -17,7 +17,7 @@
       │     ├── expr_parse.expr_substitution()   骨架字符串 → SymPy 表达式
       │     ├── sensitivity_prune.SensitivityPruner.prune()  敏感度剪枝
       │     │     └── 没真剪掉项时返回原式（simplify 只做通分/重排，不算剪枝结果）
-      │     ├── prune_report.classify_pruning()  判定真剪枝 / 仅形式变化 + 拟合对比
+      │     ├── prune_eval.classify_pruning()  判定真剪枝 / 仅形式变化 + 拟合对比
       │     ├── expr_viz.safe_preview() / render_expr_trees()  预览图与树图
       │     │     └── 未实际剪枝时不产出重复的"剪枝后"图件
       │     └── expr_curves.plot_data_curves()  剪枝前后曲线 + 数据点（可失败，仅告警）
@@ -48,7 +48,7 @@ from drsr_420.analysis.holdout import (LOO_MAX_TRAIN, evaluate_holdout, evaluate
                                        format_holdout_summary, format_loo_summary,
                                        load_ood_data, load_test_data,
                                        resolve_ood_csv, resolve_test_csv)
-from drsr_420.analysis.prune_report import (classify_pruning, compare_fits,
+from drsr_420.analysis.prune_eval import (classify_pruning, compare_fits,
                                             format_fit_summary)
 from drsr_420.analysis.sensitivity_prune import SensitivityPruner
 from drsr_420.core.sample_header import parse_symbols

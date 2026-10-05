@@ -35,7 +35,7 @@ from drsr_420.core.console import print_block
 from drsr_420.llm import LLMClient
 from drsr_420.llm.role_clients import RoleClients
 
-from drsr_420.agents.sampler_agent import LLM, SamplerAgent
+from drsr_420.agents.sampler_agent import SamplingBackend, SamplerAgent
 from drsr_420.agents.evaluator_agent import EvaluatorAgent
 from drsr_420.agents.experience_summarizer_agent import ExperienceSummarizerAgent
 from drsr_420.agents.residual_analyzer_agent import ResidualAnalyzerAgent
@@ -165,7 +165,7 @@ class CoordinatorAgent(BaseAgent):
             samples_per_prompt: int,
             config: config_lib.Config,
             max_sample_nums: int | None = None,
-            llm_class: Type[LLM] = LLM,
+            llm_class: Type[SamplingBackend] = SamplingBackend,
             prompt_ctx: pc.PromptContext | None = None,
             llm_client: LLMClient | None = None,
             llm_api: dict | None = None,

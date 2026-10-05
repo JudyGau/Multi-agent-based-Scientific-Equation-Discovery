@@ -23,7 +23,7 @@
    若一条都没检索到，就写明"本次未获取到可引用的文献"，而不是交给模型自由发挥。
 2. **必须解释剪枝后的表达式**，并讲清剪枝去掉了哪些项、这样剪枝为什么合理：提示词
    里因此同时给出剪枝前/后表达式、被移除项及敏感度、剪枝前后在训练数据上的 MSE
-   对比（后者由 :mod:`drsr_420.analysis.prune_report` 实测），要求 LLM 逐项论证。
+   对比（后者由 :mod:`drsr_420.analysis.prune_eval` 实测），要求 LLM 逐项论证。
    这也是 ``find_best_eq`` 必须**先剪枝再解释**的原因。
 
 失败策略：任一环节（无经验文件 / 无匹配条目 / 提示词构造失败 / LLM 初始化失败 /
@@ -41,7 +41,7 @@ from drsr_420.core.sample_header import parse_dependent, parse_independents_text
 import drsr_420.llm as llm
 from drsr_420.analysis.data_io import read_json_file, read_snapshot
 from drsr_420.analysis.md_sections import strip_section, upsert_section
-from drsr_420.analysis.prune_report import format_fit_summary
+from drsr_420.analysis.prune_eval import format_fit_summary
 from drsr_420.knowledge.tool_runner import mcp_call_tool
 from drsr_420.analysis.holdout import (LOO_MAX_TRAIN, in_sample_metrics,
                                        render_holdout_section, render_loo_section,

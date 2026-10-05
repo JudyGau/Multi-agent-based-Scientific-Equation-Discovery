@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     # from __future__ import annotations），因此不构成 core → agents/evaluation
     # 的运行时依赖，也就不违反分层规则（见 tests/test_architecture.py）。
     # 注解类型一律用规范路径（历史实现曾从兼容层 drsr_420.sampler / drsr_420.evaluator 取）。
-    from drsr_420.agents.sampler_agent import LLM
+    from drsr_420.agents.sampler_agent import SamplingBackend
     from drsr_420.evaluation.sandbox import Sandbox
 
 
@@ -113,5 +113,5 @@ class Config:
 
 @dataclasses.dataclass()
 class ClassConfig:
-    llm_class: Type[LLM]              # 采样器类（默认 agents.sampler_agent.SamplerAgent）
+    llm_class: Type[SamplingBackend]    # 采样器类（默认 agents.sampler_agent.SamplerAgent）
     sandbox_class: Type[Sandbox]      # 沙箱类（默认 evaluation.sandbox.LocalSandbox）

@@ -22,7 +22,7 @@ import numpy as np
 import sympy as sp
 
 from drsr_420.analysis import holdout as ho
-from drsr_420.analysis import prune_report as pr
+from drsr_420.analysis import prune_eval as pr
 
 _FUNC = ("Variables:\n"
          "- Independents: x1, x2\n"

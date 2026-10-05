@@ -9,7 +9,7 @@
     - 提示词里同时给出剪枝前/后表达式、被移除项及敏感度、剪枝前后拟合对比；
     - ``find_best_eq`` 必须先剪枝再解释（否则解释拿不到剪枝结果）。
 
-另含 ``prune_report`` 的量化对比（MSE/NMSE/逐点一致性）与训练数据定位的测试。
+另含 ``prune_eval`` 的量化对比（MSE/NMSE/逐点一致性）与训练数据定位的测试。
 """
 from __future__ import annotations
 
@@ -317,7 +317,7 @@ class PruneReportTest(unittest.TestCase):
     """剪枝量化评估：定位训练数据 + 剪枝前后拟合对比。"""
 
     def test_compare_fits_reports_identical_for_same_expression(self):
-        from drsr_420.analysis import prune_report as pr
+        from drsr_420.analysis import prune_eval as pr
 
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -331,7 +331,7 @@ class PruneReportTest(unittest.TestCase):
             self.assertIn("逐点完全相同", pr.format_fit_summary(fit))
 
     def test_compare_fits_quantifies_change_after_pruning(self):
-        from drsr_420.analysis import prune_report as pr
+        from drsr_420.analysis import prune_eval as pr
 
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -345,7 +345,7 @@ class PruneReportTest(unittest.TestCase):
             self.assertIn("相对变化", pr.format_fit_summary(fit))
 
     def test_load_training_data_missing_snapshot_returns_none(self):
-        from drsr_420.analysis import prune_report as pr
+        from drsr_420.analysis import prune_eval as pr
 
         with tempfile.TemporaryDirectory() as tmp, mock.patch("builtins.print"):
             self.assertIsNone(pr.load_training_data(tmp))

@@ -65,7 +65,7 @@ CoordinatorAgent(
     samples_per_prompt: int,                    # 每轮采样数量
     config: config_lib.Config,                  # 全局配置（结果目录/超时/经验注入超参）
     max_sample_nums: int | None = None,         # 全局采样数上限；None 表示不停止
-    llm_class: Type[LLM] = LLM,                 # 采样器类（默认 LLM 基类）
+    llm_class: Type[SamplingBackend] = SamplingBackend,   # 采样后端类（默认 SamplerAgent 的基类）
     prompt_ctx: pc.PromptContext | None = None, # 动态提示词上下文（变量名/因变量等）
     llm_client: LLMClient | None = None,        # 基础 LLM 客户端（内部按任务克隆）
     llm_api: dict | None = None,

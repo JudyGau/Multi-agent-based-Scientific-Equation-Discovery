@@ -2,7 +2,7 @@
 
 角色归属
 --------
- ``analysis`` 层的共享 I/O 内核。此前这些函数住在 :mod:`drsr_420.analysis.prune_report`
+ ``analysis`` 层的共享 I/O 内核。此前这些函数住在 :mod:`drsr_420.analysis.prune_eval`
 里，于是名字叫"剪枝评估"的模块成了事实上的公共工具库——``holdout``、``expr_curves``
 都要 import 它的私有名（``_warn_once``）。本模块把"取数据"从"算剪枝"里分出来，
 两件事各自有名字。
@@ -26,7 +26,7 @@ import re
 
 import numpy as np
 
-#: 仓库根（``prune_report``/``holdout`` 里的相对路径解析都以它为兜底）。
+#: 仓库根（``prune_eval``/``holdout`` 里的相对路径解析都以它为兜底）。
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 #: 实验目录名 ``<问题名>_<YYYYMMDD-HHMMSS>``：没有 config_snapshot.json 的历史目录
