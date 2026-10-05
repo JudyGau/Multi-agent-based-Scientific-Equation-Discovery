@@ -57,6 +57,7 @@ CoordinatorAgent.run()  while 未达采样上限/时长上限:
 | `reporting` | `drsr_420/reporting/` | 收尾分析与报告装配：最优方程的剪枝/解释/可视化（`find_best_eq` 只做编排）、`report.md` 各机器小节、参考文献、泛化口径（`generalization/`：held-out + LOO）与剪枝（`pruning/`） |
 | `agents` | `drsr_420/agents/` | ★ **多 Agent 角色层**：7 个 Agent + 契约（`base.py`）+ 消息（`messages.py`）+ 层内部件（`skeleton.py` / `prompt_injection.py`） |
 | `runtime` | `drsr_420/runtime/` | 编排：实验主流程（初始化 → 并行采样 → 收尾） |
+| `harness` | `drsr_420/harness/` | **论文实验设施**：跨 run 的指标定义与聚合——`metrics`（MSE / NMSE / Acc@阈值 / SA）、`aggregate`（把 `experiments/` 下多次 run 汇成一张表）。纯计算、不重新拟合、不调 LLM |
 | `cli` | `drsr_420/cli/` | 命令行入口：参数解析、输出归档、数据集加载、spec 渲染、产物快照 |
 
 `drsr_420/` 顶层只有 `__init__.py`：**实现全部在分层子包里**，历史的一层平铺路径已清退
@@ -77,9 +78,10 @@ CoordinatorAgent.run()  while 未达采样上限/时长上限:
 | `reporting/` | 18 | 4831 | `core`, `equations`, `llm`, `knowledge` |
 | `agents/` | 13 | 3229 | `core`, `equations`, `execution`, `evidence`, `knowledge`, `llm` |
 | `runtime/` | 2 | 377 | `agents`, `reporting`, `core`, `knowledge` |
+| `harness/` | 3 | 291 | `equations` |
 | `cli/` | 3 | 699 | `agents`, `core`, `execution`, `llm`, `runtime` |
 
-包内共 82 个 `.py`（含各层与子包的 `__init__.py`）、21,141 行。
+包内共 85 个 `.py`（含各层与子包的 `__init__.py`）、21,432 行。
 
 > **如实更正**：本文档此前称"全局最长文件 `llm/client.py` 487 行，500 行预算是硬指标"，
 > 该说法在 `evaluation` 拆出 `evidence` 时已不成立——实测最长文件是
@@ -98,6 +100,8 @@ cli ──▶ runtime ──▶ agents ──▶ evidence ──▶ execution �
          │            │  └──▶ knowledge ──▶ llm ───────────────┘
          │            └──▶ equations / execution / evidence / knowledge
          └──▶ reporting ──▶ equations / knowledge / llm / core
+
+harness ──▶ equations（实验设施层：可用下层任意层；库代码不依赖它）
 ```
 
 允许的依赖集合（`tests/test_architecture.py::_ALLOWED_LAYER_DEPS`）：
@@ -113,6 +117,7 @@ cli ──▶ runtime ──▶ agents ──▶ evidence ──▶ execution �
 | `reporting` | `core` `equations` `llm` `knowledge` |
 | `agents` | `core` `equations` `llm` `execution` `evidence` `knowledge` |
 | `runtime` | `core` `agents` `reporting` `knowledge` |
+| `harness` | `core` `equations` `llm` `execution` `evidence` `knowledge` `reporting` `agents` `runtime`（实验设施：可用下层一切） |
 | `cli` | `core` `llm` `execution` `agents` `runtime` |
 
 具体规则：
@@ -270,7 +275,8 @@ python -c "from drsr_420.agents import agent_specs; print(agent_specs())"
 先判断它属于哪一层：与领域无关的基础设施 → `core`；公式 / 样本的领域模型 → `equations`；
 LLM 通信 → `llm`；执行机制（拟合 / 沙箱）→ `execution`；由代码算出的可验证证据 →
 `evidence`；外部数据源 → `knowledge`；协调角色 → `agents`；收尾分析与报告 → `reporting`；
-编排 → `runtime`。**不要放回 `drsr_420/` 顶层**（`LayerLayoutTest` 会失败）。
+编排 → `runtime`；跨 run 的实验汇总 / 论文指标 → `harness`。
+**不要放回 `drsr_420/` 顶层**（`LayerLayoutTest` 会失败）。
 
 **新增一层**
 
@@ -364,6 +370,9 @@ drsr420 --help
 # 知识库 CLI 与语义剪枝演示
 python -m drsr_420.knowledge.rag_build --help
 python -m drsr_420.reporting.pruning.demo
+
+# 跨 run 汇总（论文 E1 表骨架；只读 experiments/ 产物，不重新拟合）
+python -m drsr_420.harness.aggregate experiments
 ```
 
 架构护栏（`tests/test_architecture.py`）覆盖：

@@ -3,6 +3,7 @@
 分层结构（依赖方向自上而下，硬约束由 tests/test_architecture.py 守护）：
 
     cli        命令行入口
+    harness    论文实验设施（跨 run 指标与汇总）
     runtime    编排与执行（pipeline）
     agents     ★ 多 Agent 角色层（7 个 Agent + 契约 + 消息）
     reporting  收尾分析与报告装配（剪枝 / 泛化验证 / 物理解释）

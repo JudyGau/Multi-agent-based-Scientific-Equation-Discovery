@@ -45,7 +45,7 @@ _AGENTS_DIR = os.path.join(_PKG_DIR, "agents")
 # ── 阶段 3：分层结构（阶段 10：新增 equations / evidence，拆分 evaluation、analysis）──
 #: 层的展示顺序即"自底向上"，越靠后越上层。
 _LAYERS = ("core", "equations", "llm", "execution", "evidence", "knowledge",
-           "reporting", "agents", "runtime", "cli")
+           "reporting", "agents", "runtime", "harness", "cli")
 
 #: 每一层允许 import 的层（含自身）；其余一律视为越界/倒置。
 _ALLOWED_LAYER_DEPS = {
@@ -58,6 +58,8 @@ _ALLOWED_LAYER_DEPS = {
     "reporting": {"core", "equations", "llm", "knowledge"}, # 收尾分析与报告装配
     "agents": {"core", "equations", "llm", "execution", "evidence", "knowledge"},
     "runtime": {"core", "agents", "reporting", "knowledge"},
+    "harness": {"core", "equations", "llm", "execution", "evidence", "knowledge",
+                "reporting", "agents", "runtime"},   # 实验设施：可用下层一切
     "cli": {"core", "llm", "execution", "agents", "runtime"},
 }
 

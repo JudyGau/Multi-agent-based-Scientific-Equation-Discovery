@@ -238,7 +238,7 @@ config/                       # 配置目录（.json 入库 / .config 不入库�
   rag.config(.example)        #   文献知识库配置
 example.sh / example.bat      # 批量运行示例（bash / Windows 批处理，逐项等价）
 MRF*.sh / MRF*.bat            # 4 个单问题运行配置（与 .idea/runConfigurations 一致）
-drsr_420/                     # 单一顶层包（10 层，依赖方向自底向上）
+drsr_420/                     # 单一顶层包（11 层，依赖方向自底向上）
   core/                       # 领域无关基础设施
     buffer.py                 #   经验缓冲（多岛 + 聚类抽样）
     code_manipulation.py      #   AST 解析与函数/程序拼装
@@ -302,6 +302,9 @@ drsr_420/                     # 单一顶层包（10 层，依赖方向自底向
     generalization/           #   泛化口径：holdout（样本外）+ loo（留一交叉验证）
   runtime/
     pipeline.py               #   实验主流程编排
+  harness/                    # 论文实验设施（跨 run 汇总，纯计算）
+    metrics.py                #   指标定义：MSE / NMSE / Acc@阈值 / 符号等价 SA
+    aggregate.py              #   读 experiments/ 各 run 汇成表（python -m drsr_420.harness.aggregate）
   cli/
     main.py                   #   命令行入口：python -m drsr_420.cli.main（拆分为可测函数）
     llm_setup.py              #   档案加载 / 角色客户端池（配置没准备好时给出可操作报错）
