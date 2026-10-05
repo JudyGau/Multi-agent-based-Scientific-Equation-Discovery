@@ -40,7 +40,7 @@ import re
 
 import sympy as sp
 
-from drsr_420.core.sample_header import parse_independents_text, split_names
+from drsr_420.equations.header import parse_independents_text, split_names
 
 #: 参数代入表达式时保留的**有效数字**位数（不是小数点后位数）。
 #:
@@ -1163,7 +1163,7 @@ def audit_parse_failures(results_root: str) -> dict:
 
     只读磁盘、不写盘、不调 LLM。文件名带 ``top`` 的 Top-K 副本与全量文件按
     ``sample_order`` 去重（优先全量），口径与
-    :func:`drsr_420.core.sample_records.load_sample_records` 一致，但**不过滤
+    :func:`drsr_420.equations.records.load_sample_records` 一致，但**不过滤
     ``score`` 为 None 的样本**——截断/未评估样本正是要计数的对象。
 
     Returns:

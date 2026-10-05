@@ -14,7 +14,7 @@
 ----
 ::
 
-    python -m drsr_420.analysis.expr_curves <results_root> [--threshold 0.1]
+    python -m drsr_420.reporting.curves <results_root> [--threshold 0.1]
 
 产物：``<results_root>/expr_curve_<自变量名>.png``（每个自变量一幅）。
 **本次没有真剪掉项时只画一条曲线**并在图注里注明未剪枝——画两条完全重合的曲线
@@ -31,14 +31,14 @@ import os
 import numpy as np
 import sympy as sp
 
-from drsr_420.analysis.data_io import (load_training_data, resolve_columns,
+from drsr_420.reporting.data_io import (load_training_data, resolve_columns,
                                        resolve_csv as _resolve_csv, warn_once)
-from drsr_420.analysis.expr_numeric import compile_expr
-from drsr_420.analysis.expr_parse import expr_substitution
-from drsr_420.analysis.holdout import load_test_data
-from drsr_420.analysis.sensitivity_prune import SensitivityPruner
-from drsr_420.core.sample_header import parse_symbols
-from drsr_420.core.sample_records import top_sample
+from drsr_420.equations.numeric import compile_expr
+from drsr_420.equations.parse import expr_substitution
+from drsr_420.reporting.generalization.holdout import load_test_data
+from drsr_420.reporting.pruning.sensitivity import SensitivityPruner
+from drsr_420.equations.header import parse_symbols
+from drsr_420.equations.records import top_sample
 
 __all__ = ["plot_data_curves", "plot_expr_curves", "_resolve_csv"]
 
@@ -168,7 +168,7 @@ def plot_expr_curves(results_root: str, threshold: float = 0.1,
                      test_csv: str | None = None) -> list[str]:
     """对既有实验目录独立补跑：最优样本 → 剪枝 → 核心绘图。
 
-    供 ``python -m drsr_420.analysis.expr_curves`` CLI 使用；实验管线内的自动
+    供 ``python -m drsr_420.reporting.curves`` CLI 使用；实验管线内的自动
     绘图走 ``prune_and_visualize → plot_data_curves``，不经过这里（避免重复剪枝）。
     ``test_csv`` 语义同 ``plot_data_curves``（``None`` = 自动探测）。
     """

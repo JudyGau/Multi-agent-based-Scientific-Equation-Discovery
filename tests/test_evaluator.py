@@ -12,8 +12,8 @@ from drsr_420.core import code_manipulation
 from drsr_420.core import config
 from drsr_420.core import buffer
 from drsr_420.agents import evaluator_agent
-from drsr_420.evaluation import sandbox as sandbox_module
-from drsr_420.evaluation.sandbox import LocalSandbox, _run_evaluation_task, _sample_residuals
+from drsr_420.execution import sandbox as sandbox_module
+from drsr_420.execution.sandbox import LocalSandbox, _run_evaluation_task, _sample_residuals
 from drsr_420.agents.messages import EvaluationRequest
 
 PROGRAM = (

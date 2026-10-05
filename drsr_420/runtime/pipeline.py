@@ -38,7 +38,7 @@ from drsr_420.core import config as config_lib
 from drsr_420.core import buffer
 from drsr_420.core import profile
 from drsr_420.core.console import print_block
-from drsr_420.analysis.find_best_eq import find_best_eq
+from drsr_420.reporting.find_best_eq import find_best_eq
 from drsr_420.agents.coordinator_agent import CoordinatorAgent
 from drsr_420.agents.evaluator_agent import EvaluatorAgent
 from drsr_420.agents.data_analyzer_agent import DataAnalyzerAgent
@@ -144,7 +144,7 @@ def _target_score_from_config(config: config_lib.Config,
                               inputs: Sequence[Any]) -> float | None:
     """把 ``config.target_nmse`` 换算成协调器可用的目标分数。
 
-    评分约定（evaluation/problems.py）：``score = -MSE``，``NMSE = MSE/var(outputs)``，
+    评分约定（execution/problems.py）：``score = -MSE``，``NMSE = MSE/var(outputs)``，
     因此 ``target_score = -target_nmse · var(outputs)``。方差取不到时早停目标
     静默不生效（预算型条件照常兜底），只告警一次。
     """
@@ -156,7 +156,7 @@ def _target_score_from_config(config: config_lib.Config,
         return None
     target = -(float(config.target_nmse) * var)
     # 打印一律用 ASCII 比较符：GBK 控制台无法编码 ⇔/≤ 之类的数学符号，
-    # UnicodeEncodeError 会直接拖垮调用方（evaluation/problems.py 有同款教训）。
+    # UnicodeEncodeError 会直接拖垮调用方（execution/problems.py 有同款教训）。
     print(f"[INFO] 早停目标：全局最优 NMSE <= {config.target_nmse:g} "
           f"(即 score >= {target:.6g}) 时停止采样")
     return target

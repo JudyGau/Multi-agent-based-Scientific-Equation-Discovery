@@ -38,7 +38,7 @@
 ----
 ::
 
-    python -m drsr_420.analysis.progress_curve <results_root>
+    python -m drsr_420.reporting.progress_curve <results_root>
 
 回填：对已有实验目录重跑本模块即可补出六张图与小节（不触发任何 LLM 调用）；
 小节按 ``## 训练进度`` 前缀整节替换，故对只含旧 MSE 标题的历史报告同样幂等。
@@ -53,12 +53,12 @@ import sys
 
 import numpy as np
 
-from drsr_420.analysis.md_sections import (
+from drsr_420.reporting.md_sections import (
     only_h1_or_h2_ends_section,
     strip_section,
     upsert_section,
 )
-from drsr_420.core.sample_records import load_sample_records
+from drsr_420.equations.records import load_sample_records
 
 #: 三个量各自的进度图文件名（报告小节按相对路径引用）。MSE 沿用旧名——历史报告与
 #: 文档都引用过它，改名只会制造孤儿文件。

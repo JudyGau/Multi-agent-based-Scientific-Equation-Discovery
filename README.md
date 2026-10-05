@@ -238,7 +238,7 @@ config/                       # 配置目录（.json 入库 / .config 不入库�
   rag.config(.example)        #   文献知识库配置
 example.sh / example.bat      # 批量运行示例（bash / Windows 批处理，逐项等价）
 MRF*.sh / MRF*.bat            # 4 个单问题运行配置（与 .idea/runConfigurations 一致）
-drsr_420/                     # 单一顶层包（8 层，依赖方向自底向上）
+drsr_420/                     # 单一顶层包（10 层，依赖方向自底向上）
   core/                       # 领域无关基础设施
     buffer.py                 #   经验缓冲（多岛 + 聚类抽样）
     code_manipulation.py      #   AST 解析与函数/程序拼装
@@ -247,6 +247,14 @@ drsr_420/                     # 单一顶层包（8 层，依赖方向自底向�
     profile.py                #   样本与进度记录（samples/*.json、progress.json）
     prompt_config.py          #   提示词模板与 PromptContext
     llm_stats.py              #   实验级全局 token / 耗时统计
+  equations/                  # 公式领域模型（解析 / 求值 / 样本词汇 / 病理内核）
+    parse.py                  #   骨架字符串 → SymPy 表达式（where/Eq/中间变量）
+    numeric.py                #   表达式数值化与编译
+    evaluator.py              #   采样网格 / 求值 / 敏感度度量内核
+    text_algebra.py           #   文本代数：记号化 / 架构指纹 / 代表元编译
+    pathology.py              #   ★ 数值病理内核：跨度 / 斜率 / 大系数 三判据
+    header.py                 #   样本头部（Dependent / Independents）解析
+    records.py                #   样本记录读取 + 分数分解（拟合 MSE ↔ 体检罚分）
   llm/                        # LLM 接入层
     client.py                 #   LLMClient：请求/重试/流式/记账（所有提供商共用一个类）
     adapt.py                  #   请求体方言适配（glm/deepseek/ollama/openai）
@@ -256,10 +264,14 @@ drsr_420/                     # 单一顶层包（8 层，依赖方向自底向�
     role_clients.py           #   按角色提供已参数化的客户端（独立克隆 + 按档案缓存）
     role_diagnostics.py       #   角色配置表格渲染与 --check 自检
     tools_schema.py           #   工具调用 schema
-  evaluation/                 # 评估执行机制
+  execution/                  # 评估执行机制
     problems.py               #   多起点 least_squares 拟合与打分
     sandbox.py                #   Sandbox / LocalSandbox（常驻 worker、超时重建）
     accelerate.py             #   可选 numba 加速
+  evidence/                   # ★ 可验证证据层（代码算出的确定性事实）
+    facts.py                  #   数据事实表：统计 / 极值 / 可辨识性 / 骨架基线
+    terrain.py                #   历史采样架构地形 + 分数分解
+    neighborhood.py           #     └ 未试邻域代表元实测 NMSE
   knowledge/                  # 外部知识
     rag_kb.py / rag_build.py  #   Chroma 知识库与入库/检索 CLI
     tool_runner.py            #   MCP 调用入口
@@ -276,19 +288,18 @@ drsr_420/                     # 单一顶层包（8 层，依赖方向自底向�
     experience_summarizer_agent.py  # 经验总结者
     residual_analyzer_agent.py      # 残差分析者
     data_analyzer_agent.py    #   数据分析者：初次数据分析 + RAG 注入
-  analysis/                   # 收尾分析
+  reporting/                  # 收尾分析与报告装配
     find_best_eq.py           #   收尾编排：最佳样本 → 解释 → 剪枝与可视化
-    expr_parse.py             #   骨架字符串 → SymPy 表达式（where/Eq/中间变量）
     explain.py                #   物理解释（ReAct + RAG）→ report.md
-    sensitivity_prune.py      #   敏感度剪枝（遍历与决策；没真剪掉项就返回原式）
-    expr_evaluation.py        #     └ 采样网格 / 求值 / 敏感度度量
-    prune_stats.py            #     └ 剪枝记录与统计（真剪枝 / 仅形式重排）
-    prune_eval.py           #   剪枝实质判定 + 剪枝前后拟合对比（训练数据上）
-    holdout.py                #   样本外验证（test.csv 上只报告，不参与选择）
-    expr_viz.py               #   预览图与表达式树（可选依赖，失败仅告警）
-    expr_curves.py            #   剪枝前后曲线 + 数据点（每个自变量一幅）
-    progress_curve.py         #   训练进度：MSE / 体检罚分 / 评分 随 sample_order 的三条曲线 + report.md 小节
-    prune_demo.py             #   剪枝行为演示（python -m …prune_demo）
+    report_sections.py        #   report.md 各机器小节（选解/样本外/体检/解析自检/进度）
+    references.py             #   参考文献检索 / 去重 / 渲染
+    md_sections.py            #   markdown 小节通用读写
+    data_io.py                #   结果目录 CSV / JSON 读取
+    progress_curve.py         #   训练进度：MSE / 体检罚分 / 评分 随 sample_order 的三条曲线
+    curves.py                 #   剪枝前后曲线 + 数据点（每个自变量一幅）
+    viz.py                    #   预览图与表达式树（可选依赖，失败仅告警）
+    pruning/                  #   敏感度剪枝：sensitivity / verdict / stats / demo
+    generalization/           #   泛化口径：holdout（样本外）+ loo（留一交叉验证）
   runtime/
     pipeline.py               #   实验主流程编排
   cli/

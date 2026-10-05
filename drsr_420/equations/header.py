@@ -6,7 +6,7 @@ r"""样本文本头部的解析：从样本函数字符串里取因变量与自�
 骨架族去重（``agents.prompt_injection``），收尾侧用它做剪枝、曲线与物理解释
 （``analysis.*``），表达式代入也要它（``analysis.expr_parse``）。分层规则不允许
 ``agents`` 与 ``analysis`` 互相 import，两边唯一能共享的落点就是 core
-（与 :mod:`drsr_420.core.sample_records` 同理）。
+（与 :mod:`drsr_420.equations.records` 同理）。
 
 归一化说明
 ----------

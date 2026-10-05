@@ -3,10 +3,10 @@
 角色
 ----
 消费**本次实验已经落盘的样本 JSON**（``results_root/samples/``）：收尾分析
-（``analysis.find_best_eq`` 选发布解）与采样提示注入（``agents.prompt_injection``
-要暴露分数分解）都要读同一份记录。内核放在 core 层是因为分层规则不允许
-``analysis`` 依赖 ``evaluation``、而 ``agents`` 只能依赖 core/llm/evaluation/knowledge
-——两边唯一能共享的落点就是 core。
+（``reporting.find_best_eq`` 选发布解）与采样提示注入（``agents.prompt_injection``
+要暴露分数分解）都要读同一份记录。它是"自变量 / 因变量 / 分数分解"这套**领域词汇**，
+因此落在 ``equations`` 层——采样闭环（``agents``）与收尾（``reporting``）都依赖它，
+而它自己只依赖 ``core``（分层规则见 ``docs/ARCHITECTURE.md`` §3）。
 
 两个函数各管一件事
 ------------------
@@ -78,7 +78,7 @@ def top_sample(results_root: str) -> tuple[float, str, str, list] | None:
     """分数最高的样本 ``(score, path, function, params)``；无有效样本返回 ``None``。
 
     **不带病理门禁**：这里只回答"谁是最高分"。要不要发布它、要不要因为体检罚分改发
-    另一个样本，是 :func:`drsr_420.analysis.find_best_eq.select_published_sample` 的
+    另一个样本，是 :func:`drsr_420.reporting.find_best_eq.select_published_sample` 的
     决策（优先发布无病理的最高分）。两者语义不同，不要混用——直接拿 ``top_sample``
     当"发布解"正是旧实现的口径问题（见其 docstring 里的实测反例）。
 

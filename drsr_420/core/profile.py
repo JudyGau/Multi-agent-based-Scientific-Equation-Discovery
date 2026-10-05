@@ -218,9 +218,9 @@ class Profiler:
     def _mse_and_penalty(self, score, fit_mse) -> tuple[float | None, float | None]:
         """返回 ``(拟合 MSE, 动态范围体检罚分)`` 两个字段。
 
-        评分是 ``score = −(拟合 MSE + 罚分)``（见 ``evaluation/problems.evaluate``），
+        评分是 ``score = −(拟合 MSE + 罚分)``（见 ``execution/problems.evaluate``），
         所以只有拿得到评估器上报的 ``fit_mse``（从完整残差矩阵算出，见
-        ``evaluation/sandbox._run_evaluation_task``）时，两者才是**可分离**的。
+        ``execution/sandbox._run_evaluation_task``）时，两者才是**可分离**的。
 
         拿不到 ``fit_mse``（旧 checkpoint / 评测替身）时退回 ``−score``，此时罚分
         **未知**，记 ``None`` 而不是 ``0.0``——0 会被读成"无病理"。实测

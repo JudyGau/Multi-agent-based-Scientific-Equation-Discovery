@@ -6,7 +6,7 @@ import unittest
 
 import sympy as sp
 
-from drsr_420.analysis.expr_parse import (
+from drsr_420.equations.parse import (
     WhereArityError,
     audit_parse_failures,
     classify_sample,
@@ -276,7 +276,7 @@ class TypeCastWrapperTest(_ExprTestCase):
 
     def test_value_changing_calls_are_left_alone(self):
         """只删**纯类型转换**：``maximum`` / ``where`` 会改变值，必须原样保留。"""
-        from drsr_420.analysis.expr_parse import strip_type_cast_wrappers
+        from drsr_420.equations.parse import strip_type_cast_wrappers
 
         for text in ("maximum(x1, x2)", "where(x1 >= 0, p0, p1)", "power(x1, x2)"):
             with self.subTest(text=text):
@@ -400,14 +400,14 @@ class NumpyClipRewriteTest(_ExprTestCase):
     """
 
     def test_rewrite_forms(self):
-        from drsr_420.analysis.expr_parse import rewrite_numpy_clip_calls as rw
+        from drsr_420.equations.parse import rewrite_numpy_clip_calls as rw
         self.assertEqual(rw("np.clip(a, 0.0, None)"), "Max((a), (0.0))")
         self.assertEqual(rw("np.clip(a, None, 5.0)"), "Min((a), (5.0))")
         self.assertEqual(rw("np.clip(a, 0.0, 1.0)"), "Max(Min((a), (1.0)), (0.0))")
         self.assertEqual(rw("clip(a, None, None)"), "(a)")
 
     def test_nested_clip_is_rewritten(self):
-        from drsr_420.analysis.expr_parse import rewrite_numpy_clip_calls as rw
+        from drsr_420.equations.parse import rewrite_numpy_clip_calls as rw
         self.assertEqual(rw("np.clip(np.clip(a, 0.0, None), None, 5.0)"),
                          "Min((Max((a), (0.0))), (5.0))")
 
@@ -538,19 +538,19 @@ class ConditionalExpressionTest(_ExprTestCase):
         self.assert_expr_close(expr, 3 * X1)
 
     def test_nonconstant_condition_becomes_piecewise(self):
-        from drsr_420.analysis.expr_parse import rewrite_conditional_expressions as rw
+        from drsr_420.equations.parse import rewrite_conditional_expressions as rw
         self.assertEqual(rw("a if x1 > 0 else b"),
                          "Piecewise((a, x1 > 0), (b, True))")
 
     def test_nested_ternary(self):
-        from drsr_420.analysis.expr_parse import rewrite_conditional_expressions as rw
+        from drsr_420.equations.parse import rewrite_conditional_expressions as rw
         out = rw("a if x1 > 1 else (b if x1 > 0 else c)")
         self.assertNotIn(" if ", out)
         self.assertEqual(out.count("Piecewise"), 2)
 
     def test_and_or_condition_is_left_untouched(self):
         """条件含 and/or：宁可不改也不静默改错结合顺序。"""
-        from drsr_420.analysis.expr_parse import rewrite_conditional_expressions as rw
+        from drsr_420.equations.parse import rewrite_conditional_expressions as rw
         s = "a if x1 > 0 and x2 > 0 else b"
         self.assertEqual(rw(s), s)
 

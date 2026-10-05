@@ -36,7 +36,7 @@ import numpy as np
 from drsr_420.agents.prompt_injection import PromptInjector
 from drsr_420.agents.residual_analyzer_agent import ResidualAnalyzerAgent
 from drsr_420.core import prompt_config as pc
-from drsr_420.evaluation import architecture_facts as af
+from drsr_420.evidence import terrain as af
 
 NAMES = ["lambda12", "lambda23"]
 

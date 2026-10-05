@@ -4,7 +4,7 @@
 ----
 项目里已三次踩到同一个坑：把 ``R²`` / ``▶`` / ``✂`` / emoji 之类字符写进面向
 控制台的输出，在 Windows 默认代码页（cp936/GBK）下直接抛 ``UnicodeEncodeError``
-**打断流程**——最典型的是 ``python -m drsr_420.analysis.prune_demo`` 与剪枝的
+**打断流程**——最典型的是 ``python -m drsr_420.reporting.pruning.demo`` 与剪枝的
 verbose 日志（两者都是"看起来只是打印"却让整个函数失败）。
 
 这里用 ``PYTHONIOENCODING=gbk`` 起子进程跑几个典型入口：输出编码一旦不兼容，
@@ -25,15 +25,15 @@ _ENTRY_POINTS = (
     ("agents 组织图", ["-m", "drsr_420.agents"]),
     ("agents 契约自检", ["-m", "drsr_420.agents", "--check"]),
     ("LLM 角色配置表", ["-m", "drsr_420.llm.roles"]),
-    ("剪枝演示", ["-m", "drsr_420.analysis.prune_demo"]),
-    ("剪枝 verbose 日志", ["-m", "drsr_420.analysis.sensitivity_prune"]),
+    ("剪枝演示", ["-m", "drsr_420.reporting.pruning.demo"]),
+    ("剪枝 verbose 日志", ["-m", "drsr_420.reporting.pruning.sensitivity"]),
     ("CLI --help", ["-m", "drsr_420.cli.main", "--help"]),
 )
 
 #: 直接调用 API（verbose 剪枝会走 _log 打印路径）的探针脚本。
 _VERBOSE_PROBE = (
     "import sympy as sp;"
-    "from drsr_420.analysis.sensitivity_prune import SensitivityPruner;"
+    "from drsr_420.reporting.pruning.sensitivity import SensitivityPruner;"
     "x, y = sp.symbols('x y');"
     "p = SensitivityPruner([x, y], threshold=0.5, seed=42);"
     "p.prune(x**2 + y**2 + sp.Rational(1, 1000)*x*y, verbose=True);"

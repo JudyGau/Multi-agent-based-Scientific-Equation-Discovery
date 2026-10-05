@@ -82,7 +82,7 @@ class LatestRunDirTest(unittest.TestCase):
         return path
 
     def test_prefers_newest_run_in_nested_layout(self):
-        from drsr_420.analysis.find_best_eq import _latest_run_dir
+        from drsr_420.reporting.find_best_eq import _latest_run_dir
 
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -92,7 +92,7 @@ class LatestRunDirTest(unittest.TestCase):
             self.assertNotEqual(_latest_run_dir(str(root / "experiments")), str(old))
 
     def test_ignores_directories_without_run_artifacts(self):
-        from drsr_420.analysis.find_best_eq import _latest_run_dir
+        from drsr_420.reporting.find_best_eq import _latest_run_dir
 
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -101,7 +101,7 @@ class LatestRunDirTest(unittest.TestCase):
             self.assertIsNone(_latest_run_dir(str(root / "experiments")))
 
     def test_accepts_legacy_flat_layout(self):
-        from drsr_420.analysis.find_best_eq import _latest_run_dir
+        from drsr_420.reporting.find_best_eq import _latest_run_dir
 
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -109,7 +109,7 @@ class LatestRunDirTest(unittest.TestCase):
             self.assertEqual(_latest_run_dir(str(root / "experiments")), str(legacy))
 
     def test_returns_none_for_empty_tree(self):
-        from drsr_420.analysis.find_best_eq import _latest_run_dir
+        from drsr_420.reporting.find_best_eq import _latest_run_dir
 
         with tempfile.TemporaryDirectory() as tmp:
             self.assertIsNone(_latest_run_dir(tmp))

@@ -23,7 +23,7 @@
    若一条都没检索到，就写明"本次未获取到可引用的文献"，而不是交给模型自由发挥。
 2. **必须解释剪枝后的表达式**，并讲清剪枝去掉了哪些项、这样剪枝为什么合理：提示词
    里因此同时给出剪枝前/后表达式、被移除项及敏感度、剪枝前后在训练数据上的 MSE
-   对比（后者由 :mod:`drsr_420.analysis.prune_eval` 实测），要求 LLM 逐项论证。
+   对比（后者由 :mod:`drsr_420.reporting.pruning.verdict` 实测），要求 LLM 逐项论证。
    这也是 ``find_best_eq`` 必须**先剪枝再解释**的原因。
 
 失败策略：任一环节（无经验文件 / 无匹配条目 / 提示词构造失败 / LLM 初始化失败 /
@@ -38,20 +38,20 @@ import re
 
 from drsr_420.core.console import LineStreamPrinter, print_block
 from drsr_420.core import prompt_config as pc
-from drsr_420.core.sample_header import parse_dependent, parse_independents_text
+from drsr_420.equations.header import parse_dependent, parse_independents_text
 import drsr_420.llm as llm
-from drsr_420.analysis.data_io import read_json_file, read_snapshot
-from drsr_420.analysis.md_sections import strip_section, upsert_section
-from drsr_420.analysis.prune_eval import format_fit_summary
+from drsr_420.reporting.data_io import read_json_file, read_snapshot
+from drsr_420.reporting.md_sections import strip_section, upsert_section
+from drsr_420.reporting.pruning.verdict import format_fit_summary
 from drsr_420.knowledge.tool_runner import mcp_call_tool
-from drsr_420.analysis.holdout import (LOO_MAX_TRAIN, in_sample_metrics,
+from drsr_420.reporting.generalization.holdout import (LOO_MAX_TRAIN, in_sample_metrics,
                                        render_holdout_section, render_loo_section,
                                        strip_holdout_section, strip_loo_section)
-from drsr_420.analysis.progress_curve import render_progress_section
-from drsr_420.analysis.expr_parse import audit_parse_failures
+from drsr_420.reporting.progress_curve import render_progress_section
+from drsr_420.equations.parse import audit_parse_failures
 # 体检判据的参数：小节里要写明探针偏移口径（数字必须与机器判定同一来源，
 # 不能在文本里另写一份——那正是"两处各判一次"的翻版）。
-from drsr_420.core.range_check import RANGE_PROBE_REL
+from drsr_420.equations.pathology import RANGE_PROBE_REL
 
 #: 单个表达式/被移除项在提示词里的最大字符数（剪枝后的表达式有时很长，
 #: 无节制地塞进提示词只会挤掉真正需要模型读的推导过程）。
@@ -161,9 +161,9 @@ def explain_re_act(client: llm.LLMClient, content: str, tool_refs: list | None =
         return None
 
 
-# ── 文献：检索、去重、渲染（已拆到 :mod:`drsr_420.analysis.references`）──
+# ── 文献：检索、去重、渲染（已拆到 :mod:`drsr_420.reporting.references`）──
 # 名字按旧路径保留（对象同一），既有调用方与测试不受影响。
-from drsr_420.analysis.references import (  # noqa: F401
+from drsr_420.reporting.references import (  # noqa: F401
     EMPTY_REFERENCES_NOTE,
     REFERENCE_HEADING,
     collect_tool_refs as _collect_tool_refs,
@@ -289,7 +289,7 @@ _REQUIRED_STRUCTURE = (
 def _parse_func_header(func: str) -> tuple[str, str] | None:
     """解析样本函数头里的 (因变量, 自变量列表文本)；解析失败返回 None。
 
-    判据统一在 :mod:`drsr_420.core.sample_header`（采样侧与收尾侧共用一份规则），
+    判据统一在 :mod:`drsr_420.equations.header`（采样侧与收尾侧共用一份规则），
     本函数只保留"要原始文本"这一返回形态（解释提示词要把自变量列表原样写进正文）。
     """
     dependent = parse_dependent(func)
@@ -386,7 +386,7 @@ def _format_holdout_block(holdout: dict | None, fit: dict | None = None,
     ``holdout`` 是**同分布（ID）**、``ood`` 是**分布外（OOD）** 的指标，两者都给时
     分别列出并标明——ID/OOD 分开报是论文的硬要求，混成一个数字看不出外推是否失效。
 
-    数字由 :mod:`drsr_420.analysis.holdout` 算出并会**另行**写成 report.md 的
+    数字由 :mod:`drsr_420.reporting.generalization.holdout` 算出并会**另行**写成 report.md 的
     「样本外验证」小节；这里进提示词是为了让模型在谈泛化时只能依据这些量，
     而不是拿样本内 NMSE 说事。模型自己写的小节会被 ``strip_holdout_section`` 去掉。
     """
@@ -527,9 +527,9 @@ def _format_facts_block(facts: dict | None) -> str:
     return "\n".join(lines)
 
 
-# ── report.md 的机器小节（已拆到 :mod:`drsr_420.analysis.report_sections`）──
+# ── report.md 的机器小节（已拆到 :mod:`drsr_420.reporting.report_sections`）──
 # 数字一律由系统算，不经 LLM 转述；本模块只做"构造提示词 + 调 LLM + 落盘"。
-from drsr_420.analysis.report_sections import (  # noqa: F401
+from drsr_420.reporting.report_sections import (  # noqa: F401
     PARSE_AUDIT_HEADING,
     PARSE_AUDIT_MAX_LISTED,
     RANGE_HEADING,

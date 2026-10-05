@@ -2,7 +2,7 @@
 
 角色归属
 --------
-与 :mod:`drsr_420.analysis.holdout` 并列的另一条**泛化性口径**，两者互斥地服务同一个
+与 :mod:`drsr_420.reporting.generalization.holdout` 并列的另一条**泛化性口径**，两者互斥地服务同一个
 问题："公式在没见过的点上行不行"。
 
 * ``holdout``：训练点够多，切得出独立 held-out（ID / OOD 两条通道）；
@@ -33,8 +33,8 @@ import re
 
 import numpy as np
 
-from drsr_420.analysis.data_io import resolve_columns, warn_once
-from drsr_420.analysis.md_sections import strip_section
+from drsr_420.reporting.data_io import resolve_columns, warn_once
+from drsr_420.reporting.md_sections import strip_section
 
 #: 训练点数 **低于** 该值时，自动改用留一法（LOO）替代 held-out。
 #: 理由：MRF 六个体系只有 7–19 点，其 ``test.csv`` 仅 2 行且落在训练区间内（插值），
@@ -58,7 +58,7 @@ def skeleton_callable(func: str):
 
     与评估器调用样本的方式一致（``exec`` 样本自带的 ``def``，命名空间注入 ``np``）；
     这是 LOO 能在**每个折上重新拟合参数**的前提——收尾用的
-    :func:`drsr_420.analysis.expr_parse.expr_substitution` 已把 ``params[k]`` 全部
+    :func:`drsr_420.equations.parse.expr_substitution` 已把 ``params[k]`` 全部
     替换成数值，无法再拟合。
     """
     if not func:

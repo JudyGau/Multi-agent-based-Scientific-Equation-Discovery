@@ -34,15 +34,15 @@ import traceback
 from drsr_420.core import config as config_lib
 from drsr_420.core import prompt_config as pc
 from drsr_420.core.console import print_block
-from drsr_420.core.sample_header import parse_independents_text, split_names
-from drsr_420.core.sample_records import load_sample_records
-from drsr_420.evaluation.architecture_facts import (
+from drsr_420.equations.header import parse_independents_text, split_names
+from drsr_420.equations.records import load_sample_records
+from drsr_420.evidence.terrain import (
     features_from_equation,
     render_terrain,
     sampling_terrain,
     with_score_breakdown,
 )
-from drsr_420.evaluation.data_facts import load_facts
+from drsr_420.evidence.facts import load_facts
 
 
 def resolve_policy(exp_cfg) -> config_lib.ExperienceInjectionConfig:
@@ -254,7 +254,7 @@ class PromptInjector:
         而"删掉一个平方项"的非对称形式一次都没被提出——采样器把"换记号"当成了探索。
         经验块与残差块都只会重复"用某某形式"，说明不了**还剩哪些结构没试过**；这里
         把"已试集合的差集"直接交给模型（数字全部由
-        :mod:`drsr_420.evaluation.architecture_facts` 逐样本算出）。
+        :mod:`drsr_420.evidence.terrain` 逐样本算出）。
 
         只在"自最优以来样本数"与"已解析样本数"都够（见该模块的两个闸门）时才注入：
         样本太少时"该架构已触底"没有证据支撑。

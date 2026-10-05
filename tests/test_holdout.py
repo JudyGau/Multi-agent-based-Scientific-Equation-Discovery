@@ -21,8 +21,8 @@ from unittest import mock
 import numpy as np
 import sympy as sp
 
-from drsr_420.analysis import holdout as ho
-from drsr_420.analysis import prune_eval as pr
+from drsr_420.reporting.generalization import holdout as ho
+from drsr_420.reporting.pruning import verdict as pr
 
 _FUNC = ("Variables:\n"
          "- Independents: x1, x2\n"
@@ -357,7 +357,7 @@ class HoldoutSectionTest(unittest.TestCase):
         self.assertIn("## 参考文献", stripped)
 
     def test_assemble_keeps_body_and_appends_authoritative_section(self):
-        from drsr_420.analysis.report_sections import ReportData, assemble_explain
+        from drsr_420.reporting.report_sections import ReportData, assemble_explain
 
         body = "## 结论\n\n正文\n\n## 样本外验证\n\nLLM 编的\n"
         text = assemble_explain(body, ReportData(holdout=self._holdout(),
@@ -381,7 +381,7 @@ class PlotHoldoutWiringTest(unittest.TestCase):
     def test_heldout_points_drawn_with_a_distinct_marker(self):
         """held-out 点必须用另一种标记画出来（否则无从判断是不是只在训练点上插值）。"""
         ho._resolved.clear()
-        from drsr_420.analysis import expr_curves as ec
+        from drsr_420.reporting import curves as ec
         import matplotlib.pyplot as plt
 
         scatters: list = []
@@ -421,7 +421,7 @@ class PlotHoldoutWiringTest(unittest.TestCase):
 
     def test_plot_expr_curves_passes_test_csv_through(self):
         ho._resolved.clear()
-        from drsr_420.analysis import expr_curves as ec
+        from drsr_420.reporting import curves as ec
 
         root = self._setup()
         captured = {}
@@ -439,7 +439,7 @@ class PlotHoldoutWiringTest(unittest.TestCase):
 
     def test_bad_holdout_columns_do_not_break_plotting(self):
         ho._resolved.clear()
-        from drsr_420.analysis import expr_curves as ec
+        from drsr_420.reporting import curves as ec
 
         root = self._setup()
         # held-out 文件缺一个自变量列：无法定位，但训练曲线仍要画出来
@@ -455,7 +455,7 @@ class PlotHoldoutWiringTest(unittest.TestCase):
 
 class FindBestEqPlumbingTest(unittest.TestCase):
     def test_test_csv_reaches_prune_and_visualize(self):
-        from drsr_420.analysis import find_best_eq as fbe
+        from drsr_420.reporting import find_best_eq as fbe
 
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp) / "p_20260101-000000"
@@ -560,7 +560,7 @@ class OodChannelTest(ResolveTestBase):
         self.assertNotIn("本次没有可用的 held-out 数据", text)
 
     def test_format_holdout_block_mentions_ood(self):
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         text = explain_mod._format_holdout_block(
             self._metric("data/tiny/test.csv", 1e-4), {"nmse_before": 1e-7},
@@ -600,7 +600,7 @@ class LooChannelTest(unittest.TestCase):
 
     def test_fit_constants_mirror_evaluator(self):
         """LOO 的自包含拟合口径必须与评估器一致（防漂移）。"""
-        from drsr_420.evaluation import problems as ev
+        from drsr_420.execution import problems as ev
         self.assertEqual(ho.LOO_FIT_BOUNDS, ev.PARAMS_BOUNDS)
         self.assertEqual(ho.LOO_FIT_N_STARTS, ev.N_STARTS)
         self.assertEqual(ho.LOO_FIT_MAX_ITER, ev.MAX_ITER)

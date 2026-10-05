@@ -41,9 +41,9 @@ span_ratio 1.2、slope_max 0.3（判据 1/2 全过），却在同一次实验里
 
 同一份判据被两处消费（本模块只提供数值内核，避免多处各判一次）：
 
-* ``evaluation/problems.evaluate``：拟合后对每个候选样本评分罚分（罚分 = 超出
+* ``execution/problems.evaluate``：拟合后对每个候选样本评分罚分（罚分 = 超出
   阈值的幅度），给采样阶段"别再造局部化器件"的正确信号；
-* ``analysis/find_best_eq.prune_and_visualize``：收尾时对**最终发布**的表达式
+* ``reporting/find_best_eq.prune_and_visualize``：收尾时对**最终发布**的表达式
   体检并写进剪枝摘要 → report.md 权威「动态范围体检」小节。
 
 为什么用体检罚分而不是"指数类参数设界"：参数位置无关，评估器无法泛化地知道

@@ -2,19 +2,19 @@
 
 用法::
 
-    python -m drsr_420.analysis.prune_demo
+    python -m drsr_420.reporting.pruning.demo
 
 为什么单独一个模块
 ------------------
 演示是"给人看行为"的脚本，不是库代码：它不该混在算法文件里占用阅读路径，
 也不该被 import 触发。放在这里后 ``sensitivity_prune.py`` 只剩算法本体，
-而 ``python -m drsr_420.analysis.sensitivity_prune`` 仍然可用（转发到本模块）。
+而 ``python -m drsr_420.reporting.pruning.sensitivity`` 仍然可用（转发到本模块）。
 """
 from __future__ import annotations
 
 import sympy as sp
 
-from drsr_420.analysis.sensitivity_prune import sensitivity_prune
+from drsr_420.reporting.pruning.sensitivity import sensitivity_prune
 
 
 def main() -> None:

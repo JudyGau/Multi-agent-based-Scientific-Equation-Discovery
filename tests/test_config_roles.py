@@ -3,7 +3,7 @@
 为什么需要这组测试
 ==================
 重构前这套信息**在代码里没有任何一处声明**，只能靠 grep 反推；由此产生过两个
-真实故障：``analysis/explain.py`` 硬编码了一个不存在的档案文件名，异常被
+真实故障：``reporting/explain.py`` 硬编码了一个不存在的档案文件名，异常被
 ``try/except`` 吞掉后长期静默写出空的 ``report.md``；而 ``llm_explain.config`` /
 ``llm_summary.config`` 这两个"想给特定角色换模型"的档案，因为旧结构**在原理上**
 无法表达该意图，一直无人读取。
@@ -91,9 +91,9 @@ class NoHardcodedProfileFilenameTest(unittest.TestCase):
 
     def test_explain_module_no_longer_loads_a_fixed_profile(self):
         """回归：explain 曾硬编码一个**不存在**的档案，导致 report.md 恒为空。"""
-        source = (_PKG_DIR / "analysis" / "explain.py").read_text(encoding="utf-8")
+        source = (_PKG_DIR / "reporting" / "explain.py").read_text(encoding="utf-8")
         self.assertNotIn("load_llm_config(", source,
-                         "analysis/explain.py 不应自己加载固定档案，应经角色解析取客户端")
+                         "reporting/explain.py 不应自己加载固定档案，应经角色解析取客户端")
 
 
 # ── 替身 ────────────────────────────────────────────────────────────
@@ -661,7 +661,7 @@ class ExplainRoleWiringTest(unittest.TestCase):
     """
 
     def _run(self, role_clients):
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         captured = {}
 
@@ -700,7 +700,7 @@ class ExplainRoleWiringTest(unittest.TestCase):
 
         这样才能摆脱旧实现"自建客户端 + 硬编码档案名"的老路。
         """
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         sentinel = _FakeClient(model="resolved/model")
         with mock.patch.object(explain_mod.llm, "build_role_client",
@@ -711,7 +711,7 @@ class ExplainRoleWiringTest(unittest.TestCase):
 
     def test_client_init_failure_is_reported_not_swallowed_silently(self):
         """档案解析失败时必须留下 WARN 与排查指引（旧实现只留一行 WARN 后写空文件）。"""
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         with tempfile.TemporaryDirectory() as tmp:
             results_root = pathlib.Path(tmp)
@@ -748,7 +748,7 @@ class ExplainBackgroundInjectionTest(unittest.TestCase):
     }
 
     def test_prompt_contains_background_with_priority(self):
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         with mock.patch.object(explain_mod, "retrieve_rag", return_value=[]):
             prompt = explain_mod.build_explain_content(
@@ -757,14 +757,14 @@ class ExplainBackgroundInjectionTest(unittest.TestCase):
         self.assertIn("以背景为准", prompt, "背景块必须声明其优先级高于文献摘要与先验")
 
     def test_prompt_without_background_has_no_background_block(self):
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         with mock.patch.object(explain_mod, "retrieve_rag", return_value=[]):
             prompt = explain_mod.build_explain_content(self._FUNC, self._EXP, background=None)
         self.assertNotIn("材料体系与自变量定义的准绳", prompt)
 
     def test_explain_best_sample_passes_snapshot_background(self):
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         captured = {}
 
@@ -790,7 +790,7 @@ class ExplainBackgroundInjectionTest(unittest.TestCase):
 
     def test_explain_best_sample_without_snapshot_still_works(self):
         """旧实验目录没有 config_snapshot.json：不炸，只是退回无背景块的老行为。"""
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         captured = {}
 

@@ -2,7 +2,7 @@
 
 角色归属
 --------
-收尾分析（analysis）阶段的泛化性检查，与 :mod:`drsr_420.analysis.prune_eval` 并列：
+收尾分析（analysis）阶段的泛化性检查，与 :mod:`drsr_420.reporting.pruning.verdict` 并列：
 后者回答"剪枝有没有削弱模型"，本模块回答"模型在没参与拟合的点上还准不准"。
 
 为什么必须与训练点分开
@@ -33,11 +33,11 @@ import os
 
 import numpy as np
 
-from drsr_420.analysis.data_io import (infer_data_csv, load_struct_csv,
+from drsr_420.reporting.data_io import (infer_data_csv, load_struct_csv,
                                        resolve_columns, resolve_csv,
                                        snapshot_value, warn_once)
-from drsr_420.analysis.expr_numeric import lambdify_eval
-from drsr_420.analysis.md_sections import strip_section
+from drsr_420.equations.numeric import lambdify_eval
+from drsr_420.reporting.md_sections import strip_section
 
 #: report.md 里样本外验证小节的标题（机器生成，正文若自带同名小节会被替换）。
 HOLDOUT_HEADING = "## 样本外验证"
@@ -64,7 +64,7 @@ _logged: set[str] = set()
 def _snapshot_value(results_root: str, key: str) -> str:
     """读 config_snapshot.json 里的某个字段（读不到一律空串）。
 
-    实现已移到 :mod:`drsr_420.analysis.data_io`（``test_csv`` → ``test_csv_arg``
+    实现已移到 :mod:`drsr_420.reporting.data_io`（``test_csv`` → ``test_csv_arg``
     的兼容写法也在那里）；保留本名作为本模块内部入口。
     """
     return snapshot_value(results_root, key)
@@ -411,10 +411,10 @@ def strip_holdout_section(text: str) -> str:
     return strip_section(text, HOLDOUT_HEADING)
 
 
-# ── 留一交叉验证（LOO）已拆到 :mod:`drsr_420.analysis.loo`（阶段：按职责拆模块）──
+# ── 留一交叉验证（LOO）已拆到 :mod:`drsr_420.reporting.generalization.loo`（阶段：按职责拆模块）──
 # 与 held-out 并列的另一条泛化口径；训练点太少时取代本模块的 held-out 通道。
 # 下列名字按旧路径 re-export（对象同一），既有调用方与外部脚本不受影响。
-from drsr_420.analysis.loo import (  # noqa: E402  （放末尾：避免与上面的名字序冲突）
+from drsr_420.reporting.generalization.loo import (  # noqa: E402  （放末尾：避免与上面的名字序冲突）
     LOO_FIT_BOUNDS,
     LOO_FIT_MAX_ITER,
     LOO_FIT_N_STARTS,

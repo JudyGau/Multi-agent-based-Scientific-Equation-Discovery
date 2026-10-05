@@ -21,9 +21,9 @@ from unittest import mock
 import numpy as np
 import sympy as sp
 
-from drsr_420.analysis import prune_eval as pr
-from drsr_420.analysis.prune_stats import PruneStats
-from drsr_420.analysis.sensitivity_prune import SensitivityPruner
+from drsr_420.reporting.pruning import verdict as pr
+from drsr_420.reporting.pruning.stats import PruneStats
+from drsr_420.reporting.pruning.sensitivity import SensitivityPruner
 
 x, y = sp.symbols("x y", real=True)
 L12, L23 = sp.symbols("lambda12 lambda23", real=True)
@@ -216,7 +216,7 @@ class DegeneratePruningRejectedTest(unittest.TestCase):
         夹具：第二项在剪枝采样区间 (1,6) 上恒为 0（条件 x1 > 100 不成立），于是它被
         判为"零敏感"而剪掉，剪枝结果只剩常数——正是要被拒的那种退化。
         """
-        from drsr_420.analysis.find_best_eq import prune_and_visualize
+        from drsr_420.reporting.find_best_eq import prune_and_visualize
 
         func = ("Variables:\n"
                 "- Independents: x1, x2\n"
@@ -243,7 +243,7 @@ class ExplainBlockTest(unittest.TestCase):
     """解释提示词必须点明判定，并把 simplify 的改写标成"未采用"。"""
 
     def test_block_states_verdict_and_marks_simplify_as_unused(self):
-        from drsr_420.analysis.explain import _format_pruning_block
+        from drsr_420.reporting.explain import _format_pruning_block
 
         pruner = SensitivityPruner([x, y], threshold=0.01, sample_range=(1, 6), seed=42)
         published = pruner.prune(COMMON_DENOM)
@@ -272,7 +272,7 @@ class ExplainBlockTest(unittest.TestCase):
         self.assertIn("被移除的项：无", text)
 
     def test_required_structure_forbids_calling_a_rewrite_pruning(self):
-        from drsr_420.analysis.explain import _REQUIRED_STRUCTURE
+        from drsr_420.reporting.explain import _REQUIRED_STRUCTURE
 
         self.assertIn("未实际剪枝", _REQUIRED_STRUCTURE)
         self.assertIn("不是**剪枝结果", _REQUIRED_STRUCTURE)
@@ -280,14 +280,14 @@ class ExplainBlockTest(unittest.TestCase):
 
     def test_required_structure_confronts_priors_with_measured_baselines(self):
         """解释必须把物理先验与代码实测的骨架基线对质，并交代可辨识性限制。"""
-        from drsr_420.analysis.explain import _REQUIRED_STRUCTURE
+        from drsr_420.reporting.explain import _REQUIRED_STRUCTURE
 
         self.assertIn("候选骨架基线", _REQUIRED_STRUCTURE)
         self.assertIn("不得把先验写成已被数据证实的事实", _REQUIRED_STRUCTURE)
         self.assertIn("不可单独辨识", _REQUIRED_STRUCTURE)
 
     def test_facts_block_lists_baselines_and_identifiability(self):
-        from drsr_420.analysis.explain import _format_facts_block
+        from drsr_420.reporting.explain import _format_facts_block
 
         text = _format_facts_block({
             "dependent": "sigma",
@@ -320,7 +320,7 @@ class ExplainBlockTest(unittest.TestCase):
         self.assertNotIn("lambda12 vs lambda23：", text)
 
     def test_facts_block_degrades_when_file_missing(self):
-        from drsr_420.analysis.explain import _format_facts_block
+        from drsr_420.reporting.explain import _format_facts_block
 
         text = _format_facts_block(None)
         self.assertIn("没有 data_facts.json", text)
@@ -328,7 +328,7 @@ class ExplainBlockTest(unittest.TestCase):
 
     def test_block_explains_rejected_degenerate_pruning(self):
         """退化剪枝被拒时，提示词必须说清"最终还是剪枝前的公式"，不能写成已简化。"""
-        from drsr_420.analysis.explain import _format_pruning_block
+        from drsr_420.reporting.explain import _format_pruning_block
 
         stats = PruneStats(nodes_visited=2, nodes_pruned=2,
                            ops_before=sp.count_ops(COMMON_DENOM))
@@ -356,7 +356,7 @@ class ArtifactSuppressionTest(unittest.TestCase):
     """未实际剪枝 → 不产出重复的"剪枝后"图件，曲线只画一条。"""
 
     def test_prune_and_visualize_keeps_original_and_skips_duplicate_artifacts(self):
-        from drsr_420.analysis.find_best_eq import prune_and_visualize
+        from drsr_420.reporting.find_best_eq import prune_and_visualize
 
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -381,7 +381,7 @@ class ArtifactSuppressionTest(unittest.TestCase):
             self.assertTrue((root / "expr_curve_x2.png").is_file())
 
     def test_plot_expr_curves_passes_none_when_nothing_pruned(self):
-        from drsr_420.analysis import expr_curves as ec
+        from drsr_420.reporting import curves as ec
 
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -401,7 +401,7 @@ class ArtifactSuppressionTest(unittest.TestCase):
                           "未实际剪枝时必须以 pruned=None 调用绘图（只画一条曲线）")
 
     def test_tree_rendering_skips_the_missing_side(self):
-        from drsr_420.analysis import expr_viz as viz
+        from drsr_420.reporting import viz as viz
 
         rendered: list = []
 
@@ -420,7 +420,7 @@ class ArtifactSuppressionTest(unittest.TestCase):
         self.assertEqual(rendered, [f"{tmp}/original_expr_tree"])
 
     def test_tree_rendering_keeps_both_sides_when_pruned(self):
-        from drsr_420.analysis import expr_viz as viz
+        from drsr_420.reporting import viz as viz
 
         rendered: list = []
 
@@ -471,7 +471,7 @@ class DataPointSensitivityTest(unittest.TestCase):
         self.assertIn("126.08", str(pruned), "角点锚必须保留在发布公式里")
 
     def test_extra_points_shapes_and_eval_length(self):
-        from drsr_420.analysis.expr_evaluation import ExpressionEvaluator
+        from drsr_420.equations.evaluator import ExpressionEvaluator
         # 列数组列表
         ev = ExpressionEvaluator([L12, L23], num_samples=10, seed=1,
                                  extra_points=list(self.DATA))

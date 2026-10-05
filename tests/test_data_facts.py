@@ -17,7 +17,7 @@ import unittest
 
 import numpy as np
 
-from drsr_420.evaluation import data_facts as df
+from drsr_420.evidence import facts as df
 
 #: 真实 MRF 压缩模式数据（8 行，lambda12/lambda23 -> sigma）。
 _MRF_CSV = os.path.join("data", "MRFCompress-Cuboid", "train.csv")
@@ -210,7 +210,7 @@ class SkeletonBaselineCaliberTest(_MRFFixtureTest):
         return {r["expression"]: r for r in df.skeleton_baselines(X, y, names, dep, seed=0)}
 
     def test_gate_type_baselines_are_flagged_with_reason(self):
-        from drsr_420.core.range_check import RANGE_SLOPE_LIMIT
+        from drsr_420.equations.pathology import RANGE_SLOPE_LIMIT
         rows = self._rows()
         for label in ("a*(lambda12*lambda23)^b + c", "a*lambda12^b + c"):
             with self.subTest(label=label):

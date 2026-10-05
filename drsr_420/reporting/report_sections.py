@@ -2,7 +2,7 @@
 
 角色归属
 --------
-物理解释（:mod:`drsr_420.analysis.explain`）的**报告装配子域**。
+物理解释（:mod:`drsr_420.reporting.explain`）的**报告装配子域**。
 
 分工的由来
 ----------
@@ -23,14 +23,14 @@ import math
 import os
 import re
 
-from drsr_420.analysis.expr_parse import audit_parse_failures
-from drsr_420.analysis.holdout import render_holdout_section, strip_holdout_section
-from drsr_420.analysis.loo import render_loo_section, strip_loo_section
-from drsr_420.analysis.md_sections import strip_section, upsert_section
-from drsr_420.analysis.progress_curve import render_progress_section
-from drsr_420.analysis.references import (REFERENCE_HEADING, render_reference_section,
+from drsr_420.equations.parse import audit_parse_failures
+from drsr_420.reporting.generalization.holdout import render_holdout_section, strip_holdout_section
+from drsr_420.reporting.generalization.loo import render_loo_section, strip_loo_section
+from drsr_420.reporting.md_sections import strip_section, upsert_section
+from drsr_420.reporting.progress_curve import render_progress_section
+from drsr_420.reporting.references import (REFERENCE_HEADING, render_reference_section,
                                           strip_reference_section as _strip_reference_section)
-from drsr_420.core.range_check import RANGE_PROBE_REL
+from drsr_420.equations.pathology import RANGE_PROBE_REL
 
 #: 收尾报告的产物文件名。用户明确要求把原来的 ``explain.md`` 统一改名为
 #: ``report.md``（"最终报告文件命名准确无误"），所有落盘/引用都走这个常量。
@@ -323,8 +323,8 @@ def upsert_parse_audit_section(text: str, section: str) -> str:
     幂等：先整节剥掉旧小节再按固定锚点插回，最后把连续空行收敛成一行——重复回填得到
     逐字节相同的结果（同一个报告不会出现两节，也不会每次多一个空行）。锚点缺失
     （正文没有参考文献小节）时追加到末尾，保证小节不丢。与
-    :func:`drsr_420.analysis.progress_curve.upsert_progress_section` 同形
-    （两者共用 :func:`drsr_420.analysis.md_sections.upsert_section`）。
+    :func:`drsr_420.reporting.progress_curve.upsert_progress_section` 同形
+    （两者共用 :func:`drsr_420.reporting.md_sections.upsert_section`）。
     """
     return upsert_section(text, section, heading=PARSE_AUDIT_HEADING,
                           anchor=REFERENCE_HEADING)

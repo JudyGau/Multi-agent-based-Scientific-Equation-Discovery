@@ -39,26 +39,26 @@ import re
 import numpy as np
 import sympy as sp
 
-from drsr_420.analysis.data_io import load_training_data, resolve_columns
-from drsr_420.analysis.expr_numeric import compile_expr
-from drsr_420.analysis.expr_parse import expr_substitution
-from drsr_420.analysis.expr_viz import render_expr_trees, safe_preview
-from drsr_420.analysis.explain import explain_best_sample
-from drsr_420.analysis.holdout import (LOO_MAX_TRAIN, evaluate_holdout, evaluate_loo,
+from drsr_420.reporting.data_io import load_training_data, resolve_columns
+from drsr_420.equations.numeric import compile_expr
+from drsr_420.equations.parse import expr_substitution
+from drsr_420.reporting.viz import render_expr_trees, safe_preview
+from drsr_420.reporting.explain import explain_best_sample
+from drsr_420.reporting.generalization.holdout import (LOO_MAX_TRAIN, evaluate_holdout, evaluate_loo,
                                        format_holdout_summary, format_loo_summary,
                                        load_ood_data, load_test_data,
                                        resolve_ood_csv, resolve_test_csv)
-from drsr_420.analysis.prune_eval import (classify_pruning, compare_fits,
+from drsr_420.reporting.pruning.verdict import (classify_pruning, compare_fits,
                                             format_fit_summary)
-from drsr_420.analysis.sensitivity_prune import SensitivityPruner
-from drsr_420.core.sample_header import parse_symbols
-from drsr_420.core.sample_records import load_sample_records, top_sample
+from drsr_420.reporting.pruning.sensitivity import SensitivityPruner
+from drsr_420.equations.header import parse_symbols
+from drsr_420.equations.records import load_sample_records, top_sample
 
 
 def find_best_sample(results_root: str):
     """扫描 samples 目录，返回分数最高的样本 (score, path, func, params)；无则 None。
 
-    **不带病理门禁**：只要"谁是最高分"就去 :func:`drsr_420.core.sample_records.top_sample`；
+    **不带病理门禁**：只要"谁是最高分"就去 :func:`drsr_420.equations.records.top_sample`；
     发布解的选择见 :func:`select_published_sample`（优先无病理）。两者语义不同。
     """
     return top_sample(results_root)
@@ -263,7 +263,7 @@ def _range_check_published(prepared: _PreparedPruning, published, func, params):
     """
     dependent, sym_names, data = prepared.dependent, prepared.sym_names, prepared.data
     try:
-        from drsr_420.core.range_check import dynamic_range_check
+        from drsr_420.equations.pathology import dynamic_range_check
         _dep_col, ind_cols, _note = resolve_columns(data, dependent, sym_names)
         _X = np.column_stack([np.asarray(data[c], dtype=float) for c in ind_cols])
         _y = np.asarray(data[_dep_col], dtype=float)
@@ -321,7 +321,7 @@ def _plot_curves_and_progress(results_root, prepared: _PreparedPruning, expr, pu
     """
     # 剪枝完成 → 剪枝前后表达式曲线 + 数据点（每个自变量一幅，人工检查贴合度）。
     try:
-        from drsr_420.analysis.expr_curves import plot_data_curves
+        from drsr_420.reporting.curves import plot_data_curves
         plot_data_curves(results_root, prepared.dependent, prepared.sym_names, expr,
                          published if actually_pruned else None,
                          test_csv=test_csv)
@@ -332,7 +332,7 @@ def _plot_curves_and_progress(results_root, prepared: _PreparedPruning, expr, pu
     # best_history/*.json（不解析 run.out——.bat/.sh 并不重定向 stdout，run.out 不是
     # 每条启动路径都有的产物）；没有记录时返回 None，报告侧跳过该小节。
     try:
-        from drsr_420.analysis.progress_curve import plot_progress_curve
+        from drsr_420.reporting.progress_curve import plot_progress_curve
         return plot_progress_curve(results_root)
     except Exception as e:
         print(f"[WARN] 训练进度图生成失败（跳过）: {e}")
@@ -575,7 +575,7 @@ def _latest_run_dir(root: str = "experiments") -> str | None:
 
 if __name__ == "__main__":
     # 手工排查用：
-    #   python -m drsr_420.analysis.find_best_eq [实验目录]
+    #   python -m drsr_420.reporting.find_best_eq [实验目录]
     #       [--test_csv <路径>|none] [--test_ood_csv <路径>|none]
     # 不给路径时取 experiments/ 下最近修改的一次 run（见 _latest_run_dir）。
     import sys

@@ -36,10 +36,10 @@ PARAMS_BOUNDS = (-10000.0, 10000.0)
 SAMPLE_SIZE = 100                   # 残差采样点数上限
 
 # ── 拟合后动态范围体检（角点钉扎/下溢尖峰类病理解治理，20260921-161549）──
-# 数值内核在 core 层（drsr_420.core.range_check）：analysis 收尾也要用同一判据，
+# 数值内核在 core 层（drsr_420.equations.pathology）：analysis 收尾也要用同一判据，
 # 而分层规则不允许 analysis 依赖 evaluation，故下沉到两层都合法的 core。
 # 这里再导出保持"评分器即体检宿主"的可读性。
-from drsr_420.core.range_check import (  # noqa: E402
+from drsr_420.equations.pathology import (  # noqa: E402
     RANGE_COEF_RATIO_LIMIT,
     RANGE_GRID_PER_AXIS,
     RANGE_GRID_TOTAL,
@@ -65,7 +65,7 @@ from drsr_420.core.range_check import (  # noqa: E402
 #: 876 条 "overflow encountered in power/square"、"invalid value encountered in cast"
 #: （trf.py:183/195/238/263、common.py:112/115/141/154/161/285/316/320/398），
 #: 而这些行没有任何地方消费：
-#:   * 评估跑在常驻 worker 子进程里（evaluation/sandbox.py），子进程的 stderr
+#:   * 评估跑在常驻 worker 子进程里（execution/sandbox.py），子进程的 stderr
 #:     是继承来的控制台 fd，不经过主进程的 run.err tee —— 告警只在 IDE 控制台
 #:     一闪而过，实验产物里查不到；
 #:   * 真正该被记录的信息（哪个样本、哪组参数溢出）随之丢失，噪声却雪崩；

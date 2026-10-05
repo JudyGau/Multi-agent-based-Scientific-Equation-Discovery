@@ -20,14 +20,14 @@ from drsr_420.core import prompt_config as pc
 
 from drsr_420.agents.base import THREAD_PER_SAMPLER, AgentSpec, BaseAgent
 from drsr_420.agents.messages import ResidualInsight
-from drsr_420.evaluation.architecture_facts import (
+from drsr_420.evidence.terrain import (
     features_from_equation,
     load_terrain_inputs,
     render_terrain,
     sampling_terrain,
     with_score_breakdown,
 )
-from drsr_420.evaluation.data_facts import load_facts, render_facts
+from drsr_420.evidence.facts import load_facts, render_facts
 
 
 class ResidualAnalyzerAgent(BaseAgent):
@@ -69,7 +69,7 @@ class ResidualAnalyzerAgent(BaseAgent):
     def _load_terrain_block(self, sample) -> str:
         """读取"该方程所属架构在历史采样中的地形"并渲染（缺失/不足时不注入）。
 
-        与采样通道共用同一份机器事实（见 :mod:`drsr_420.evaluation.architecture_facts`），
+        与采样通道共用同一份机器事实（见 :mod:`drsr_420.evidence.terrain`），
         但 ``target`` 是**当前被分析的方程**：残差通道要说清"这个架构是不是已经触底、
         它最小的未试删项邻域是什么"，否则改进建议只会停留在局部改动上（实测该实验
         52/87 个样本是同一二阶响应面的重新参数化，删一个平方项的形式从未被提出）。

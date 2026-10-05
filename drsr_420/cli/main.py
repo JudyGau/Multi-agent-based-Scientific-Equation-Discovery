@@ -33,8 +33,8 @@ from drsr_420.cli.llm_setup import (
 )
 from drsr_420.core import config as config_lib
 from drsr_420.core import prompt_config as pc
-from drsr_420.evaluation.problems import MAX_NPARAMS, N_STARTS, PARAMS_BOUNDS
-from drsr_420.evaluation.sandbox import LocalSandbox
+from drsr_420.execution.problems import MAX_NPARAMS, N_STARTS, PARAMS_BOUNDS
+from drsr_420.execution.sandbox import LocalSandbox
 from drsr_420.runtime import pipeline
 
 DEFAULT_BACKGROUND = (
@@ -268,7 +268,7 @@ def setup_output_tee(results_root: str):
     # sys.stderr 替换（只继承到控制台 fd）。把实验目录从环境变量传下去，worker
     # 侧才能用 sandbox.attach_worker_stderr 把自己的 stderr 也旁路进 run.err
     # ——否则评估里的数值告警只闪在 IDE 控制台，实验产物里查无此物。
-    from drsr_420.evaluation import sandbox as _sandbox
+    from drsr_420.execution import sandbox as _sandbox
 
     os.environ[_sandbox.WORKER_LOG_ENV] = os.path.abspath(results_root)
     return out_fp, err_fp

@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     # 的运行时依赖，也就不违反分层规则（见 tests/test_architecture.py）。
     # 注解类型一律用规范路径（历史实现曾从兼容层 drsr_420.sampler / drsr_420.evaluator 取）。
     from drsr_420.agents.sampler_agent import SamplingBackend
-    from drsr_420.evaluation.sandbox import Sandbox
+    from drsr_420.execution.sandbox import Sandbox
 
 
 @dataclasses.dataclass(frozen=True)

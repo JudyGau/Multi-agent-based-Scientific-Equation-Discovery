@@ -2,7 +2,7 @@
 
 角色：``EvaluatorAgent`` 是"评估者"——它只负责**编排**：编译骨架、把任务交给
 沙箱、按结果注册进经验缓冲或经 Profiler 记录失败。真正的执行机制（常驻进程池、
-超时重建、拟合调用、程序编译）在 :mod:`drsr_420.evaluation.sandbox`。
+超时重建、拟合调用、程序编译）在 :mod:`drsr_420.execution.sandbox`。
 
 协作：
 - 上游：CoordinatorAgent（``analyze(EvaluationRequest)``）；pipeline 亦调用一次以评估初始模板
@@ -24,9 +24,9 @@ from drsr_420.agents.messages import EvaluationOutcome, EvaluationRequest
 from drsr_420.core import buffer
 from drsr_420.core import code_manipulation
 
-# 执行机制从 evaluation/sandbox.py 引入；同时构成对该模块全部名字的 re-export，
+# 执行机制从 execution/sandbox.py 引入；同时构成对该模块全部名字的 re-export，
 # 便于"只关心评估流程"的调用方从角色模块直接取到沙箱实现（对象同一，不是副本）。
-from drsr_420.evaluation.sandbox import (  # noqa: F401
+from drsr_420.execution.sandbox import (  # noqa: F401
     LocalSandbox,
     Sandbox,
     _FunctionLineVisitor,

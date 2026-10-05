@@ -2,7 +2,7 @@
 
 角色
 ----
-评测层的**确定性诊断计算**（与 :mod:`drsr_420.evaluation.data_facts` 同类），但对象
+评测层的**确定性诊断计算**（与 :mod:`drsr_420.evidence.facts` 同类），但对象
 不是数据集而是**本实验已经评估过的方程**。它回答三个只有代码能回答的问题：
 
 * 当前最好分由哪个架构取得、此后多少个样本没再改进；
@@ -84,7 +84,7 @@
 ⚠️ 闭环约束**不得**写成"禁止该维引入 |指数|>k 的幂律"：本轮达到干净地板 NMSE 2.65e-3
 的形式 ``a*(λ23+p·λ12)^b+d·λ12^e+f`` 本身带参数指数，一刀切会把最优干净形式一起禁掉
 （且本仓已记录该手段不可泛化）。约束只能落在**可验证的量**上：输出跨度 / 局部斜率 /
-系数比 / 实测 NMSE——即本模块与 :mod:`drsr_420.core.range_check` 给出的东西。
+系数比 / 实测 NMSE——即本模块与 :mod:`drsr_420.equations.pathology` 给出的东西。
 
 结论必须由代码给出
 ------------------
@@ -119,8 +119,8 @@ NMSE 精确相同；但 ``log`` 记号不是同一空间，且 ``higher`` / ``po
 
 分层
 ----
-依赖 core（:mod:`~drsr_420.core.range_check`、:mod:`~drsr_420.core.sample_records`）与
-同层的 :mod:`~drsr_420.evaluation.problems` / :mod:`~drsr_420.evaluation.data_facts`
+依赖 core（:mod:`~drsr_420.equations.pathology`、:mod:`~drsr_420.equations.records`）与
+同层的 :mod:`~drsr_420.execution.problems` / :mod:`~drsr_420.evidence.facts`
 （拟合口径必须与打分完全一致，另起一套就不可比）。供 agents 层的采样提示注入与残差
 分析提示共用。
 """
@@ -131,18 +131,18 @@ from typing import Sequence
 
 import numpy as np
 
-from drsr_420.core.range_check import dynamic_range_check
-from drsr_420.core.sample_records import load_sample_records, score_breakdown
-from drsr_420.evaluation.data_facts import BASELINE_SEED, load_facts
-from drsr_420.evaluation.problems import evaluate
-from drsr_420.evaluation.equation_text import (   # noqa: F401  （转发：对外契约不变）
+from drsr_420.equations.pathology import dynamic_range_check
+from drsr_420.equations.records import load_sample_records, score_breakdown
+from drsr_420.evidence.facts import BASELINE_SEED, load_facts
+from drsr_420.execution.problems import evaluate
+from drsr_420.equations.text_algebra import (   # noqa: F401  （转发：对外契约不变）
     architecture_fingerprint,
     atom_meanings,
     features_from_equation,
     representative_from_text,
     term_texts,
 )
-from drsr_420.evaluation.skeleton_gen import (   # noqa: F401
+from drsr_420.evidence.neighborhood import (   # noqa: F401
     FIT_SEED,
     measure_term_set,
     template_from_terms,

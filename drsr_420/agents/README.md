@@ -165,7 +165,7 @@ responses, thinking = tool_caller.complete(content, repeat=4)
 ## 4. EvaluatorAgent —— 评估者
 
 **文件**：[evaluator_agent.py](./evaluator_agent.py)
-**执行机制**：[evaluation/sandbox.py](../evaluation/sandbox.py)、[evaluation/problems.py](../evaluation/problems.py)
+**执行机制**：[execution/sandbox.py](../execution/sandbox.py)、[execution/problems.py](../execution/problems.py)
 
 **职责**
 
@@ -174,7 +174,7 @@ responses, thinking = tool_caller.complete(content, repeat=4)
 - 产出 `EvaluationOutcome(score, error, residual)` 供 CoordinatorAgent 分类
   Good/Bad/None；失败时 `score=None`。
 - 成功样本注册进 `ExperienceBuffer`（`register_program`），失败样本经 Profiler 记录。
-- 执行机制（进程池、超时重建、numba 降级）在 `evaluation/sandbox.py`，
+- 执行机制（进程池、超时重建、numba 降级）在 `execution/sandbox.py`，
   本文件只保留角色逻辑。
 
 **关键接口**
@@ -192,7 +192,7 @@ evaluator.close()                                              # 释放沙箱 wo
 
 ```python
 from drsr_420.agents import EvaluatorAgent, EvaluationRequest
-from drsr_420.evaluation.sandbox import LocalSandbox
+from drsr_420.execution.sandbox import LocalSandbox
 
 evaluator = EvaluatorAgent(
     database=database, template=template, function_to_evolve=function_to_evolve,

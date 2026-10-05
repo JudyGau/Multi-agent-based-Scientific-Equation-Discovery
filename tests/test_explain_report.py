@@ -20,7 +20,7 @@ import unittest
 from unittest import mock
 
 import sympy as sp
-from drsr_420.analysis.report_sections import ReportData
+from drsr_420.reporting.report_sections import ReportData
 
 _FUNC = ("Variables:\n"
          "- Independents: x1, x2\n"
@@ -79,7 +79,7 @@ class PruningPromptTest(unittest.TestCase):
     """解释提示词必须覆盖剪枝后的表达式与剪枝过程。"""
 
     def _prompt(self, pruning=_PRUNING):
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         with mock.patch.object(explain_mod, "retrieve_rag", return_value=[]):
             return explain_mod.build_explain_content(_FUNC, _EXP, pruning=pruning)
@@ -129,7 +129,7 @@ class PruningPromptTest(unittest.TestCase):
         self.assertIn("不得编造文献", prompt)
 
     def test_prompt_contains_numbered_reference_list(self):
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         with mock.patch.object(explain_mod, "retrieve_rag", return_value=_RAG_REFS):
             prompt = explain_mod.build_explain_content(_FUNC, _EXP, pruning=_PRUNING)
@@ -137,7 +137,7 @@ class PruningPromptTest(unittest.TestCase):
         self.assertIn("[2] Particle shape effect", prompt)
 
     def test_rag_context_is_numbered_like_the_reference_list(self):
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         with mock.patch.object(explain_mod, "retrieve_rag", return_value=_RAG_REFS):
             prompt = explain_mod.build_explain_content(_FUNC, _EXP, pruning=_PRUNING)
@@ -149,7 +149,7 @@ class ReferenceSectionTest(unittest.TestCase):
     """文末参考文献清单：机器生成、去重、替换 LLM 自编清单。"""
 
     def test_render_lists_numbered_entries_with_doi(self):
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         section = explain_mod.render_reference_section(_RAG_REFS)
         self.assertIn("## 参考文献", section)
@@ -158,7 +158,7 @@ class ReferenceSectionTest(unittest.TestCase):
         self.assertIn("知识库来源: mrf1.pdf", section)
 
     def test_render_dedupes_repeated_chunks_of_one_paper(self):
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         chunks = [{"title": "T", "doi": "10.1/a", "text": f"片段{i}", "source_file": "a.pdf"}
                   for i in range(3)]
@@ -167,7 +167,7 @@ class ReferenceSectionTest(unittest.TestCase):
         self.assertNotIn("[2]", section)
 
     def test_render_with_empty_refs_states_it_explicitly(self):
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         section = explain_mod.render_reference_section([])
         self.assertIn("## 参考文献", section)
@@ -175,7 +175,7 @@ class ReferenceSectionTest(unittest.TestCase):
 
     def test_entry_falls_back_to_source_file_when_title_is_a_guessed_doi(self):
         """知识库的 title 有时就是"从文件名回推的 DOI"，此时改用 PDF 名更好追溯。"""
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         entry = explain_mod.format_reference_entry({
             "title": "10.216561000/-0887.380021", "doi": "10.216561000/-0887.380021",
@@ -184,7 +184,7 @@ class ReferenceSectionTest(unittest.TestCase):
         self.assertIn("DOI: 10.216561000/-0887.380021", entry)
 
     def test_merge_dedupes_by_doi_then_title(self):
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         dup_doi = {"title": "另一个题名", "doi": "10.1000/MRF.1"}
         dup_title = {"title": "  particle SHAPE effect ", "doi": ""}
@@ -193,7 +193,7 @@ class ReferenceSectionTest(unittest.TestCase):
 
     def test_merge_combines_chunks_of_the_same_paper(self):
         """同一 PDF 的多个片段要合并（正文拼接、字段互补），编号才对得上清单。"""
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         chunks = [
             {"title": "T", "doi": "", "text": "第一段", "source_file": "a.pdf"},
@@ -206,7 +206,7 @@ class ReferenceSectionTest(unittest.TestCase):
         self.assertIn("第二段", merged[0]["text"])
 
     def test_prompt_numbering_matches_the_reference_list(self):
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         chunks = [
             {"title": "P1", "doi": "10.1/a", "text": "片段甲", "source_file": "a.pdf"},
@@ -222,7 +222,7 @@ class ReferenceSectionTest(unittest.TestCase):
         self.assertNotIn("[3] P2", prompt)
 
     def test_strip_replaces_model_written_reference_section(self):
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         answer = ("正文提到参考文献中的结论一致。\n\n"
                   "## 一、材料体系\n磁流变液。\n\n"
@@ -233,7 +233,7 @@ class ReferenceSectionTest(unittest.TestCase):
         self.assertNotIn("模型自己编的文献", body)
 
     def test_collect_tool_refs_parses_search_paper_and_kb(self):
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         refs: list = []
         explain_mod._collect_tool_refs(refs, "search_paper", {}, json.dumps([
@@ -248,7 +248,7 @@ class ReferenceSectionTest(unittest.TestCase):
         self.assertEqual(len(refs), 3)
 
     def test_explain_best_sample_appends_authoritative_references(self):
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         def fake_re_act(client, content, tool_refs=None):
             if tool_refs is not None:
@@ -274,7 +274,7 @@ class ReferenceSectionTest(unittest.TestCase):
         self.assertIn("[3] 工具检索到的文献", written, "解释过程中工具检索到的文献也要列出")
 
     def test_explain_best_sample_without_any_reference_writes_note(self):
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -293,7 +293,7 @@ class ReferenceSectionTest(unittest.TestCase):
 
     def test_llm_failure_does_not_overwrite_existing_explain_md(self):
         """LLM 调用失败时保留既有 report.md：覆盖成"只剩参考文献"的残件会掩盖故障。"""
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -318,7 +318,7 @@ class PruneReportTest(unittest.TestCase):
     """剪枝量化评估：定位训练数据 + 剪枝前后拟合对比。"""
 
     def test_compare_fits_reports_identical_for_same_expression(self):
-        from drsr_420.analysis import prune_eval as pr
+        from drsr_420.reporting.pruning import verdict as pr
 
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -332,7 +332,7 @@ class PruneReportTest(unittest.TestCase):
             self.assertIn("逐点完全相同", pr.format_fit_summary(fit))
 
     def test_compare_fits_quantifies_change_after_pruning(self):
-        from drsr_420.analysis import prune_eval as pr
+        from drsr_420.reporting.pruning import verdict as pr
 
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -346,7 +346,7 @@ class PruneReportTest(unittest.TestCase):
             self.assertIn("相对变化", pr.format_fit_summary(fit))
 
     def test_load_training_data_missing_snapshot_returns_none(self):
-        from drsr_420.analysis import prune_eval as pr
+        from drsr_420.reporting.pruning import verdict as pr
 
         with tempfile.TemporaryDirectory() as tmp, mock.patch("builtins.print"):
             self.assertIsNone(pr.load_training_data(tmp))
@@ -356,7 +356,7 @@ class FindBestEqOrderTest(unittest.TestCase):
     """顺序契约：先剪枝、再解释，且剪枝摘要必须传到解释阶段。"""
 
     def test_prune_runs_before_explain_and_summary_is_passed(self):
-        from drsr_420.analysis import find_best_eq as fbe
+        from drsr_420.reporting import find_best_eq as fbe
 
         calls: list = []
         pruning = {"nodes_pruned": 1, "removed": [{"kind": "term_of_Add", "term": "1.0"}]}
@@ -375,7 +375,7 @@ class FindBestEqOrderTest(unittest.TestCase):
         self.assertEqual(calls[1], ("explain", pruning))
 
     def test_prune_and_visualize_returns_summary_dict(self):
-        from drsr_420.analysis.find_best_eq import prune_and_visualize
+        from drsr_420.reporting.find_best_eq import prune_and_visualize
 
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -425,7 +425,7 @@ class ExplainReActToolCapTest(unittest.TestCase):
             }
 
     def test_cap_breaks_the_tool_loop(self):
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         with mock.patch.object(explain_mod, "mcp_call_tool", return_value="R") as call:
             out = explain_mod.explain_re_act(self._LoopingClient(), "CONTENT",
@@ -451,7 +451,7 @@ class ParseAuditSectionTest(unittest.TestCase):
     }
 
     def test_section_splits_two_failure_classes(self):
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         section = explain_mod.render_parse_audit_section(self._AUDIT)
         self.assertIn(explain_mod.PARSE_AUDIT_HEADING, section)
@@ -462,7 +462,7 @@ class ParseAuditSectionTest(unittest.TestCase):
         self.assertIn("未定义符号", section)               # 带上 WARN
 
     def test_zero_failure_is_self_explaining(self):
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         section = explain_mod.render_parse_audit_section(dict(
             self._AUDIT, n_ok=3, n_failed=0, n_truncated=0, n_unsupported=0,
@@ -470,7 +470,7 @@ class ParseAuditSectionTest(unittest.TestCase):
         self.assertIn("全部样本均可解析", section)
 
     def test_no_samples_is_self_explaining(self):
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         section = explain_mod.render_parse_audit_section(dict(
             self._AUDIT, n_total=0, n_ok=0, n_failed=0, n_truncated=0,
@@ -478,12 +478,12 @@ class ParseAuditSectionTest(unittest.TestCase):
         self.assertIn("没有可自检的样本", section)
 
     def test_none_means_no_section(self):
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         self.assertEqual(explain_mod.render_parse_audit_section(None), "")
 
     def test_assemble_places_audit_before_references(self):
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         text = explain_mod.assemble_explain(
             "正文", ReportData(refs=[{"title": "T", "doi": "10.1/x"}],
@@ -493,7 +493,7 @@ class ParseAuditSectionTest(unittest.TestCase):
                         text.index(explain_mod.REFERENCE_HEADING))
 
     def test_assemble_strips_llm_authored_audit_section(self):
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         body = "正文\n\n## 表达式解析自检\nLLM 编造的数字 999\n\n## 其他\n内容"
         text = explain_mod.assemble_explain(body, ReportData(parse_audit=self._AUDIT))
@@ -501,7 +501,7 @@ class ParseAuditSectionTest(unittest.TestCase):
         self.assertNotIn("999", text)
 
     def test_upsert_is_idempotent(self):
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         base = "正文\n\n## 参考文献\n- 条目\n"
         section = explain_mod.render_parse_audit_section(self._AUDIT)
@@ -513,7 +513,7 @@ class ParseAuditSectionTest(unittest.TestCase):
                         once.index(explain_mod.REFERENCE_HEADING))
 
     def test_backfill_updates_existing_report(self):
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         func = ("Variables:\n- Independents: x1\n- Dependent: y\n"
                 "def equation(x1, params):\n    return params[0]*x1\n")

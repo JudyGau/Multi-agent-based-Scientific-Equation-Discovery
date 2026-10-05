@@ -45,7 +45,7 @@ def _make_experiment(root: pathlib.Path) -> None:
 class PlotDataCurvesTest(unittest.TestCase):
     def test_writes_one_png_per_independent(self):
         import matplotlib
-        from drsr_420.analysis.expr_curves import plot_data_curves
+        from drsr_420.reporting.curves import plot_data_curves
         import sympy as sp
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -62,7 +62,7 @@ class PlotDataCurvesTest(unittest.TestCase):
             del matplotlib
 
     def test_missing_snapshot_skips_quietly(self):
-        from drsr_420.analysis.expr_curves import plot_data_curves
+        from drsr_420.reporting.curves import plot_data_curves
         import sympy as sp
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -73,7 +73,7 @@ class PlotDataCurvesTest(unittest.TestCase):
 class PruneWiringTest(unittest.TestCase):
     def test_prune_and_visualize_also_writes_curves(self):
         """回归：剪枝完成后必须自动产出曲线图（此前只能手动补跑）。"""
-        from drsr_420.analysis.find_best_eq import prune_and_visualize
+        from drsr_420.reporting.find_best_eq import prune_and_visualize
 
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

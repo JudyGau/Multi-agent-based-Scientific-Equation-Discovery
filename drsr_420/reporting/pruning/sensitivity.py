@@ -24,9 +24,9 @@ sensitivity_prune.py
 
 模块分工（本文件只负责"遍历与决策"）
 ------------------------------------
-* 求值与敏感度度量 → :mod:`drsr_420.analysis.expr_evaluation`（``ExpressionEvaluator``）；
-* 剪枝记录与统计   → :mod:`drsr_420.analysis.prune_stats`（``PruneStats``）；
-* 可视化演示       → ``python -m drsr_420.analysis.prune_demo``。
+* 求值与敏感度度量 → :mod:`drsr_420.equations.evaluator`（``ExpressionEvaluator``）；
+* 剪枝记录与统计   → :mod:`drsr_420.reporting.pruning.stats`（``PruneStats``）；
+* 可视化演示       → ``python -m drsr_420.reporting.pruning.demo``。
 """
 
 from __future__ import annotations
@@ -37,8 +37,8 @@ from typing import List, Optional, Tuple
 import numpy as np
 import sympy as sp
 
-from drsr_420.analysis.expr_evaluation import ExpressionEvaluator
-from drsr_420.analysis.prune_stats import PruneRecord, PruneStats
+from drsr_420.equations.evaluator import ExpressionEvaluator
+from drsr_420.reporting.pruning.stats import PruneRecord, PruneStats
 
 __all__ = ["SensitivityPruner", "sensitivity_prune", "PruneRecord", "PruneStats"]
 
@@ -56,7 +56,7 @@ def _rewrite_abs_of_pow(expr: sp.Expr) -> sp.Expr:
     随后 ``simplify`` 把分母 ``Abs(Ef)**0.332317`` 翻成 ``Abs(Ef**0.332317)``，
     样本内 MSE 立即从 ``0.0521732`` 变成 ``nan``（数据中 ``Ef`` 取负）。
 
-    与 :mod:`drsr_420.analysis.expr_parse` 的 ``np.clip`` 改写同属"符号式正确、
+    与 :mod:`drsr_420.equations.parse` 的 ``np.clip`` 改写同属"符号式正确、
     数值式有害"的一类，故在剪枝出口做一次归一，令发布式在两种求值器下都有限。
     """
     def _query(node) -> bool:
@@ -408,6 +408,6 @@ def sensitivity_prune(
 
 
 if __name__ == "__main__":
-    from drsr_420.analysis.prune_demo import main
+    from drsr_420.reporting.pruning.demo import main
 
     main()

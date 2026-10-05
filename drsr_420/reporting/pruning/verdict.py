@@ -5,7 +5,7 @@
 本模块原名 ``prune_report``。那个名字在**结构上**是错的：它当时同时装着"读 CSV /
 对齐列名 / 求值"等全层共享的数据工具，于是 ``holdout``、``expr_curves`` 只能 import
 它的私有名，一个名字叫"剪枝报告"的模块成了事实上的公共工具库。数据工具已拆到
-:mod:`drsr_420.analysis.data_io` 与 :mod:`drsr_420.analysis.expr_numeric`，本模块现在
+:mod:`drsr_420.reporting.data_io` 与 :mod:`drsr_420.equations.numeric`，本模块现在
 确实只做"对一次剪枝做量化评估"，故改名为 ``prune_eval``——**名实一致**，而不是靠
 docstring 解释一个不准确的名字（那正是上次改名留下的债）。
 
@@ -36,14 +36,14 @@ from __future__ import annotations
 import numpy as np
 import sympy as sp
 
-from drsr_420.analysis.data_io import (
+from drsr_420.reporting.data_io import (
     infer_data_csv,
     load_training_data,
     resolve_columns,
     resolve_csv,
     warn_once,
 )
-from drsr_420.analysis.expr_numeric import lambdify_eval
+from drsr_420.equations.numeric import lambdify_eval
 
 # ── 兼容 re-export（对象同一）────────────────────────────────────
 # 这些名字原先定义在本模块，现位于 data_io / expr_numeric；保留别名供既有调用方
@@ -63,7 +63,7 @@ VERIFY_SEED = 20260919
 def _evaluate(expr, sym_names: list[str], args: list[np.ndarray]) -> np.ndarray | None:
     """把 SymPy 表达式 lambdify 后在数据点上求值；失败返回 None（保留异常正文）。
 
-    求值样板（errstate 静音 + 标量广播）在 :mod:`drsr_420.analysis.expr_numeric`，
+    求值样板（errstate 静音 + 标量广播）在 :mod:`drsr_420.equations.numeric`，
     这里只负责把失败翻译成一句带原因的告警。
     """
     values, error = lambdify_eval(expr, sym_names, args)

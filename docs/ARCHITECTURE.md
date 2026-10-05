@@ -23,7 +23,7 @@ python -m drsr_420.cli.main --problem_name X --data_csv data/X/train.csv
        │    ├─ core.buffer.ExperienceBuffer        共享记忆（含断点续跑恢复）
        │    ├─ DataAnalyzerAgent.analyze()          初次数据分析 + RAG 文献注入
        │    └─ 以 Sampler-i 线程并行启动 CoordinatorAgent × N
-       └─ analysis.find_best_eq()                   收尾：参数拟合 + 物理解释
+       └─ reporting.find_best_eq()                  收尾：参数拟合 + 物理解释
 ```
 
 一轮采样（每个 Sampler 线程独立跑）：
@@ -48,12 +48,14 @@ CoordinatorAgent.run()  while 未达采样上限/时长上限:
 
 | 层 | 位置 | 职责 |
 |---|---|---|
-| `core` | `drsr_420/core/` | 领域无关基础设施：经验记忆（多岛 + 聚类抽样）、AST 与程序拼装、配置、线程前缀输出、样本/进度记录、提示词模板、全局 token 统计 |
+| `core` | `drsr_420/core/` | 领域无关基础设施：经验记忆（多岛 + 聚类抽样）、AST 与程序拼装、配置、线程前缀输出、进度/样本落盘（Profiler）、提示词模板、全局 token 统计 |
+| `equations` | `drsr_420/equations/` | **公式领域模型**（通用语言）：样本头部（`header`）与样本记录（`records`）读取、**数值病理内核**（`pathology`）、文本代数（`text_algebra`）、表达式解析/数值化/求值（`parse` / `numeric` / `evaluator`） |
 | `llm` | `drsr_420/llm/` | LLM 接入：客户端（重试/流式/记账，**所有提供商共用一个类**）、**请求体方言适配**（`adapt.py`）、**提供商规格表**（`factory._PROVIDER_SPECS`：端点 / 密钥变量名 / 默认方言）、客户端工厂与档案定位、**角色 → 档案 解析**（`roles.py` / `role_clients.py` / `role_diagnostics.py`）、工具调用 schema |
-| `evaluation` | `drsr_420/evaluation/` | 评估执行**机制**：多起点拟合打分、常驻子进程沙箱（超时重建）、可选 numba 加速 |
+| `execution` | `drsr_420/execution/` | 评估执行**机制**：多起点拟合打分、常驻子进程沙箱（超时重建）、可选 numba 加速 |
+| `evidence` | `drsr_420/evidence/` | ★ **可验证证据层**：把"可判定的量"从 LLM 收回到代码——数据事实表（统计 / 极值 / 可辨识性 / 骨架基线，`facts`）、历史采样架构地形与分数分解（`terrain`）、未试邻域的实测 NMSE（`neighborhood`） |
 | `knowledge` | `drsr_420/knowledge/` | 外部知识：Chroma RAG 知识库与入库 CLI、MCP 工具（文献检索/阅读）与其 stdio 服务器 |
+| `reporting` | `drsr_420/reporting/` | 收尾分析与报告装配：最优方程的剪枝/解释/可视化（`find_best_eq` 只做编排）、`report.md` 各机器小节、参考文献、泛化口径（`generalization/`：held-out + LOO）与剪枝（`pruning/`） |
 | `agents` | `drsr_420/agents/` | ★ **多 Agent 角色层**：7 个 Agent + 契约（`base.py`）+ 消息（`messages.py`）+ 层内部件（`skeleton.py` / `prompt_injection.py`） |
-| `analysis` | `drsr_420/analysis/` | 收尾分析：最优方程的解析/解释/剪枝/可视化（`find_best_eq` 只做编排） |
 | `runtime` | `drsr_420/runtime/` | 编排：实验主流程（初始化 → 并行采样 → 收尾） |
 | `cli` | `drsr_420/cli/` | 命令行入口：参数解析、输出归档、数据集加载、spec 渲染、产物快照 |
 
@@ -66,28 +68,36 @@ CoordinatorAgent.run()  while 未达采样上限/时长上限:
 
 | 层 | 文件 | 行数 | 实际依赖 |
 |---|---|---|---|
-| `core/` | 8 | 1857 | —（最底层） |
-| `llm/` | 11 | 2331 | `core` |
-| `evaluation/` | 4 | 615 | `core` |
-| `knowledge/` | 9 | 1435 | `llm` |
-| `agents/` | 13 | 2656 | `core`, `evaluation`, `knowledge`, `llm` |
-| `analysis/` | 9 | 1304 | `core`, `knowledge`, `llm` |
-| `runtime/` | 2 | 299 | `agents`, `analysis`, `core`, `knowledge` |
-| `cli/` | 3 | 555 | `agents`, `core`, `evaluation`, `llm`, `runtime` |
+| `core/` | 8 | 2262 | —（最底层） |
+| `equations/` | 8 | 2650 | `core` |
+| `llm/` | 10 | 2355 | `core` |
+| `execution/` | 4 | 929 | `core`, `equations` |
+| `evidence/` | 4 | 1660 | `core`, `equations`, `execution` |
+| `knowledge/` | 12 | 2149 | `llm` |
+| `reporting/` | 18 | 4831 | `core`, `equations`, `llm`, `knowledge` |
+| `agents/` | 13 | 3229 | `core`, `equations`, `execution`, `evidence`, `knowledge`, `llm` |
+| `runtime/` | 2 | 377 | `agents`, `reporting`, `core`, `knowledge` |
+| `cli/` | 3 | 699 | `agents`, `core`, `execution`, `llm`, `runtime` |
 
-包内共 60 个模块、11,073 行（含顶层 `__init__.py` 的文档串；各层实现合计 11,052 行）。
-全局最长文件 `llm/client.py` 487 行——500 行预算是硬指标，`knowledge/rag_kb.py` 一度
-冲到 517 行，于是配置部分被拆到 `knowledge/rag_config.py`。
+包内共 82 个 `.py`（含各层与子包的 `__init__.py`）、21,141 行。
+
+> **如实更正**：本文档此前称"全局最长文件 `llm/client.py` 487 行，500 行预算是硬指标"，
+> 该说法在 `evaluation` 拆出 `evidence` 时已不成立——实测最长文件是
+> `equations/parse.py`（1,225 行），其后 `core/prompt_config.py` 789、
+> `evidence/terrain.py` 729、`reporting/explain.py` 702、`evidence/facts.py` 643。
+> 500 行预算只覆盖了阶段 6 拆过的文件；上列大文件的拆分属后续工作项，
+> 不在阶段 10（层拆分）范围内。此处不再声称它是全仓硬指标。
 
 ---
 
 ## 3. 依赖规则（硬约束）
 
 ```
-cli ──▶ runtime ──▶ agents ──▶ evaluation ──▶ core
-         │            │  │                        ▲
-         │            │  └──▶ knowledge ──▶ llm ───┘
-         └──▶ analysis ──▶ core / knowledge / llm
+cli ──▶ runtime ──▶ agents ──▶ evidence ──▶ execution ──▶ equations ──▶ core
+         │            │  │                                     ▲
+         │            │  └──▶ knowledge ──▶ llm ───────────────┘
+         │            └──▶ equations / execution / evidence / knowledge
+         └──▶ reporting ──▶ equations / knowledge / llm / core
 ```
 
 允许的依赖集合（`tests/test_architecture.py::_ALLOWED_LAYER_DEPS`）：
@@ -95,27 +105,38 @@ cli ──▶ runtime ──▶ agents ──▶ evaluation ──▶ core
 | 层 | 允许 import |
 |---|---|
 | `core` | 无（最底层；唯一的例外是 `config.py` 里 `TYPE_CHECKING` 内的注解引用） |
+| `equations` | `core` |
 | `llm` | `core` |
-| `evaluation` | `core` |
+| `execution` | `core` `equations` |
+| `evidence` | `core` `equations` `execution` |
 | `knowledge` | `llm` |
-| `agents` | `core` `llm` `evaluation` `knowledge` |
-| `analysis` | `core` `llm` `knowledge` |
-| `runtime` | `core` `agents` `analysis` `knowledge` |
-| `cli` | `core` `llm` `evaluation` `agents` `runtime` |
+| `reporting` | `core` `equations` `llm` `knowledge` |
+| `agents` | `core` `equations` `llm` `execution` `evidence` `knowledge` |
+| `runtime` | `core` `agents` `reporting` `knowledge` |
+| `cli` | `core` `llm` `execution` `agents` `runtime` |
 
 具体规则：
 
 1. 禁止**倒置**：低层不得 import 高层（`core` 不依赖任何层，是最硬的一条）。
 2. 禁止**反向依赖入口**：任何库代码都不得 import `cli`。
 3. `if TYPE_CHECKING:` 块内的 import **不计入**依赖方向检查——它运行时不执行，
-   只是类型注解引用（例如 `core/config.py` 注解 `agents`/`evaluation` 的类型）。
+   只是类型注解引用（例如 `core/config.py` 注解 `agents`/`execution` 的类型）。
    函数体内的 import **计入**（延迟导入同样是依赖）。
 4. 新增一层需要在 `_LAYERS` / `_ALLOWED_LAYER_DEPS` 里显式登记，并说明理由。
 
 > 重构过程中正是靠"先实测、再固化规则"发现了两处真实倒置（`core → llm`、
 > `agents → runtime`），并据此把 token 统计下沉到 `core/llm_stats.py`、把评估执行
-> 子系统提升为独立的 `evaluation` 层。详见
+> 子系统提升为独立的 `evaluation` 层（阶段 10 改名为 `execution`）。详见
 > [`REFACTOR_PLAN.md`](./REFACTOR_PLAN.md) 的阶段 3 记录。
+
+阶段 10 的层拆分遵循同一条判据（实测依赖方向，而非直觉分类）：
+
+* **数值病理内核（`pathology`）归 `equations`，不归 `evidence`**——它是评分的一部分，
+  `execution.problems` 打分时要调用它；若放进执行层之上的 `evidence`，就会形成
+  `execution → evidence` 的倒置。把"判据内核"与"由判据派生的证据"分开，方向才自洽。
+* **`equations` 只依赖 `core`**：表达式工具箱（`parse` / `numeric` / `evaluator` /
+  `text_algebra`）与样本词汇（`header` / `records`）是纯领域模型，采样闭环与收尾报告
+  都要用，因此必须落在两者之下、`core` 之上。
 
 ---
 
@@ -246,8 +267,9 @@ python -c "from drsr_420.agents import agent_specs; print(agent_specs())"
 
 **新增一个模块**
 
-先判断它属于哪一层：与领域无关的基础设施 → `core`；LLM 通信 → `llm`；执行机制 →
-`evaluation`；外部数据源 → `knowledge`；协调角色 → `agents`；收尾分析 → `analysis`；
+先判断它属于哪一层：与领域无关的基础设施 → `core`；公式 / 样本的领域模型 → `equations`；
+LLM 通信 → `llm`；执行机制（拟合 / 沙箱）→ `execution`；由代码算出的可验证证据 →
+`evidence`；外部数据源 → `knowledge`；协调角色 → `agents`；收尾分析与报告 → `reporting`；
 编排 → `runtime`。**不要放回 `drsr_420/` 顶层**（`LayerLayoutTest` 会失败）。
 
 **新增一层**
@@ -265,10 +287,18 @@ python -c "from drsr_420.agents import agent_specs; print(agent_specs())"
 | 曾经的旧路径 | 现在的规范路径 |
 |---|---|
 | `drsr_420.buffer` / `code_manipulation` / `config` / `console` / `profile` / `prompt_config` | `drsr_420.core.*` |
-| `drsr_420.evaluate_on_problems` / `evaluator_accelerate` | `drsr_420.evaluation.problems` / `.accelerate` |
+| `drsr_420.core.range_check` / `sample_header` / `sample_records` | `drsr_420.equations.pathology` / `.header` / `.records` |
+| `drsr_420.evaluate_on_problems` / `evaluator_accelerate` | `drsr_420.execution.problems` / `.accelerate` |
+| `drsr_420.evaluation.problems` / `sandbox` / `accelerate` | `drsr_420.execution.*` |
+| `drsr_420.evaluation.data_facts` / `architecture_facts` / `skeleton_gen` | `drsr_420.evidence.facts` / `.terrain` / `.neighborhood` |
+| `drsr_420.evaluation.equation_text` | `drsr_420.equations.text_algebra` |
 | `drsr_420.rag_kb` / `rag_build` / `tool_runner` / `tools.*` | `drsr_420.knowledge.*` / `drsr_420.knowledge.tools.*` |
 | `drsr_420.tools.tools_description` | `drsr_420.llm.tools_schema` |
-| `drsr_420.find_best_eq` / `sensitivity_prune` | `drsr_420.analysis.*` |
+| `drsr_420.find_best_eq` / `sensitivity_prune` | `drsr_420.reporting.find_best_eq` / `.pruning.sensitivity` |
+| `drsr_420.analysis.expr_parse` / `expr_numeric` / `expr_evaluation` | `drsr_420.equations.parse` / `.numeric` / `.evaluator` |
+| `drsr_420.analysis.holdout` / `loo` | `drsr_420.reporting.generalization.*` |
+| `drsr_420.analysis.prune_eval` / `prune_stats` / `prune_demo` | `drsr_420.reporting.pruning.verdict` / `.stats` / `.demo` |
+| `drsr_420.analysis.expr_curves` / `expr_viz` / 其余 `analysis.*` | `drsr_420.reporting.curves` / `.viz` / `drsr_420.reporting.*` |
 | `drsr_420.pipeline` | `drsr_420.runtime.pipeline` |
 | `drsr_420.sampler` / `evaluator` / `tool_caller` / `experience_summarizer` / `residual_analyzer` / `data_analyse_real` | `drsr_420.agents.*` |
 
@@ -333,7 +363,7 @@ drsr420 --help
 
 # 知识库 CLI 与语义剪枝演示
 python -m drsr_420.knowledge.rag_build --help
-python -m drsr_420.analysis.prune_demo
+python -m drsr_420.reporting.pruning.demo
 ```
 
 架构护栏（`tests/test_architecture.py`）覆盖：
@@ -383,7 +413,7 @@ python -m drsr_420.analysis.prune_demo
 | `analysis` | DataAnalyzerAgent |
 | `experience` | ExperienceSummarizerAgent |
 | `residual` | ResidualAnalyzerAgent |
-| `explain` | `analysis/explain.py`（非 Agent） |
+| `explain` | `reporting/explain.py`（非 Agent） |
 | `summary` | MCP 工具 `read_paper`（非 Agent，跑在子进程里） |
 
 角色表是代码常量（`llm/roles.py::TASKS`），`AgentSpec.llm_task` 必须落在其中（有护栏）。

@@ -7,7 +7,7 @@
 * 逐列统计（n、min/max/mean/std）与相关结构（线性 / 秩 / 对数空间）；
 * 因变量的极值点（全局最大/最小落在哪一行）——这是"峰在哪"的唯一权威答案；
 * 一组机械生成的候选骨架各自的 NMSE（用与评估器**完全相同**的拟合口径，
-  即 :func:`drsr_420.evaluation.problems.evaluate` 的多起点有界 least_squares）
+  即 :func:`drsr_420.execution.problems.evaluate` 的多起点有界 least_squares）
   与**体检标记**（该形式的最优拟合本身是否靠角点门控/尖峰取得）；
 * 自变量之间的共线性/可辨识性告警。
 
@@ -41,8 +41,8 @@ import os
 
 import numpy as np
 
-from drsr_420.core.range_check import dynamic_range_check
-from drsr_420.evaluation.problems import evaluate
+from drsr_420.equations.pathology import dynamic_range_check
+from drsr_420.execution.problems import evaluate
 
 
 #: 行数不超过它就把**完整数据表**写进事实表（模型引用数字时的唯一合法出处）。

@@ -18,6 +18,11 @@ Agent 层不反向依赖编排层。
 `python -m drsr_420.cli.main`（IDE 运行配置与 `.sh` 同步改为模块方式），
 `llm` 的公开 API 由 `drsr_420.llm` 直接提供；仓库根不再贡献任何可导入模块。
 
+阶段 10：包结构按"领域"收敛——新增 `equations`（公式领域模型）与 `evidence`
+（可验证证据）；原 `evaluation` 拆为 `execution`（拟合/沙箱机制）+ `evidence`；
+原 `analysis` 拆为 `reporting`（收尾报告）+ `equations`（表达式工具箱）。
+目的是让代码结构与论文的两条主线（证据层 / 报告）一眼对应。
+
 基线（阶段 0 记录）：测试数 217 ｜ drsr_420+tests 源码 9,375 行 ｜
 drsr_420/ 顶层 .py 21 个（15 实现 + 6 兼容 shim）｜ 子包 2 个 ｜
 最长文件 llm.py 773 行 ｜ Agent 7 个
@@ -37,21 +42,23 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _PKG_DIR = os.path.join(_REPO_ROOT, "drsr_420")
 _AGENTS_DIR = os.path.join(_PKG_DIR, "agents")
 
-# ── 阶段 3：分层结构 ────────────────────────────────────────────────
+# ── 阶段 3：分层结构（阶段 10：新增 equations / evidence，拆分 evaluation、analysis）──
 #: 层的展示顺序即"自底向上"，越靠后越上层。
-_LAYERS = ("core", "llm", "evaluation", "knowledge", "agents", "analysis",
-           "runtime", "cli")
+_LAYERS = ("core", "equations", "llm", "execution", "evidence", "knowledge",
+           "reporting", "agents", "runtime", "cli")
 
 #: 每一层允许 import 的层（含自身）；其余一律视为越界/倒置。
 _ALLOWED_LAYER_DEPS = {
-    "core": set(),                                    # 最底层
-    "llm": {"core"},                                  # token 统计下沉到 core.llm_stats
-    "evaluation": {"core"},                           # 机制层：借 core 的 AST 与程序拼装
-    "knowledge": {"llm"},                             # RAG 与 MCP 工具只依赖 LLM 接入
-    "agents": {"core", "llm", "evaluation", "knowledge"},
-    "analysis": {"core", "llm", "knowledge"},
-    "runtime": {"core", "agents", "analysis", "knowledge"},
-    "cli": {"core", "llm", "evaluation", "agents", "runtime"},
+    "core": set(),                                          # 最底层（领域无关基础设施）
+    "equations": {"core"},                                  # 公式领域模型（解析/求值/样本词汇/病理内核）
+    "llm": {"core"},                                        # token 统计下沉到 core.llm_stats
+    "execution": {"core", "equations"},                     # 评估执行机制：拟合打分 / 沙箱 / 加速
+    "evidence": {"core", "equations", "execution"},         # 可验证证据：事实表 / 架构地形 / 未试邻域
+    "knowledge": {"llm"},                                   # RAG 与 MCP 工具只依赖 LLM 接入
+    "reporting": {"core", "equations", "llm", "knowledge"}, # 收尾分析与报告装配
+    "agents": {"core", "equations", "llm", "execution", "evidence", "knowledge"},
+    "runtime": {"core", "agents", "reporting", "knowledge"},
+    "cli": {"core", "llm", "execution", "agents", "runtime"},
 }
 
 #: 顶层不再有任何实现模块，也不再有实现例外白名单（阶段 6 清退后只剩 __init__.py）。
@@ -78,9 +85,21 @@ _REMOVED_LEGACY_PATHS: dict[str, str] = {
     "drsr_420.console": "drsr_420.core.console",
     "drsr_420.profile": "drsr_420.core.profile",
     "drsr_420.prompt_config": "drsr_420.core.prompt_config",
-    # evaluation
-    "drsr_420.evaluate_on_problems": "drsr_420.evaluation.problems",
-    "drsr_420.evaluator_accelerate": "drsr_420.evaluation.accelerate",
+    # core → equations（阶段 10：公式领域模型独立成层）
+    "drsr_420.core.range_check": "drsr_420.equations.pathology",
+    "drsr_420.core.sample_header": "drsr_420.equations.header",
+    "drsr_420.core.sample_records": "drsr_420.equations.records",
+    # evaluation → execution / evidence / equations（阶段 10：拆"执行机制"与"可验证证据"）
+    "drsr_420.evaluate_on_problems": "drsr_420.execution.problems",
+    "drsr_420.evaluator_accelerate": "drsr_420.execution.accelerate",
+    "drsr_420.evaluation": "drsr_420.execution",
+    "drsr_420.evaluation.problems": "drsr_420.execution.problems",
+    "drsr_420.evaluation.sandbox": "drsr_420.execution.sandbox",
+    "drsr_420.evaluation.accelerate": "drsr_420.execution.accelerate",
+    "drsr_420.evaluation.data_facts": "drsr_420.evidence.facts",
+    "drsr_420.evaluation.architecture_facts": "drsr_420.evidence.terrain",
+    "drsr_420.evaluation.skeleton_gen": "drsr_420.evidence.neighborhood",
+    "drsr_420.evaluation.equation_text": "drsr_420.equations.text_algebra",
     # knowledge
     "drsr_420.rag_kb": "drsr_420.knowledge.rag_kb",
     "drsr_420.rag_build": "drsr_420.knowledge.rag_build",
@@ -90,12 +109,31 @@ _REMOVED_LEGACY_PATHS: dict[str, str] = {
     "drsr_420.tools.search_paper": "drsr_420.knowledge.tools.search_paper",
     "drsr_420.tools.read_paper": "drsr_420.knowledge.tools.read_paper",
     "drsr_420.tools.tools_description": "drsr_420.llm.tools_schema",
-    # analysis
-    "drsr_420.find_best_eq": "drsr_420.analysis.find_best_eq",
-    "drsr_420.sensitivity_prune": "drsr_420.analysis.sensitivity_prune",
+    # analysis → reporting / equations（阶段 10：表达式工具箱归 equations，收尾报告归 reporting）
+    "drsr_420.find_best_eq": "drsr_420.reporting.find_best_eq",
+    "drsr_420.sensitivity_prune": "drsr_420.reporting.pruning.sensitivity",
+    "drsr_420.analysis": "drsr_420.reporting",
+    "drsr_420.analysis.expr_parse": "drsr_420.equations.parse",
+    "drsr_420.analysis.expr_numeric": "drsr_420.equations.numeric",
+    "drsr_420.analysis.expr_evaluation": "drsr_420.equations.evaluator",
+    "drsr_420.analysis.expr_curves": "drsr_420.reporting.curves",
+    "drsr_420.analysis.expr_viz": "drsr_420.reporting.viz",
+    "drsr_420.analysis.sensitivity_prune": "drsr_420.reporting.pruning.sensitivity",
+    "drsr_420.analysis.prune_eval": "drsr_420.reporting.pruning.verdict",
+    "drsr_420.analysis.prune_stats": "drsr_420.reporting.pruning.stats",
+    "drsr_420.analysis.prune_demo": "drsr_420.reporting.pruning.demo",
+    "drsr_420.analysis.holdout": "drsr_420.reporting.generalization.holdout",
+    "drsr_420.analysis.loo": "drsr_420.reporting.generalization.loo",
+    "drsr_420.analysis.report_sections": "drsr_420.reporting.report_sections",
+    "drsr_420.analysis.references": "drsr_420.reporting.references",
+    "drsr_420.analysis.md_sections": "drsr_420.reporting.md_sections",
+    "drsr_420.analysis.data_io": "drsr_420.reporting.data_io",
+    "drsr_420.analysis.progress_curve": "drsr_420.reporting.progress_curve",
+    "drsr_420.analysis.explain": "drsr_420.reporting.explain",
+    "drsr_420.analysis.find_best_eq": "drsr_420.reporting.find_best_eq",
     # analysis 层内重命名：prune_report 名实不符（当时兼当全层数据工具库），
     # 数据工具拆到 data_io / expr_numeric 后改名为 prune_eval。旧路径不得复活。
-    "drsr_420.analysis.prune_report": "drsr_420.analysis.prune_eval",
+    "drsr_420.analysis.prune_report": "drsr_420.reporting.pruning.verdict",
     # runtime
     "drsr_420.pipeline": "drsr_420.runtime.pipeline",
     # agents
@@ -547,7 +585,7 @@ class IntraLayerPrivateImportTest(unittest.TestCase):
 
     #: ``(文件相对路径, 被导入的模块, 私有名)`` → 豁免理由。
     ALLOWED = {
-        ("analysis/holdout.py", "drsr_420.analysis.loo", "_loo_fit"):
+        ("reporting/holdout.py", "drsr_420.reporting.generalization.loo", "_loo_fit"):
             "holdout 只是把 LOO 的名字转发回旧路径（对象同一），_loo_fit 是 loo 的内部实现",
     }
 
@@ -599,7 +637,7 @@ class PathAnchorTest(unittest.TestCase):
 
 
 class EvaluationSubsystemTest(unittest.TestCase):
-    """阶段 4：评估执行机制归 evaluation 层，角色文件只留编排。"""
+    """阶段 4：评估执行机制归 execution 层，角色文件只留编排。"""
 
     def test_agent_module_holds_no_execution_mechanism(self):
         src = (Path(_PKG_DIR) / "agents" / "evaluator_agent.py").read_text(encoding="utf-8")
@@ -608,11 +646,11 @@ class EvaluationSubsystemTest(unittest.TestCase):
                 self.assertNotIn(
                     forbidden, src,
                     f"agents/evaluator_agent.py 不应再含执行机制痕迹 {forbidden!r}"
-                    "（应放在 evaluation/sandbox.py）")
+                    "（应放在 execution/sandbox.py）")
 
-    def test_mechanism_lives_in_evaluation_layer(self):
+    def test_mechanism_lives_in_execution_layer(self):
         from drsr_420.agents import evaluator_agent
-        from drsr_420.evaluation import sandbox
+        from drsr_420.execution import sandbox
 
         self.assertIs(evaluator_agent.LocalSandbox, sandbox.LocalSandbox)
         self.assertIs(evaluator_agent.Sandbox, sandbox.Sandbox)
@@ -620,7 +658,7 @@ class EvaluationSubsystemTest(unittest.TestCase):
     def test_mechanism_symbols_remain_importable_from_agent_module(self):
         """机制符号仍可从角色模块导入（同对象），方便只关心评估流程的调用方。"""
         from drsr_420.agents import evaluator_agent as ea
-        from drsr_420.evaluation import sandbox
+        from drsr_420.execution import sandbox
 
         for name in ("LocalSandbox", "Sandbox", "_run_evaluation_task",
                      "_sample_residuals", "_sample_to_program", "_calls_ancestor"):

@@ -20,8 +20,8 @@ from unittest import mock
 
 import numpy as np
 
-from drsr_420.evaluation import problems
-from drsr_420.evaluation.problems import (
+from drsr_420.execution import problems
+from drsr_420.execution.problems import (
     RANGE_PENALTY_CAP,
     RANGE_SLOPE_LIMIT,
     RANGE_SPAN_RATIO_LIMIT,
@@ -157,7 +157,7 @@ class LocalSlopeCheckTest(unittest.TestCase):
             lambda a, b, p: p[0] * b / (p[1] + b) + p[2],
             lambda a, b, p: p[0] * (1.0 - np.exp(-p[1] * b)) + p[2],
         ]
-        from drsr_420.evaluation.problems import evaluate as _fit
+        from drsr_420.execution.problems import evaluate as _fit
         for eq in healthy:
             with np.errstate(all='ignore'), mock.patch("builtins.print"):
                 score, _, params = _fit(_DATA, eq, range_check=False, seed=0)
@@ -246,7 +246,7 @@ class CoefficientCancellationTest(unittest.TestCase):
             probe_fn=lambda *args, _e=eq: _e(*args[:-1], np.asarray(args[-1])))
 
     def test_cancellation_is_caught_where_span_and_slope_pass(self):
-        from drsr_420.evaluation.problems import RANGE_COEF_RATIO_LIMIT
+        from drsr_420.execution.problems import RANGE_COEF_RATIO_LIMIT
         info = self._check(self.CANCEL_PARAMS, self._cancel_equation)
         # 前两条判据看不见它（这正是加判据三的原因）
         self.assertLess(info["span_ratio"], RANGE_SPAN_RATIO_LIMIT)
@@ -297,7 +297,7 @@ class ExplainRangeSectionTest(unittest.TestCase):
                  "limit": RANGE_SPAN_RATIO_LIMIT, "n_points": 640}
 
     def test_pruning_block_reports_pathology(self):
-        from drsr_420.analysis.explain import _format_pruning_block
+        from drsr_420.reporting.explain import _format_pruning_block
         text = _format_pruning_block(self.PRUNING)
         self.assertIn("动态范围体检", text)
         self.assertIn("病理性", text)
@@ -306,7 +306,7 @@ class ExplainRangeSectionTest(unittest.TestCase):
 
     def test_pruning_block_reports_clean(self):
         """通过时只声明"未检出"并列出所检两项，不得写成"无角点钉扎类病理"。"""
-        from drsr_420.analysis.explain import _format_pruning_block
+        from drsr_420.reporting.explain import _format_pruning_block
         pruning = dict(self.PRUNING)
         pruning["range_check"] = {"span_ratio": 1.2, "grid_min": 193.0,
                                   "grid_max": 352.5, "span_penalty": 0.0,
@@ -321,7 +321,7 @@ class ExplainRangeSectionTest(unittest.TestCase):
 
     def test_gate_only_hit_is_reported_as_pathology(self):
         """判据一正常、判据二命中：判定必须是病理性，且点名的判据是局部斜率。"""
-        from drsr_420.analysis.explain import _format_pruning_block, render_range_section
+        from drsr_420.reporting.explain import _format_pruning_block, render_range_section
         pruning = dict(self.PRUNING)
         pruning["range_check"] = self.GATE_ONLY
         text = _format_pruning_block(pruning)
@@ -334,7 +334,7 @@ class ExplainRangeSectionTest(unittest.TestCase):
             self.GATE_ONLY, slope_max=0.5, slope_penalty=0.0, penalty=0.0)))
 
     def test_assemble_replaces_llm_authored_range_section(self):
-        from drsr_420.analysis.report_sections import ReportData, assemble_explain
+        from drsr_420.reporting.report_sections import ReportData, assemble_explain
         body = "正文\n\n## 动态范围体检\nLLM 编造的数字 12345\n\n## 其他\n内容"
         text = assemble_explain(
             body, ReportData(range_check=self.PRUNING["range_check"]))
@@ -359,7 +359,7 @@ class PruneSummaryRangeCheckTest(unittest.TestCase):
             " - 2890.0514\n")
 
     def test_summary_carries_range_check(self):
-        from drsr_420.analysis.find_best_eq import prune_and_visualize
+        from drsr_420.reporting.find_best_eq import prune_and_visualize
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             (root / "samples").mkdir(parents=True)
@@ -387,7 +387,7 @@ class PruneSummaryRangeCheckTest(unittest.TestCase):
         """判据三在收尾处必须真的被求值——样本用 ``c0, c1 = params[:2]`` 这类元组
         解包时，SymPy 符号化路径建不出探针，判据会静默弃权（实测 20260925-134149 的
         order 83 就是这样）。这里用别名写法的样本守住"不再静默弃权"。"""
-        from drsr_420.analysis.find_best_eq import prune_and_visualize
+        from drsr_420.reporting.find_best_eq import prune_and_visualize
         func = ("Variables:\n"
                 "- Independents: lambda12, lambda23\n"
                 "- Dependent: sigma\n"

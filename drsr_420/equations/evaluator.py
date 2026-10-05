@@ -2,7 +2,7 @@
 
 角色归属
 --------
-敏感度剪枝（:mod:`drsr_420.analysis.sensitivity_prune`）的**数值内核**：
+敏感度剪枝（:mod:`drsr_420.reporting.pruning.sensitivity`）的**数值内核**：
 与"怎么遍历表达式树、剪哪一项"的决策逻辑正交，因此单独成模块。
 
 职责

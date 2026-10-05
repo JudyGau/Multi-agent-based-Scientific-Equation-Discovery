@@ -30,8 +30,8 @@ from typing import Any
 import numpy as np
 
 from drsr_420.core import code_manipulation
-from drsr_420.evaluation import accelerate as evaluator_accelerate
-from drsr_420.evaluation import problems as evaluate_on_problems
+from drsr_420.execution import accelerate as evaluator_accelerate
+from drsr_420.execution import problems as evaluate_on_problems
 
 #: 主进程通过该环境变量把实验目录告诉子进程（``cli.main.setup_output_tee`` 设置）。
 #: multiprocessing 的 spawn 子进程继承环境变量，但 **stderr 只继承到控制台 fd**——

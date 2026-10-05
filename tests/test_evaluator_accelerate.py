@@ -4,7 +4,7 @@ import unittest
 
 import numpy as np
 
-from drsr_420.evaluation import accelerate as ea
+from drsr_420.execution import accelerate as ea
 
 PROGRAM = (
     "import numpy as np\n"

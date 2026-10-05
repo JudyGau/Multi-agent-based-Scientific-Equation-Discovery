@@ -14,8 +14,8 @@ from unittest import mock
 
 import numpy as np
 
-from drsr_420.analysis import progress_curve as pcur
-from drsr_420.analysis.report_sections import ReportData
+from drsr_420.reporting import progress_curve as pcur
+from drsr_420.reporting.report_sections import ReportData
 
 
 def _matplotlib_available() -> bool:
@@ -693,12 +693,12 @@ class UpsertProgressSectionTest(unittest.TestCase):
 class SectionOrderAndSingleSourceTest(unittest.TestCase):
     def test_anchor_matches_explain_reference_heading(self):
         """锚点是"参考文献之前"，必须与 explain 的标题字面一致（不能各写一份漂移）。"""
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
 
         self.assertEqual(pcur._REFERENCE_ANCHOR, explain_mod.REFERENCE_HEADING)
 
     def test_progress_sits_between_range_check_and_references(self):
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
         progress = {"n_points": 2, "log_scale": True,
                     "first": {"sample_order": 0, "mse": 100.0, "nmse": 0.05},
                     "best": {"sample_order": 7, "mse": 1.0, "nmse": 5e-4},
@@ -716,7 +716,7 @@ class SectionOrderAndSingleSourceTest(unittest.TestCase):
         self.assertLess(i_prog, i_ref)
 
     def test_no_progress_means_no_section(self):
-        from drsr_420.analysis import explain as explain_mod
+        from drsr_420.reporting import explain as explain_mod
         text = explain_mod.assemble_explain("正文", ReportData(progress=None))
         self.assertNotIn(pcur.PROGRESS_HEADING, text)
 
@@ -731,7 +731,7 @@ class PruneAndVisualizeWiringTest(unittest.TestCase):
              "    return params[0] + params[1]*x1 + params[2]*x2\n")
 
     def test_summary_carries_progress(self):
-        from drsr_420.analysis.find_best_eq import prune_and_visualize
+        from drsr_420.reporting.find_best_eq import prune_and_visualize
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             (root / "samples").mkdir(parents=True)

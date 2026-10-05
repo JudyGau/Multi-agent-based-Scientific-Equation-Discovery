@@ -7,7 +7,7 @@ from unittest import mock
 
 import numpy as np
 
-from drsr_420.evaluation import problems as eop
+from drsr_420.execution import problems as eop
 
 
 def make_dataset(n=200, seed=0, noise=0.01):

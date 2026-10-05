@@ -4,9 +4,9 @@ import unittest
 import numpy as np
 import sympy as sp
 
-from drsr_420.analysis.expr_evaluation import ExpressionEvaluator
-from drsr_420.analysis.prune_stats import PruneRecord, PruneStats
-from drsr_420.analysis.sensitivity_prune import SensitivityPruner, sensitivity_prune
+from drsr_420.equations.evaluator import ExpressionEvaluator
+from drsr_420.reporting.pruning.stats import PruneRecord, PruneStats
+from drsr_420.reporting.pruning.sensitivity import SensitivityPruner, sensitivity_prune
 
 x, y, z = sp.symbols("x y z", real=True)
 eps = sp.Rational(1, 1000)
@@ -152,7 +152,7 @@ class AbsOfPowNormalizationTest(unittest.TestCase):
     """
 
     def test_abs_of_pow_is_rewritten(self):
-        from drsr_420.analysis.sensitivity_prune import _rewrite_abs_of_pow
+        from drsr_420.reporting.pruning.sensitivity import _rewrite_abs_of_pow
         e = sp.Abs(x ** sp.Float(-0.332317))
         out = _rewrite_abs_of_pow(e)
         self.assertEqual(out, sp.Abs(x) ** sp.Float(-0.332317))

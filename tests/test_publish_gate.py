@@ -19,9 +19,9 @@ import tempfile
 import unittest
 from unittest import mock
 
-from drsr_420.analysis import explain as explain_mod
-from drsr_420.analysis import find_best_eq as fbe
-from drsr_420.core import sample_records as records_mod
+from drsr_420.reporting import explain as explain_mod
+from drsr_420.reporting import find_best_eq as fbe
+from drsr_420.equations import records as records_mod
 from drsr_420.core.profile import Profiler
 
 
